@@ -152,6 +152,11 @@ stopping → unknown, so the shim never goes running → unknown.
 
 ## D12. CLI output (§14, §16)
 
+- `task jobs` prints a table by default (JOBID, TASK_ID, SUBMITTED, HOST, STATE, sorted by
+  submission time, STATE colored on a terminal); `--detail` prints the §14.1 JSON object.
+  This departs from §16 ("all commands except logs print one JSON object"); user decision
+  2026-10-30. Exit codes are unchanged; in table mode errors go to stderr only.
+
 - `task status` on a finished job prints `result.json` with two top-level keys added:
   `host` and `complete`. A job that ended without any attempt (cancelled while queued)
   prints a synthesized `{"schema_version", "_taskmgr"}`.

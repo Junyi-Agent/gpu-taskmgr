@@ -15,7 +15,7 @@ task validate AA-01/                   # 退出码 0 输出 {"valid": true}；1 
 task submit AA-01/                     # 在启用的服务器之间轮询
 task submit --host nebius-h200-2 AA-01.tar.gz
 task submit --host nebius-h200-2 --submission-key tune-aa01-v3 AA-01/   # 幂等重试
-task jobs [--host H] [--state running]
+task jobs [--host H] [--state running] [--detail] [--color auto|always|never]
 task status <jobid> [--host H]
 task status <jobid> [--host H] --wait [--poll-interval 5] [--retry-timeout 300] [--timeout S]
 task cancel  <jobid> --host H
@@ -26,8 +26,22 @@ task fetch <jobid> --host H --output ./results/ [--attempt N | --all-attempts]
 task hosts                             # 列出已配置的服务器（额外命令）
 ```
 
-除 `logs` 外，所有命令都在 stdout 输出一个 JSON 对象；出错时输出
+除 `logs` 和 `jobs` 表格外，所有命令都在 stdout 输出一个 JSON 对象；出错时输出
 `{"error": {"code", "message", "host"?, "details"?}}`，诊断信息写到 stderr。
+
+`task jobs` 输出表格（按用户决定，偏离需求文档 §16）：
+
+```
+JOBID             TASK_ID  SUBMITTED             HOST           STATE
+b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
+```
+
+- 按提交时间（UTC）排序。stdout 是终端时 STATE 带颜色（queued 黄、running 青、stopping 品红、
+  unknown 粗体品红、succeeded 绿、failed / invalid_result / timed_out 红、cancelled 灰）；设置
+  `NO_COLOR` 或 `TERM=dumb` 时关闭，`--color always|never` 可强制指定。
+- 连不上的服务器在 stderr 报告（`warning: H unreachable, ...`）；退出码规则不变（至少一台服务器有
+  响应为 0，否则为 2）。表格模式下的错误只写到 stderr。
+- `--detail` 改为输出 JSON 对象 `{"complete", "errors", "jobs"}`。
 
 | 退出码 | 含义 |
 | --- | --- |

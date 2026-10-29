@@ -64,6 +64,8 @@ class Args(argparse.Namespace):
     stream: str = "stdout"
     follow: bool = False
     all_attempts: bool = False
+    detail: bool = False
+    color: str = "auto"
 
 
 class HostError(TypedDict):
@@ -472,10 +474,81 @@ def cmd_jobs(args: Args) -> CmdResult:
         for j in _arr((results.get(s["name"]) or {}).get("jobs", [])):
             jobs.append({"host": s["name"], **_obj(j)})
     out: dict[str, object] = {"complete": not errors, "errors": errors, "jobs": jobs}
+    code = 0
     if not results:
         out["error"] = {"code": "all_hosts_failed", "message": "no server could be queried"}
-        return out, 2
-    return out, 0
+        code = 2
+    if args.detail:
+        return out, code
+    # Table mode (the default): the table on stdout, problems on stderr.
+    for e in errors:
+        eprint("warning: %s unreachable, its jobs are not listed: %s" % (e["host"], e["error"]))
+    if code:
+        eprint("error: no server could be queried")
+        return None, code
+    _ = sys.stdout.write(render_jobs_table(jobs, use_color(args.color)))
+    return None, 0
+
+
+JOBS_COLUMNS = ("JOBID", "TASK_ID", "SUBMITTED", "HOST", "STATE")
+
+
+# ANSI SGR codes per job state; anything not listed stays uncolored.
+STATE_COLORS = {
+    "queued": "33",  # yellow
+    "running": "36",  # cyan
+    "stopping": "35",  # magenta
+    "unknown": "1;35",  # bold magenta: needs an operator
+    "succeeded": "32",  # green
+    "failed": "31",  # red
+    "invalid_result": "31",
+    "timed_out": "31",
+    "cancelled": "90",  # gray
+}
+
+
+def use_color(mode: str) -> bool:
+    """--color auto: only on a terminal, and not when NO_COLOR is set or TERM=dumb."""
+    if mode in ("always", "never"):
+        return mode == "always"
+    return (
+        sys.stdout.isatty()
+        and "NO_COLOR" not in os.environ
+        and os.environ.get("TERM", "") != "dumb"
+    )
+
+
+def _paint(text: str, sgr: str | None, color: bool) -> str:
+    return "\033[%sm%s\033[0m" % (sgr, text) if color and sgr else text
+
+
+def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
+    """`task jobs` table: one row per job, oldest submission first."""
+    rows = sorted(
+        (
+            (
+                _str(j.get("jobid"), "-"),
+                _str(j.get("task_id"), "-"),
+                _str(j.get("submitted_at"), "-"),
+                _str(j.get("host"), "-"),
+                _str(j.get("state"), "-"),
+            )
+            for j in jobs
+        ),
+        key=lambda r: (r[2], r[3], r[0]),
+    )
+    widths = [max([len(c)] + [len(r[i]) for r in rows]) for i, c in enumerate(JOBS_COLUMNS)]
+
+    def line(cells: tuple[str, ...], sgr: list[str | None]) -> str:
+        # Pad the plain text first so escape codes never affect the alignment; the last
+        # column is not padded, so there is no trailing whitespace.
+        padded = [c.ljust(w) for c, w in zip(cells[:-1], widths)] + [cells[-1]]
+        return "  ".join(_paint(c, s, color) for c, s in zip(padded, sgr)).rstrip() + "\n"
+
+    out = line(JOBS_COLUMNS, ["1"] * len(JOBS_COLUMNS))  # bold header
+    for r in rows:
+        out += line(r, [None, None, None, None, STATE_COLORS.get(r[4])])
+    return out
 
 
 def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, object]:
@@ -771,9 +844,16 @@ def build_parser() -> argparse.ArgumentParser:
     _ = s.add_argument("path")
     _ = s.add_argument("--host")
     _ = s.add_argument("--submission-key")
-    s = sub.add_parser("jobs", help="list jobs")
+    s = sub.add_parser("jobs", help="list jobs (a table; --detail for JSON)")
     _ = s.add_argument("--host")
     _ = s.add_argument("--state")
+    _ = s.add_argument("--detail", action="store_true", help="print the full JSON object")
+    _ = s.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="color the table (auto: only on a terminal, off with NO_COLOR)",
+    )
     s = sub.add_parser("status", help="show (or wait for) one job")
     _ = s.add_argument("jobid")
     _ = s.add_argument("--host")
@@ -821,6 +901,11 @@ COMMANDS: dict[str, Callable[[Args], CmdResult]] = {
 }
 
 
+def text_output(args: Args) -> bool:
+    """Commands whose stdout is text (logs, the jobs table): errors go to stderr only."""
+    return args.cmd == "logs" or (args.cmd == "jobs" and not args.detail)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -836,14 +921,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         out, code = COMMANDS[args.cmd](args)
     except TaskmgrError as e:
-        if args.cmd == "logs":
+        if text_output(args):
             eprint(json.dumps(e.to_json()))
             return e.exit_code
         out, code = e.to_json(), e.exit_code
         eprint("error: %s" % e.message)
     except KeyboardInterrupt:
         eprint("interrupted (remote jobs are not affected)")
-        if args.cmd != "logs":
+        if not text_output(args):
             _ = sys.stdout.write(
                 json.dumps({"error": {"code": "interrupted", "message": "interrupted locally"}})
                 + "\n"
@@ -854,7 +939,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         eprint(traceback.format_exc())
         err = {"error": {"code": "internal_error", "message": "%s: %s" % (type(e).__name__, e)}}
-        if args.cmd == "logs":
+        if text_output(args):
             eprint(json.dumps(err))
         else:
             _ = sys.stdout.write(json.dumps(err) + "\n")

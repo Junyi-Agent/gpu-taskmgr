@@ -1,6 +1,7 @@
 """Job discovery, status lookup across servers, --wait, logs and fetch (Sections 14, 15, 16)."""
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,7 @@ class QueryTest(Env):
     def test_jobs_across_servers(self) -> None:
         a = self.submit(self.make_pkg(task_id="AA-01"), host="s1")
         b = self.submit(self.make_pkg(task_id="BB-02"), host="s3")
-        out = self.ok("jobs")
+        out = self.ok("jobs", "--detail")
         self.assertTrue(self.get(out, "complete"))
         self.assertEqual(self.get(out, "errors"), [])
         got = {(j["host"], j["jobid"], j["task_id"], j["state"]) for j in self.objs(out, "jobs")}
@@ -38,21 +39,74 @@ class QueryTest(Env):
         for j in self.objs(out, "jobs"):
             self.assertIn("submitted_at", j)
             self.assertIn("attempt", j)
-        out = self.ok("jobs", "--host", "s3")
+        out = self.ok("jobs", "--detail", "--host", "s3")
         self.assertEqual([j["jobid"] for j in self.objs(out, "jobs")], [b])
         _ = self.ok("cancel", a, "--host", "s1")
-        out = self.ok("jobs", "--state", "cancelled")
+        out = self.ok("jobs", "--detail", "--state", "cancelled")
         self.assertEqual([j["jobid"] for j in self.objs(out, "jobs")], [a])
         self.unreachable("s2")
-        out = self.ok("jobs")
+        out = self.ok("jobs", "--detail")
         self.assertFalse(self.get(out, "complete"))
         self.assertEqual([e["host"] for e in self.objs(out, "errors")], ["s2"])
         self.assertIn("timed out", self.text(out, "errors", 0, "error"))
         self.assertEqual(len(self.arr(out, "jobs")), 2)
         self.unreachable("s1")
         self.unreachable("s3")
-        rc, out, _ = self.task("jobs")
+        rc, out, _ = self.task("jobs", "--detail")
         self.assertEqual(rc, 2)
+        self.assertEqual(self.get(out, "error", "code"), "all_hosts_failed")
+
+    def test_jobs_table(self) -> None:
+        a = self.submit(self.make_pkg(task_id="AA-01"), host="s1")  # s1 has no daemon: stays queued
+        time.sleep(1.1)  # submitted_at has 1 s resolution; make the order unambiguous
+        b = self.submit(self.make_pkg(task_id="BB-02"), host="s3")
+        _ = self.start_daemon("s3")
+        _ = self.wait_state(b, "succeeded", name="s3")
+        rc, out, err = self.task("jobs")
+        self.assertEqual((rc, err), (0, ""))
+        assert isinstance(out, str)  # a table, not JSON
+        lines = out.splitlines()
+        self.assertEqual(lines[0].split(), ["JOBID", "TASK_ID", "SUBMITTED", "HOST", "STATE"])
+        rows = [line.split() for line in lines[1:]]
+        self.assertEqual([r[0] for r in rows], [a, b])  # oldest submission first
+        self.assertEqual(
+            [(r[1], r[3], r[4]) for r in rows],
+            [("AA-01", "s1", "queued"), ("BB-02", "s3", "succeeded")],
+        )
+        self.assertEqual(rows[0][2], self.job(a)["submitted_at"])
+        # Columns line up: every row starts each column at the header's offset.
+        starts = [lines[0].index(c) for c in ("TASK_ID", "SUBMITTED", "HOST", "STATE")]
+        for line in lines[1:]:
+            self.assertTrue(all(line[p - 2 : p] == "  " and line[p] != " " for p in starts))
+        # Color: never on a pipe (auto), on with --color always, and the escape codes
+        # do not change the layout.
+        self.assertNotIn("\x1b[", out)
+        rc, colored, _ = self.task("jobs", "--color", "always")
+        assert isinstance(colored, str)
+        self.assertEqual(rc, 0)
+        self.assertIn("\x1b[1mJOBID", colored)  # bold header
+        self.assertIn("\x1b[33mqueued\x1b[0m", colored)  # yellow state
+        self.assertIn("\x1b[32msucceeded\x1b[0m", colored)  # green state
+        self.assertEqual(re.sub(r"\x1b\[[0-9;]*m", "", colored), out)
+        rc, out2, _ = self.task("jobs", "--color", "never", env={"TERM": "xterm"})
+        self.assertEqual((rc, out2), (0, out))
+        rc, out, _ = self.task("jobs", "--state", "running")
+        self.assertEqual((rc, out), (0, "JOBID  TASK_ID  SUBMITTED  HOST  STATE\n"))
+        # Unreachable servers: still a table on stdout, a warning on stderr, exit 0.
+        self.unreachable("s2")
+        rc, out, err = self.task("jobs")
+        assert isinstance(out, str)
+        self.assertEqual((rc, len(out.splitlines())), (0, 3))
+        self.assertIn("warning: s2 unreachable", err)
+        # Nothing reachable: exit 2, nothing on stdout.
+        self.unreachable("s1")
+        self.unreachable("s3")
+        rc, out, err = self.task("jobs")
+        self.assertEqual((rc, out), (2, None))
+        self.assertIn("no server could be queried", err)
+        rc, out, err = self.task("jobs", "--host", "nope")
+        self.assertEqual((rc, out), (2, None))
+        self.assertIn("unknown_host", err)
 
     def test_status_lookup_table(self) -> None:
         j = self.submit(self.make_pkg(), host="s3")

@@ -55,13 +55,6 @@ cp /path/to/gpu-taskmgr/taskmgr/deploy/machines.example.json ~/.taskmgr/machines
 
 编辑 `~/.taskmgr/machines.json`，每台服务器一项。路径要写绝对路径（不能用 `~`）：
 
-```json
-{"servers": [{"name": "gpu1", "enabled": true, "transport": "ssh",
-              "ssh": {"host": "10.0.0.12", "user": "tuner"},
-              "remote_root": "/home/tuner/taskmgr-root",
-              "remote_command": "/home/tuner/taskmgr/bin/taskmgr-remote"}]}
-```
-
 **5. 使用**
 
 ```sh

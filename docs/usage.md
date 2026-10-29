@@ -15,7 +15,7 @@ task validate AA-01/                   # exit 0 {"valid": true}, 1 with all erro
 task submit AA-01/                     # round-robin over enabled servers
 task submit --host nebius-h200-2 AA-01.tar.gz
 task submit --host nebius-h200-2 --submission-key tune-aa01-v3 AA-01/   # idempotent retry
-task jobs [--host H] [--state running]
+task jobs [--host H] [--state running] [--detail] [--color auto|always|never]
 task status <jobid> [--host H]
 task status <jobid> [--host H] --wait [--poll-interval 5] [--retry-timeout 300] [--timeout S]
 task cancel  <jobid> --host H
@@ -26,8 +26,24 @@ task fetch <jobid> --host H --output ./results/ [--attempt N | --all-attempts]
 task hosts                             # list configured servers (extra)
 ```
 
-All commands except `logs` print one JSON object on stdout; errors are
+All commands except `logs` and the `jobs` table print one JSON object on stdout; errors are
 `{"error": {"code", "message", "host"?, "details"?}}` with diagnostics on stderr.
+
+`task jobs` prints a table (a departure from spec §16, by user decision):
+
+```
+JOBID             TASK_ID  SUBMITTED             HOST           STATE
+b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
+```
+
+- Rows are sorted by submission time (UTC). STATE is colored (queued yellow, running cyan,
+  stopping magenta, unknown bold magenta, succeeded green, failed / invalid_result /
+  timed_out red, cancelled gray) when stdout is a terminal; `NO_COLOR` or `TERM=dumb` turns it
+  off, `--color always|never` overrides.
+- Unreachable servers are reported on stderr (`warning: H unreachable, ...`); the exit code
+  rules are unchanged (0 if at least one server answered, 2 otherwise). Errors in table mode
+  go to stderr only.
+- `--detail` prints the JSON object `{"complete", "errors", "jobs"}` instead.
 
 | Exit | Meaning |
 | --- | --- |
