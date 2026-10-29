@@ -278,6 +278,8 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
                 "return_code",
                 "signal",
                 "takeovers",
+                "gpu_busy_retries",
+                "last_gpu_busy_at",
             )
         }
         info["identity"] = identity_of(runner)

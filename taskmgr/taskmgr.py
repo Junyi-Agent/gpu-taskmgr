@@ -489,6 +489,8 @@ def cmd_jobs(args: Args) -> CmdResult:
 
 
 JOBS_COLUMNS = ("JOBID", "TASK_ID", "SUBMITTED", "HOST", "STATE")
+# STATE shown for a running job whose shim waits to relaunch after a "GPU busy" exit.
+GPU_BUSY_STATE = "pending (gpu busy)"
 
 
 # ANSI SGR codes per job state; anything not listed stays uncolored.
@@ -502,6 +504,7 @@ STATE_COLORS = {
     "invalid_result": "31",
     "timed_out": "31",
     "cancelled": "90",  # gray
+    GPU_BUSY_STATE: "33",  # yellow, like queued: waiting for the GPU
 }
 
 
@@ -520,6 +523,14 @@ def _paint(text: str, sgr: str | None, color: bool) -> str:
     return "\033[%sm%s\033[0m" % (sgr, text) if color and sgr else text
 
 
+def display_state(job: JsonDict) -> str:
+    """The STATE cell: the job state, or GPU_BUSY_STATE for a running job that waits."""
+    state = _str(job.get("state"), "-")
+    if state == "running" and job.get("pending_reason"):
+        return GPU_BUSY_STATE
+    return state
+
+
 def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
     """`task jobs` table: one row per job, oldest submission first."""
     rows = sorted(
@@ -529,7 +540,7 @@ def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
                 _str(j.get("task_id"), "-"),
                 _str(j.get("submitted_at"), "-"),
                 _str(j.get("host"), "-"),
-                _str(j.get("state"), "-"),
+                display_state(j),
             )
             for j in jobs
         ),
@@ -563,6 +574,7 @@ def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, o
         "jobid": j["jobid"],
         "task_id": j["task_id"],
         "state": j["state"],
+        "pending_reason": j.get("pending_reason"),
         "cancel_requested": j["cancel_requested"],
         "run": st.get("run"),
         "progress": st.get("progress"),

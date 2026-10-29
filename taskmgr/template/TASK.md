@@ -14,6 +14,15 @@ Filling instructions (for humans and AI agents):
       tt.write_progress("profiling", percent=40, message="kernel 3/8")
       tt.update_outputs(best_config={"block": 128}, speedup=1.37)
 - Put artifacts (profiles, CSVs, modified kernels) under ./artifacts/.
+- GPU contract: exit code 75 means "the GPU is held by another process and I did no
+  work"; taskmgr then starts the entry again after a short wait (the job shows as
+  "pending (gpu busy)") instead of failing it. Call tt.claim_gpu() before any work
+  (run.py does). If your own CUDA code later sees "device busy/unavailable", call
+  tt.gpu_busy("why") before producing side effects. Never exit 75 for any other reason:
+  such a task would be started again forever (until cancelled). If the CUDA work runs in
+  a subprocess, do not call claim_gpu() in the parent (on exclusive-process GPUs the
+  parent's context would block the child); let the child exit 75 and forward it with
+  tt.gpu_busy().
 - taskmgr only runs entry.argv; it never reads this file. If an AI agent should do the
   work, make entry.argv start that agent and point it at TASK.md.
 -->

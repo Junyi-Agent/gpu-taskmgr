@@ -89,6 +89,8 @@ task fetch <jobid> --host gpu1 --output ./results/
 - systemd unit 使用 `KillMode=process`，停止守护进程不会停止正在运行的任务。与为每个 shim 使用
   `systemd-run --scope` 相比，这种方式不需要访问 D-Bus（[[docs/install.zh-CN]]）。
 - 只管理任务所在的进程组；自行调用 `setsid()` 的进程会脱离管理（[[docs/assumptions.zh-CN]]）。
+- GPU 被其他进程占用的任务以 75 退出；shim 稍等后重新启动它，`task jobs` 显示
+  `pending (gpu busy)`（[[docs/task-package.zh-CN]] 的 GPU 约定）。
 - 仅用于测试的覆盖项在 [[docs/testing.zh-CN]] 中列出并标注，该文档也包含可选的真实 SSH 冒烟
   测试。
 
@@ -99,7 +101,8 @@ taskmgr/
   taskmgr.py      本地 CLI 入口（`task`）
   remote.py       远程入口（`taskmgr-remote`）：子命令、`serve`、`shim`
   daemon.py       调度守护进程：扫描队列、GPU 预留、启动 shim、恢复循环
-  shim.py         每次运行一个的监管进程：启动前检查、exec、wait、停止、收尾
+  shim.py         每次运行一个的监管进程：启动前检查、exec、wait、停止、收尾、
+                  GPU 忙退出（75）后重新启动
   monitor.py      停止流程、重启恢复检查、守护进程接管跟踪
   store.py        远程存储根目录、状态锁、job/runner 记录、结果合并
   package.py      校验、确定性打包、内容哈希、安全解包

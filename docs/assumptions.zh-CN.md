@@ -52,12 +52,20 @@ up: "[[taskmgr/README.zh-CN]]"
 18. 重试或自动重跑的作业有自己的 `submitted_at`（创建时间），所以 `task jobs` 把它列为单独一行，
     排在被重跑的作业之后。它沿用旧作业已解析的 GPU UUID，不重新校验。queued 作业如果已经有带执行身份的
     `runner.json`（不应出现），它变为 `unknown`，`error.kind = "record_incomplete"`，不派发。
+19. GPU 忙（desc-2 D17）：某次重新启动持续运行满 `gpu_retry_interval_seconds` 后才删除
+    `pending_reason`，而不是一启动就删除，这样反复退出 75 的作业不会在 `running` 和
+    `pending (gpu busy)` 之间来回跳。退出 75 后清理残留进程留下的 `leftover_processes` 警告会保留到
+    最终结果。重新启动时不再执行启动前检查。shim 在退出 75 与重新启动之间死亡时，`runner.json`
+    保留为 `runner.prev-N.json`。`unknown` 作业即使是退出 75 也不会重新排队。`CUDA_VISIBLE_DEVICES`
+    未设置时（在 taskmgr 之外运行），`claim_gpu()` 和为空时一样什么也不做。
 
 ## 限制
 
 - 只管理任务所在的进程组。自行调用 `setsid()`/`setpgid()` 的进程会离开该进程组，taskmgr 不会
   跟踪或停止它。
-- 不支持 MIG；不检测也不阻止 taskmgr 之外的进程使用 GPU。
+- 不支持 MIG；taskmgr 本身不检测也不阻止 taskmgr 之外的进程使用 GPU。遵守 GPU 约定（退出 75，
+  见 [[docs/task-package.zh-CN]]）的任务会等待这样的 GPU，而不是失败；不遵守的任务照旧失败。
+- 因其他原因退出 75 的任务会被一直重新启动，直到被取消。
 - `remote_root` 必须位于本地文件系统（flock 在 NFS 上不可靠）。
 - 不支持断点续跑：自动重跑从原始任务包重新开始。
 - 不安装任何软件或环境；venv 和所需路径必须已存在于服务器上。

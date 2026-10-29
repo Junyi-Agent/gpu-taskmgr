@@ -15,7 +15,7 @@ from . import gpu, procutil
 from .common import TaskmgrError, utcnow_iso
 from .monitor import STOP_OUTCOME, GroupStopper, mark_unknown, set_stopping
 from .records import ErrorInfo, Job, RemoteConfig, Runner, TaskEnvironment, TaskSpec
-from .store import Store, end_without_result, finalize_run, load_task
+from .store import Store, end_without_result, finalize_run, load_task, remove_tree
 
 
 def log(msg: str) -> None:
@@ -168,14 +168,51 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
         log("pre-start check failed: %s" % errors)
         return 0
 
-    argv = task["entry"]["argv"]
     assert path is not None  # resolve_entry succeeded: no pre-start errors
+    # A job queued again after a "GPU busy" exit whose shim died already has logs.
+    separator: str | None = None
+    if os.path.exists(os.path.join(jobdir, "stdout.log")):
+        separator = "--- taskmgr: launch after requeue (GPU busy) ---"
+    while True:
+        pid = launch(store, jobdir, runner, task, path, env, workdir, separator)
+        if supervise(store, jobid, jobdir, runner, pid, task, cfg) != "gpu_busy":
+            return 0
+        if not wait_for_gpu(store, jobid, jobdir, runner, cfg):
+            return 0
+        # Each launch starts from a fresh copy of package/.
+        remove_tree(workdir)
+        workdir = prepare_workdir(jobdir)
+        separator = "--- taskmgr: relaunch #%d after GPU busy ---" % runner.get(
+            "gpu_busy_retries", 0
+        )
+
+
+def launch(
+    store: Store,
+    jobdir: str,
+    runner: Runner,
+    task: TaskSpec,
+    path: str,
+    env: dict[str, str],
+    workdir: str,
+    separator: str | None,
+) -> int:
+    """Start the entry (Section 12.1): fork, the child setsid()s and waits on a pipe, the
+    identity record is written and fsynced, then the child is released to exec.
+
+    Returns the leader pid. `separator` is appended as a line to both logs first (logs are
+    appended across relaunches, never truncated).
+    """
+    argv = task["entry"]["argv"]
     out_fd = os.open(
         os.path.join(jobdir, "stdout.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
     )
     err_fd = os.open(
         os.path.join(jobdir, "stderr.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
     )
+    if separator:
+        for fd in (out_fd, err_fd):
+            _ = os.write(fd, (separator + "\n").encode())
     rfd, wfd = os.pipe()
     pid = os.fork()
     if pid == 0:  # child: new session, wait for the go signal, then exec
@@ -201,6 +238,11 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
     os.close(err_fd)
     _crash_point("before_identity")
     leader_start = procutil.start_time(pid)
+    # A relaunch replaces the identity and clears the previous launch's exit only here, so
+    # until the new identity is durable the record still shows the "GPU busy" exit.
+    for k in ("exited", "return_code", "signal"):
+        _ = runner.pop(k, None)
+    _ = runner.pop("ended_at", None)
     runner.update(
         {
             "boot_id": procutil.boot_id(),
@@ -212,6 +254,7 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
             "started_at": utcnow_iso(),
             "started_at_epoch": time.time(),
             "status": "running",
+            "exited": False,
         }
     )
     store.write_runner(jobdir, runner)  # fsynced before the child may exec (Section 12.1)
@@ -219,7 +262,75 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
     _ = os.write(wfd, b"x")
     os.close(wfd)
     log("started pid=%d argv=%s" % (pid, argv))
-    return supervise(store, jobid, jobdir, runner, pid, task, cfg)
+    return pid
+
+
+def set_waiting(store: Store, jobid: str, reason: str | None) -> bool:
+    """Set (or clear, with None) job.json pending_reason; the job stays running.
+
+    A leftover cleanup after the "GPU busy" exit left the job stopping/leftover; it goes
+    back to running. Returns False if the job is no longer running/stopping.
+    """
+    with store.state_lock():
+        jobdir, job = store.load_job(jobid)
+        if job["state"] not in ("running", "stopping"):
+            return False
+        changed = job.get("pending_reason") != reason
+        if (
+            reason is not None
+            and job["state"] == "stopping"
+            and job.get("stop_reason") == "leftover"
+        ):
+            job["state"] = "running"
+            job["stop_reason"] = None
+            changed = True
+        if changed:
+            if reason is None:
+                _ = job.pop("pending_reason", None)
+            else:
+                job["pending_reason"] = reason
+            _ = store.save_job(jobdir, job)
+        return True
+
+
+def wait_for_gpu(store: Store, jobid: str, jobdir: str, runner: Runner, cfg: RemoteConfig) -> bool:
+    """After a "GPU busy" exit (group gone): record it, wait gpu_retry_interval_seconds
+    while honoring cancel, and return True to relaunch. False: the job was finalized
+    (cancelled) or is no longer ours to run."""
+    code = runner.get("return_code")
+    interval = float(cfg.get("gpu_retry_interval_seconds", 2))
+    poll = float(cfg.get("control_poll_seconds", 2))
+    retries = runner.get("gpu_busy_retries", 0) + 1
+    runner.update(
+        {"status": "waiting_gpu", "gpu_busy_retries": retries, "last_gpu_busy_at": utcnow_iso()}
+    )
+    store.write_runner(jobdir, runner)
+    log("entry exited %s (GPU busy); relaunch #%d in %g s" % (code, retries, interval))
+    reason = "entry exited %s (GPU busy); retry #%d in %g s" % (code, retries, interval)
+    if not set_waiting(store, jobid, reason):
+        log("job is no longer running; not relaunching")
+        return False
+    deadline = time.monotonic() + interval
+    last_poll: float | None = None
+    while True:
+        now = time.monotonic()
+        if last_poll is None or now - last_poll >= poll:
+            last_poll = now
+            _, job = store.load_job(jobid)
+            if job["state"] not in ("running", "stopping"):
+                log("job is %s while waiting for the GPU; not relaunching" % job["state"])
+                return False
+            if job.get("cancel_requested"):
+                # Nothing is running, so the stop is confirmed at once:
+                # running -> stopping -> cancelled.
+                log("cancel requested while waiting for the GPU")
+                _ = set_stopping(store, jobid, "cancel")
+                job = finalize_run(store, jobid, status="cancelled")
+                log("finalized: %s" % job["state"])
+                return False
+        if now >= deadline:
+            return True
+        time.sleep(min(0.1, max(0.0, deadline - now)))
 
 
 def supervise(
@@ -230,10 +341,18 @@ def supervise(
     pid: int,
     task: TaskSpec,
     cfg: RemoteConfig,
-) -> int:
+) -> str:
+    """Supervise one launch until its process group is gone.
+
+    Returns "gpu_busy" when the entry exited with gpu_busy_exit_code and was not stopped
+    for cancel or timeout (nothing is finalized; the caller relaunches), else "done" (the
+    job was finalized or became unknown). timeout_seconds counts from this launch's start.
+    """
     t0 = time.monotonic()
     timeout = task.get("timeout_seconds")
     poll = float(cfg.get("control_poll_seconds", 2))
+    busy_code = store.gpu_busy_exit_code
+    retry_interval = float(cfg.get("gpu_retry_interval_seconds", 2))
     grace, confirm = cfg.get("stop_grace_seconds", 30), cfg.get("kill_confirm_seconds", 10)
     # cast: reap() (a closure) sets exit_status, so the checker must not narrow it to None.
     exit_status: int | None = cast("int | None", None)
@@ -279,6 +398,10 @@ def supervise(
             if now - last_poll >= poll:
                 last_poll = now
                 _, job = store.load_job(jobid)
+                if job.get("pending_reason") is not None and now - t0 >= retry_interval:
+                    # A relaunch that has kept running for one retry interval got its GPU;
+                    # clearing earlier would make the display flicker on every retry.
+                    _ = set_waiting(store, jobid, None)
                 if job.get("cancel_requested"):
                     stop_reason = "cancel"
                 elif job["state"] == "stopping" and job.get("stop_reason"):
@@ -295,7 +418,8 @@ def supervise(
             if r == "stopped":
                 break
             if r == "unconfirmed":
-                return unconfirmed(store, jobid, jobdir, runner, stop_reason, stopper.alive)
+                unconfirmed(store, jobid, jobdir, runner, stop_reason, stopper.alive)
+                return "done"
         time.sleep(0.1)
 
     if stop_reason is None:
@@ -315,17 +439,20 @@ def supervise(
                     break
                 if r == "unconfirmed":
                     runner["warnings"] = warnings
-                    return unconfirmed(store, jobid, jobdir, runner, "leftover", stopper.alive)
+                    unconfirmed(store, jobid, jobdir, runner, "leftover", stopper.alive)
+                    return "done"
                 time.sleep(0.1)
     if exit_status is None:
         _, st = os.waitpid(pid, 0)
         exit_status = st
         record_exit(st)
+    if stop_reason is None and busy_code is not None and runner.get("return_code") == busy_code:
+        return "gpu_busy"
     _crash_point("before_finalize")
     status = STOP_OUTCOME.get(stop_reason) if stop_reason else None
     job = finalize_run(store, jobid, status=status)
     log("finalized: %s" % job["state"])
-    return 0
+    return "done"
 
 
 def unconfirmed(
@@ -335,7 +462,7 @@ def unconfirmed(
     runner: Runner,
     reason: str | None,
     alive: list[int],
-) -> int:
+) -> None:
     runner["stop_unconfirmed_reason"] = reason
     store.write_runner(jobdir, runner)
     _ = mark_unknown(
@@ -346,7 +473,6 @@ def unconfirmed(
         {"alive_pids": alive},
     )
     log("stop unconfirmed, job is unknown; alive=%s" % alive)
-    return 0
 
 
 def main(store: Store, jobid: str, lock_fd: int) -> int:

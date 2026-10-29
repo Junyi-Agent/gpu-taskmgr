@@ -101,4 +101,6 @@ A second `serve` on the same root exits with code 2 (it cannot take `locks/daemo
 | `kill_confirm_seconds` | 10 | wait after SIGKILL before declaring `unknown` |
 | `control_poll_seconds` | 2 | how often shim / daemon re-read `job.json` for cancel; health-check period |
 | `scheduler_poll_seconds` | 1 | scheduling pass interval (assumption: not in the spec) |
+| `gpu_busy_exit_code` | 75 | entry exit code meaning "GPU busy, no work done": the shim starts the entry again instead of finishing the job; `null` turns this off (75 is then an ordinary failure) |
+| `gpu_retry_interval_seconds` | 2 | wait between a GPU-busy exit and the relaunch |
 | `base_env` | `{}` | overrides/extends the entry process base environment |

@@ -13,12 +13,13 @@ from typing import Literal, TypedDict, cast
 from . import procutil
 from .common import TERMINAL_STATES, try_flock_fd, try_read_json, utcnow_iso
 from .records import Job, JsonDict, JsonValue, Runner
-from .store import Store, finalize_run, interrupt_run, load_task
+from .store import Store, finalize_run, interrupt_run, load_task, remove_tree
 
 STOP_OUTCOME = {"cancel": "cancelled", "timeout": "timed_out"}
 
 Decision = Literal[
     "none",
+    "requeued",
     "unknown",
     "restored",
     "shim_alive",
@@ -37,7 +38,7 @@ class _AssessmentBase(TypedDict):
 class Assessment(_AssessmentBase, total=False):
     """Result of `assess`. Which optional keys are present depends on `decision`:
 
-    state      none, restored, interrupted, finalized
+    state      none, restored, interrupted, finalized, requeued
     reason     unknown
     identity   unknown (except record_incomplete), shim_alive, still_running, handed_to_daemon
     alive_pids still_running, handed_to_daemon, takeover
@@ -170,6 +171,42 @@ def may_have_started(runner: Runner) -> bool:
     return runner.get("pgid") is not None or runner.get("boot_id") is not None
 
 
+def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
+    """The shim died between a "GPU busy" exit and the relaunch (process group gone).
+
+    The entry did no work, so the same job goes back to queued (keeping its jobid and
+    enqueue_seq; not an interruption, `auto_restarts` is unchanged): the workdir is removed
+    and runner.json is moved aside as runner.prev-N.json. A requested cancel ends the job
+    as cancelled instead. Returns None when the run record does not show such an exit or
+    the job is not running/stopping (an unknown job is never queued again).
+    """
+    with store.state_lock():
+        jobdir, job = store.load_job(jobid)
+        runner, _ = store.read_runner(jobdir)
+        if (
+            job["state"] not in ("running", "stopping")
+            or runner is None
+            or not store.ended_gpu_busy(runner)
+        ):
+            return None
+        if job.get("cancel_requested"):
+            _ = set_stopping(store, jobid, "cancel")
+            return finalize_run(store, jobid, status="cancelled")
+        workdir = os.path.join(jobdir, "workdir")
+        if os.path.lexists(workdir):
+            remove_tree(workdir)
+        # job.json first: a crash before the rename leaves a queued job whose runner.json
+        # shows the busy exit, which dispatch recognizes and sets aside as well.
+        job["state"] = "queued"
+        job["dispatched_at"] = None
+        job["stop_reason"] = None
+        job["error"] = None
+        _ = job.pop("pending_reason", None)
+        jobdir = store.save_job(jobdir, job)
+        _ = store.set_runner_aside(jobdir)
+        return job
+
+
 def finish_stopped(
     store: Store,
     jobid: str,
@@ -177,7 +214,15 @@ def finish_stopped(
     exited: bool,
     warnings: Iterable[str] = (),
 ) -> Job:
-    """Finalize once the process group is confirmed gone."""
+    """Finalize once the process group is confirmed gone.
+
+    An entry that exited with gpu_busy_exit_code (and was not stopped for cancel or
+    timeout) is not finalized: the job is queued again (`requeue_gpu_busy`).
+    """
+    if stop_reason not in STOP_OUTCOME and exited:
+        requeued = requeue_gpu_busy(store, jobid)
+        if requeued is not None:
+            return requeued
     if stop_reason in STOP_OUTCOME:
         return finalize_run(store, jobid, status=STOP_OUTCOME[stop_reason], warnings=warnings)
     if exited:
@@ -223,6 +268,12 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
         return {"decision": "shim_alive", "identity": identity_of(runner)}
     keep_fd = False
     try:
+        if runner.get("status") == "waiting_gpu":
+            # The shim died while waiting to relaunch after a "GPU busy" exit. It writes
+            # this status only once the process group is gone, so nothing is running.
+            j = requeue_gpu_busy(store, jobid)
+            if j is not None:
+                return {"decision": "requeued", "state": j["state"]}
         stop_reason = job.get("stop_reason") if state in ("stopping", "unknown") else None
         exited = bool(runner.get("exited"))
         if job.get("cancel_requested") and (
@@ -255,7 +306,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
         if runner.get("boot_id") != current_boot:
             if exited:
                 j = finish_stopped(store, jobid, stop_reason, True)
-                return {"decision": "finalized", "state": j["state"]}
+                return {"decision": _finished(j), "state": j["state"]}
             j = interrupt_run(store, jobid, "machine rebooted")
             return {"decision": "interrupted", "state": j["state"]}
         pgid, leader_start = _group_identity(runner)
@@ -274,7 +325,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             if "leftover" in (job.get("stop_reason"), runner.get("stop_unconfirmed_reason")):
                 warnings = ["leftover_processes"]
             j = finish_stopped(store, jobid, stop_reason, exited, warnings)
-            return {"decision": "finalized", "state": j["state"]}
+            return {"decision": _finished(j), "state": j["state"]}
         if resolve:
             if runner.get("stop_unconfirmed_reason"):
                 # SIGKILL already failed once: an operator has to look at it.
@@ -301,6 +352,10 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
     finally:
         if lock_fd is not None and not keep_fd:
             os.close(lock_fd)
+
+
+def _finished(job: Job) -> Decision:
+    return "requeued" if job["state"] == "queued" else "finalized"
 
 
 def _group_identity(runner: Runner) -> tuple[int, int]:

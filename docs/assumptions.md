@@ -62,12 +62,23 @@ Other language: [[docs/assumptions.zh-CN]]
     resolved GPU UUIDs of the old job and is not re-validated. A queued job that already
     has a `runner.json` with an execution identity (not expected) becomes `unknown` with
     `error.kind = "record_incomplete"` instead of being dispatched.
+19. GPU busy (desc-2 D17): `pending_reason` is removed once a relaunch has kept running
+    for `gpu_retry_interval_seconds`, not at the moment it starts, so a job that keeps
+    getting exit 75 does not flicker between `running` and `pending (gpu busy)`. A
+    leftover cleanup after exit 75 keeps the `leftover_processes` warning for the final
+    result. The pre-start checks are not repeated for a relaunch. When the shim died
+    between exit 75 and the relaunch, `runner.json` is kept as `runner.prev-N.json`. An
+    `unknown` job is never queued again, also after exit 75. `claim_gpu()` does nothing
+    when `CUDA_VISIBLE_DEVICES` is unset (a run outside taskmgr), as when it is empty.
 
 ## Limitations
 
 - Only the task's process group is managed. A process that calls `setsid()`/`setpgid()`
   itself leaves the group and is neither tracked nor stopped by taskmgr.
-- No MIG support; GPU usage by processes outside taskmgr is not detected or prevented.
+- No MIG support; GPU usage by processes outside taskmgr is not detected or prevented by
+  taskmgr itself. A task that follows the GPU contract (exit 75, [[docs/task-package]])
+  waits for such a GPU instead of failing; one that does not fails as before.
+- A task that exits 75 for another reason is started again until it is cancelled.
 - `remote_root` must be on a local filesystem (flock is unreliable on NFS).
 - No checkpoint/resume: an automatic re-run starts from the original package.
 - No installation of software or environments; venvs and paths must exist on the server.

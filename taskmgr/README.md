@@ -102,6 +102,9 @@ Points the spec asks the README to state:
   ([[docs/install]]).
 - Only the task's process group is managed. A process that calls `setsid()` itself
   escapes ([[docs/assumptions]]).
+- A task whose GPU is held by another process exits 75; the shim starts it again after a
+  short wait and `task jobs` shows `pending (gpu busy)` ([[docs/task-package]], GPU
+  contract).
 - Test-only overrides are listed and marked in [[docs/testing]], which also has the
   optional smoke test against real SSH.
 
@@ -112,7 +115,8 @@ taskmgr/
   taskmgr.py      local CLI entry (`task`)
   remote.py       remote entry (`taskmgr-remote`): subcommands, `serve`, `shim`
   daemon.py       scheduler daemon: queue scan, GPU reservation, shim spawn, recovery loop
-  shim.py         per-run supervisor: pre-start checks, exec, wait, stop, finalize
+  shim.py         per-run supervisor: pre-start checks, exec, wait, stop, finalize,
+                  relaunch after a GPU-busy exit (75)
   monitor.py      stop procedure, restart-recovery checks, daemon takeover tracking
   store.py        remote storage root, state lock, job/runner records, result merge
   package.py      validation, deterministic packing, content hash, safe extraction

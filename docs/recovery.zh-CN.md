@@ -16,7 +16,14 @@ up: "[[taskmgr/README.zh-CN]]"
 1. `runner.json` 已 final → 恢复对应终态（如果 `result.json._taskmgr` 缺失，从 `runner.json`
    重新生成）；状态为 `interrupted` → 第 5 步。
 2. 已记录 `exited` 但未 final → 完成收尾（残留进程检查、合并结果、标记 final），不重跑。
-3. queued → 继续等待。
+   例外是 GPU 忙：如果退出码是 `gpu_busy_exit_code`，且作业不是因取消或超时而停止，说明入口
+   命令没有做任何工作。进程组全部退出后（若还有存活成员，先经过接管），作业以**同一个** jobid
+   和 `enqueue_seq` 回到 `queued`：删除 `workdir/`，把 `runner.json` 重命名为
+   `runner.prev-N.json`，清空 `dispatched_at`，保留日志。这不算中断：`auto_restarts` 不变，也不受
+   `max_auto_restarts` 限制。若已请求取消，作业改为以 `cancelled` 结束。`runner.json` 状态为
+   `waiting_gpu` 且 shim 已死（在等待重新启动时死亡，进程组此前已全部退出）时同样处理。
+3. queued → 继续等待。queued 作业的 `runner.json` 如果记录的是这种 GPU 忙退出（重新排队过程中
+   崩溃），派发时先把该记录移到一边，再正常派发。
 4. running/stopping 且未记录 `exited`：
    1. `shim.lock` 被持有 → shim 还活着，不做处理。
    2. 没有身份记录 → 入口命令从未执行 → 第 5 步。
@@ -37,7 +44,8 @@ up: "[[taskmgr/README.zh-CN]]"
 
 ## 手动处理 `unknown`
 
-`unknown` 作业不会自动重跑，也不会释放 GPU。
+`unknown` 作业不会自动重跑，也不会释放 GPU（GPU 忙退出后也一样：对这样的作业执行 resolve，会以
+退出码 75 结束为 `failed`）。
 
 1. `task resolve <jobid> --host H` 重新执行检查。如果进程组已全部退出，按上面的规则结束作业（已
    请求取消的标记为 cancelled）。如果仍有进程存活，或记录无法读取，作业保持 unknown，输出中会给出

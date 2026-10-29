@@ -15,7 +15,7 @@ up: "[[taskmgr/README.zh-CN]]"
 | `TASK.md` | 是 | 供人或 AI agent 阅读；taskmgr 从不读取它 |
 | `progress.json` | 是 | 初始进度 |
 | 入口脚本、代码、输入文件 | 按需 | |
-| `taskmgr_task.py` | 模板自带 | 仅依赖标准库的辅助模块：`write_progress`、`update_progress`、`write_result`、`update_outputs`（flock + 原子替换） |
+| `taskmgr_task.py` | 模板自带 | 仅依赖标准库的辅助模块：`write_progress`、`update_progress`、`write_result`、`update_outputs`（flock + 原子替换）；`claim_gpu`、`gpu_busy`（见下文 GPU 约定） |
 
 `task.json`（允许出现未知的额外键，会被忽略）：
 
@@ -80,3 +80,28 @@ stdin 接到 `/dev/null`；stdout/stderr 分别写入作业目录下的 `stdout.
 
 一个作业只运行一次。`retry_of` 是本作业重跑的 jobid（`task retry` 或中断后的自动重跑），直接提交的
 作业为 `null`。
+
+## GPU 约定：退出码 75
+
+GPU 服务器运行在 Exclusive_Process 计算模式下，taskmgr 之外的进程也可能占着某块 GPU，这时无法在
+这块 GPU 上创建 CUDA context。taskmgr 不为此查询 nvidia-smi，而是由任务自己报告：
+
+- 入口进程以 **75**（`EX_TEMPFAIL`，即 `taskmgr_task.GPU_BUSY_EXIT_CODE`）退出，表示"拿不到
+  GPU，没有做任何工作，稍后再启动我"。shim 等待 `gpu_retry_interval_seconds`（默认 2 秒）后，在
+  一份全新的包副本中重新启动入口命令（日志追加写入，并加一行分隔）。作业保持 `running`，继续占用
+  它的 GPU，`task jobs` 显示为 `pending (gpu busy)`。等待时间不计入 `timeout_seconds`，每次启动
+  都从自己的启动时刻计时。等待期间可以 `task cancel`。
+- 在产生任何副作用（workdir 之外的文件、结果）之前退出 75；GPU 忙的那次启动的 workdir 会被丢弃。
+- 不要因为其他原因退出 75：这样的任务会被一直重新启动，直到被取消。服务器可以关闭这个约定
+  （`gpu_busy_exit_code: null`），此时 75 就是普通的失败。
+- `taskmgr_task.claim_gpu()`（模板的 `run.py` 第一步就调用它）：`CUDA_VISIBLE_DEVICES` 为空或未
+  设置时什么也不做；否则用 ctypes 加载 `libcuda.so.1`，调用 `cuInit`，并对每个可见设备调用
+  `cuDeviceGet` 和 `cuDevicePrimaryCtxRetain`。primary context 在进程整个生命周期内保持 retain，
+  torch 等框架会复用它。任一调用返回 `CUDA_ERROR_DEVICE_UNAVAILABLE`（46）时调用
+  `gpu_busy("GPU <i> (<uuid>) is held by another process ...")`；其他 CUDA 错误以及找不到
+  `libcuda.so.1` 时抛出 `RuntimeError`（任务声明了 GPU，这属于环境问题）。应在耗时的 import 或编译
+  之前调用。它的 `load` 参数用于在测试中替换库加载函数。
+- `taskmgr_task.gpu_busy(message="")` 把消息写到 stderr 并以 75 退出。你自己的 CUDA 代码遇到
+  "device busy/unavailable" 时调用它。
+- 如果 CUDA 工作在子进程中进行，不要在父进程里调用 `claim_gpu()`：在 exclusive-process 模式下，
+  父进程的 context 会挡住子进程。让子进程退出 75，父进程再用 `gpu_busy()` 转发。

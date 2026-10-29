@@ -86,6 +86,9 @@ class Job(_JobBase, total=False):
     job linked through `retry_of` / `retried_as`."""
 
     ended_at: str | None
+    # Set by the shim while it waits to relaunch an entry that exited with
+    # gpu_busy_exit_code (the job stays running); cleared when a launch gets going.
+    pending_reason: str | None
 
 
 class TakeoverNote(TypedDict):
@@ -158,6 +161,8 @@ class Runner(_RunnerBase, total=False):
     stop_unconfirmed_reason: str | None
     interrupted_reason: str
     unknown: UnknownNote
+    gpu_busy_retries: int
+    last_gpu_busy_at: str
 
 
 class TaskEntry(TypedDict):
@@ -226,6 +231,8 @@ class RemoteConfig(TypedDict):
     kill_confirm_seconds: float
     control_poll_seconds: float
     scheduler_poll_seconds: float
+    gpu_busy_exit_code: int | None
+    gpu_retry_interval_seconds: float
     base_env: dict[str, str]
 
 

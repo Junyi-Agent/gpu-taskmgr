@@ -21,7 +21,7 @@ User-facing details (commands, schemas, config defaults) are in [[taskmgr/README
 | `taskmgr/taskmgr.py` | local CLI entry (`task`) |
 | `taskmgr/remote.py` | remote entry (`taskmgr-remote`): subcommands, `serve`, `shim` |
 | `taskmgr/daemon.py` | scheduler loop, shim spawn, startup recovery, dead-shim detection |
-| `taskmgr/shim.py` | per-run supervisor (one run per job, see D16) |
+| `taskmgr/shim.py` | per-run supervisor (one run per job, see D16; relaunches after a GPU-busy exit, see D17) |
 | `taskmgr/monitor.py` | stop procedure, recovery check (§12.2), takeover tracker |
 | `taskmgr/store.py` | remote root, state lock, job/runner records, result merge, finalization |
 | `taskmgr/package.py` | validation, deterministic packing, content hash, safe extraction |
@@ -212,7 +212,8 @@ stopping → unknown, so the shim never goes running → unknown.
 ## D15. Known limitations
 
 - Only the task's process group is managed; a process that calls `setsid()` itself escapes.
-- No MIG support. Use of a GPU by processes outside taskmgr is not detected.
+- No MIG support. Use of a GPU by processes outside taskmgr is not detected by taskmgr;
+  a task that follows the GPU contract (D17) waits for such a GPU instead of failing.
 - `remote_root` must be on a local filesystem.
 - An automatic re-run starts from the original package, with no checkpoint resume.
 - Job directories written by protocol 1 (`attempts/NNNN/`) are not migrated (D16).
@@ -256,3 +257,47 @@ Implementation notes:
 - A retry or re-run job gets its own `submitted_at` (creation time).
 - Protocol-1 job directories on a server are not migrated; drain the server and start the
   upgraded daemon on an empty `remote_root`.
+
+## D17. GPU busy: exit 75 means "start me again later" (§8, §10.4, §11, §12.2, §13.3)
+
+User decision 2026-10-30. A task must not fail because a process outside taskmgr holds its
+GPU; it waits. The H200 servers run in Exclusive_Process compute mode and another
+(root-owned) GPU queue keeps starting processes, so a CUDA context cannot be created while
+such a process holds the GPU. The user rejected having the daemon query nvidia-smi for this
+and decided that the task reports it with exit code 75 (`EX_TEMPFAIL`) and the shim keeps
+starting it again; the convention lives in the task template, so every `task init` package
+follows it. Like D16, this section overrides desc-1 where they conflict.
+
+| desc-1 | Now | Reason |
+| --- | --- | --- |
+| §10.4 / §11: the entry's exit is final; the shim finalizes from the exit code | an exit with `gpu_busy_exit_code` (config, default 75, `null` disables) that was not a stop for cancel or timeout is not finalized: after the leftover cleanup the shim records `runner.json` `status: "waiting_gpu"`, `gpu_busy_retries`, `last_gpu_busy_at`, sets `job.json` `pending_reason`, waits `gpu_retry_interval_seconds` (default 2; cancel is honored), then starts the entry again in a fresh workdir with the same fork / setsid / pipe-gated exec / identity-record protocol (new identity); logs are appended with a separator line | user decision 2026-10-30 |
+| §13.3: `timeout_seconds` counts from the start of the attempt's entry process | it counts from the start of each launch; time spent waiting for the GPU does not count | user decision 2026-10-30 (only a launch that actually runs can time out) |
+| §8: states are displayed as they are | the job stays `running` (and keeps its GPUs, so FIFO on those GPUs is preserved); `task jobs` shows STATE `pending (gpu busy)` (yellow) when `pending_reason` is set; `task status` and `task jobs --detail` include `pending_reason`, and `run` adds `gpu_busy_retries`, `last_gpu_busy_at` | user decision 2026-10-30 |
+| §12.2: `exited` but not final → finish finalization, no re-run | if the exit code is `gpu_busy_exit_code` (or `runner.json` is `waiting_gpu`) and the shim is dead, the entry did no work: once the group is gone the **same** job goes back to `queued` (same jobid and `enqueue_seq`; `workdir/` removed, `runner.json` renamed to `runner.prev-N.json`, `dispatched_at` cleared). Not an interruption: `auto_restarts` unchanged, `max_auto_restarts` does not apply; `cancel_requested` → cancelled | user decision 2026-10-30 |
+| (not in desc-1) task helper | `taskmgr_task.py` gets `GPU_BUSY_EXIT_CODE = 75`, `gpu_busy(message)` (stderr + exit 75) and `claim_gpu()` (ctypes on `libcuda.so.1`: `cuInit`, then `cuDeviceGet` + `cuDevicePrimaryCtxRetain` per visible device, contexts kept for the process; `CUDA_ERROR_DEVICE_UNAVAILABLE` → `gpu_busy`, other errors → `RuntimeError`); the template `run.py` calls `claim_gpu()` first and `TASK.md` states the contract | user decision 2026-10-30 ("写到 task template 里") |
+
+Implementation notes:
+
+- The daemon does not look at GPUs for this; only the shim and the task are involved.
+- `runner.json` keeps `exited/return_code/signal/ended_at` of the busy launch until the next
+  identity record is written, so a shim crash at any point between the busy exit and the
+  relaunch leaves a record that recovery recognizes (`store.Store.ended_gpu_busy`). A crash
+  while the job is being queued again (job.json already `queued`, `runner.json` not yet
+  renamed) is repaired by dispatch, which sets such a record aside instead of marking the
+  job `unknown`.
+- `pending_reason` is removed once a relaunch has kept running for
+  `gpu_retry_interval_seconds` (checked at the shim's `control_poll_seconds` cadence) or
+  when the job ends, not when the relaunch starts; otherwise a job that keeps getting exit
+  75 would flicker between `running` and `pending (gpu busy)`.
+- A leftover cleanup after exit 75 moves the job to `stopping` / `leftover` as usual; the
+  shim moves it back to `running` when it starts waiting. The `leftover_processes` warning
+  is kept for the final result.
+- Pre-start checks run once per shim, not per relaunch.
+- An `unknown` job is never queued again: `task resolve` of one whose last exit was 75 ends
+  it `failed` (exit code 75).
+- Limitation: a task that exits 75 for another reason is started again until cancelled.
+  `claim_gpu()` has to run in the process that does the CUDA work; with a CUDA subprocess
+  the parent must not call it (the parent's context would block the child) and forwards
+  the child's 75 with `gpu_busy()`.
+- The protocol version stays 2: the CLI only gains optional fields (`pending_reason`,
+  `gpu_busy_retries`, `last_gpu_busy_at`) and older CLIs ignore them.

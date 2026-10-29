@@ -36,9 +36,12 @@ JOBID             TASK_ID  SUBMITTED             HOST           STATE
 b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 ```
 
-- 按提交时间（UTC）排序。stdout 是终端时 STATE 带颜色（queued 黄、running 青、stopping 品红、
-  unknown 粗体品红、succeeded 绿、failed / invalid_result / timed_out 红、cancelled 灰）；设置
-  `NO_COLOR` 或 `TERM=dumb` 时关闭，`--color always|never` 可强制指定。
+- running 作业的入口进程因 GPU 被其他进程占用而退出 75、正在等待重新启动时，STATE 显示为
+  `pending (gpu busy)`（见 [[docs/task-package.zh-CN]] 的 GPU 约定）。它的状态仍是 `running`；
+  `--detail` 和 `task status` 在 `pending_reason` 中给出原因。
+- 按提交时间（UTC）排序。stdout 是终端时 STATE 带颜色（queued 和 `pending (gpu busy)` 黄、
+  running 青、stopping 品红、unknown 粗体品红、succeeded 绿、failed / invalid_result / timed_out
+  红、cancelled 灰）；设置 `NO_COLOR` 或 `TERM=dumb` 时关闭，`--color always|never` 可强制指定。
 - 连不上的服务器在 stderr 报告（`warning: H unreachable, ...`）；退出码规则不变（至少一台服务器有
   响应为 0，否则为 2）。表格模式下的错误只写到 stderr。
 - `--detail` 改为输出 JSON 对象 `{"complete", "errors", "jobs"}`。
@@ -56,8 +59,9 @@ submission key，并打印重试命令 `task submit --host H --submission-key K 
 改投其他服务器。
 
 对未结束的作业，`task status` 输出
-`{"host", "jobid", "task_id", "state", "cancel_requested", "run": {status, dispatched_at,
-started_at, exited, return_code, signal, takeovers, identity} 或 null, "progress":
+`{"host", "jobid", "task_id", "state", "pending_reason", "cancel_requested", "run": {status,
+dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries,
+last_gpu_busy_at, identity} 或 null, "progress":
 <progress.json 或 null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",
 "complete"}`。对已结束的作业，输出最终的 `result.json`，并在顶层加上 `host`、`complete`、
 `retry_of` 和 `retried_as`。

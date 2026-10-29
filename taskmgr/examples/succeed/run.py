@@ -12,6 +12,7 @@ class Args(argparse.Namespace):
 
 
 def main() -> None:
+    tt.claim_gpu()  # no GPUs declared: CUDA_VISIBLE_DEVICES is empty, so this does nothing
     ap = argparse.ArgumentParser()
     _ = ap.add_argument("--size", type=int, default=64)
     args = ap.parse_args(namespace=Args())

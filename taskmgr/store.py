@@ -166,6 +166,38 @@ class Store:
     def write_runner(jobdir: str, runner: Runner) -> None:
         atomic_write_json(os.path.join(jobdir, "runner.json"), runner)
 
+    @staticmethod
+    def set_runner_aside(jobdir: str) -> str | None:
+        """Rename runner.json to the first free runner.prev-N.json (kept for inspection)."""
+        src = os.path.join(jobdir, "runner.json")
+        if not os.path.exists(src):
+            return None
+        i = 1
+        while os.path.lexists(os.path.join(jobdir, "runner.prev-%d.json" % i)):
+            i += 1
+        dst = os.path.join(jobdir, "runner.prev-%d.json" % i)
+        os.rename(src, dst)
+        fsync_dir(jobdir)
+        return dst
+
+    # -- GPU busy exits (the entry could not get its GPU) ----------------------
+    @property
+    def gpu_busy_exit_code(self) -> int | None:
+        """The exit code meaning "GPU busy, start me again"; None when disabled."""
+        code: object = self.config.get("gpu_busy_exit_code", 75)
+        return code if isinstance(code, int) and not isinstance(code, bool) else None
+
+    def ended_gpu_busy(self, runner: Runner) -> bool:
+        """Whether a non-final run record shows an entry that exited for "GPU busy" and was
+        not relaunched yet: the shim is between such an exit and the next launch, so no
+        work was done and the job can simply be queued again."""
+        if runner.get("final"):
+            return False
+        if runner.get("status") == "waiting_gpu":
+            return True
+        code = self.gpu_busy_exit_code
+        return bool(runner.get("exited")) and code is not None and runner.get("return_code") == code
+
 
 def has_run(job: Job) -> bool:
     """Whether the job was ever dispatched (and so has a run record and run files)."""
@@ -185,6 +217,7 @@ def job_summary(job: Job) -> dict[str, object]:
         "error": job.get("error"),
         "retry_of": job.get("retry_of"),
         "retried_as": job.get("retried_as", []),
+        "pending_reason": job.get("pending_reason"),
     }
 
 
@@ -389,6 +422,7 @@ def finalize_run(
         job["state"] = status
         job["error"] = meta.get("error")
         job["ended_at"] = runner.get("ended_at") or utcnow_iso()
+        _ = job.pop("pending_reason", None)
         if job_extra:
             cast(dict[str, object], cast(object, job)).update(job_extra)
         _ = store.save_job(jobdir, job)
@@ -541,6 +575,7 @@ def end_without_result(
     job["state"] = state
     job["error"] = error
     job["ended_at"] = utcnow_iso()
+    _ = job.pop("pending_reason", None)
     return store.save_job(jobdir, job)
 
 

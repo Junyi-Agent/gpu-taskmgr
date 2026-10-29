@@ -163,6 +163,11 @@ class Daemon:
         if job["state"] != "queued":
             return None
         old, _ = st.read_runner(jobdir)
+        if old is not None and st.ended_gpu_busy(old):
+            # A crash while a "GPU busy" job was being queued again (monitor.requeue_gpu_busy)
+            # left its last run record behind; that run did no work.
+            _ = st.set_runner_aside(jobdir)
+            old = None
         if old is not None:
             # A crash between writing runner.json and job.json leaves a queued job with a
             # run record. Without an identity nothing was started: dispatch again. With

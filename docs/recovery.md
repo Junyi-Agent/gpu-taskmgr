@@ -17,7 +17,17 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
 1. `runner.json` final → restore the terminal state (regenerate `result.json._taskmgr` from
    `runner.json` if missing); `interrupted` → step 5.
 2. `exited` but not final → finish finalization (leftover check, merge, final). No re-run.
-3. queued → keep waiting.
+   Exception, GPU busy: if the exit code is `gpu_busy_exit_code` and the job was not
+   stopped for cancel or timeout, the entry did no work. Once the group is gone (after a
+   takeover if members are alive) the job goes back to `queued` with the **same** jobid
+   and `enqueue_seq`: `workdir/` is removed, `runner.json` is renamed to
+   `runner.prev-N.json`, `dispatched_at` is cleared, the logs are kept. This is not an
+   interruption: `auto_restarts` does not change and `max_auto_restarts` does not apply.
+   With `cancel_requested` the job ends `cancelled` instead. The same applies to
+   `runner.json` status `waiting_gpu` with the shim dead (it died while waiting to
+   relaunch; the group was already gone).
+3. queued → keep waiting. A queued job whose `runner.json` shows such a GPU-busy exit (a
+   crash while it was being queued again) has the record set aside and is dispatched.
 4. running/stopping without `exited`:
    1. `shim.lock` held → shim alive, nothing to do.
    2. no identity → entry never ran → step 5.
@@ -39,7 +49,8 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
 
 ## Resolving `unknown` manually
 
-`unknown` jobs never re-run and keep their GPUs.
+`unknown` jobs never re-run and keep their GPUs (also after a GPU-busy exit: resolving
+such a job ends it `failed` with exit code 75).
 
 1. `task resolve <jobid> --host H` re-runs the check. If the group is gone the job ends by
    the rules above (cancelled if cancel was requested). If processes are still alive, or

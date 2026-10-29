@@ -15,7 +15,7 @@ Other language: [[docs/task-package.zh-CN]]
 | `TASK.md` | yes | for humans/agents; taskmgr never reads it |
 | `progress.json` | yes | initial progress |
 | entry script, code, inputs | as needed | |
-| `taskmgr_task.py` | template | stdlib helper: `write_progress`, `update_progress`, `write_result`, `update_outputs` (flock + atomic replace) |
+| `taskmgr_task.py` | template | stdlib helper: `write_progress`, `update_progress`, `write_result`, `update_outputs` (flock + atomic replace); `claim_gpu`, `gpu_busy` (GPU contract below) |
 
 `task.json` (unknown extra keys are allowed and ignored):
 
@@ -81,3 +81,36 @@ stdin is `/dev/null`; stdout/stderr go to `stdout.log` / `stderr.log` in the job
 
 A job runs once. `retry_of` is the jobid this job re-runs (`task retry` or an automatic
 re-run after an interruption), `null` for a submission.
+
+## GPU contract: exit code 75
+
+The GPU servers run in Exclusive_Process compute mode, and processes outside taskmgr can
+hold a GPU; then no CUDA context can be created on it. taskmgr does not query nvidia-smi
+for this. Instead the task reports it:
+
+- Exit code **75** (`EX_TEMPFAIL`, `taskmgr_task.GPU_BUSY_EXIT_CODE`) from the entry
+  process means "I could not get the GPU and did no work; start me again later". The
+  shim then waits `gpu_retry_interval_seconds` (default 2) and starts the entry again
+  in a fresh copy of the package (logs are appended, with a separator line). The job
+  stays `running`, keeps its GPUs, and `task jobs` shows it as `pending (gpu busy)`.
+  Waiting does not count toward `timeout_seconds`; each launch is timed from its own start.
+  `task cancel` works while it waits.
+- Exit 75 before producing side effects (files outside the workdir, results); the workdir
+  of a busy launch is thrown away.
+- Never exit 75 for any other reason: such a task is started again forever, until it is
+  cancelled. The server can turn the convention off (`gpu_busy_exit_code: null`), and
+  then 75 is an ordinary failure.
+- `taskmgr_task.claim_gpu()` (the template's `run.py` calls it first): if
+  `CUDA_VISIBLE_DEVICES` is empty or unset it does nothing; otherwise it loads
+  `libcuda.so.1` with ctypes, calls `cuInit` and, for every visible device, `cuDeviceGet` and
+  `cuDevicePrimaryCtxRetain`. The primary contexts stay retained for the life of the
+  process, and frameworks such as torch reuse them. If a call returns
+  `CUDA_ERROR_DEVICE_UNAVAILABLE` (46) it calls `gpu_busy("GPU <i> (<uuid>) is held by
+  another process ...")`; other CUDA errors and a missing `libcuda.so.1` raise
+  `RuntimeError` (the task declared GPUs, so that is a setup problem). Call it before
+  slow imports or compilation. Its `load` argument replaces the library loader in tests.
+- `taskmgr_task.gpu_busy(message="")` prints the message to stderr and exits 75. Call it
+  when your own CUDA code sees "device busy/unavailable".
+- If the CUDA work runs in a subprocess, do not call `claim_gpu()` in the parent: in
+  exclusive-process mode the parent's context would block the child. Let the child exit 75
+  and forward it with `gpu_busy()`.

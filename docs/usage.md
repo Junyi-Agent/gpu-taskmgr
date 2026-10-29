@@ -36,10 +36,14 @@ JOBID             TASK_ID  SUBMITTED             HOST           STATE
 b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 ```
 
-- Rows are sorted by submission time (UTC). STATE is colored (queued yellow, running cyan,
-  stopping magenta, unknown bold magenta, succeeded green, failed / invalid_result /
-  timed_out red, cancelled gray) when stdout is a terminal; `NO_COLOR` or `TERM=dumb` turns it
-  off, `--color always|never` overrides.
+- A running job whose entry exited 75 because its GPU was held by another process, and
+  which waits to be started again, shows STATE `pending (gpu busy)` (see
+  [[docs/task-package]], GPU contract). Its state is still `running`; `--detail` and
+  `task status` show the reason in `pending_reason`.
+- Rows are sorted by submission time (UTC). STATE is colored (queued and
+  `pending (gpu busy)` yellow, running cyan, stopping magenta, unknown bold magenta,
+  succeeded green, failed / invalid_result / timed_out red, cancelled gray) when stdout is
+  a terminal; `NO_COLOR` or `TERM=dumb` turns it off, `--color always|never` overrides.
 - Unreachable servers are reported on stderr (`warning: H unreachable, ...`); the exit code
   rules are unchanged (0 if at least one server answered, 2 otherwise). Errors in table mode
   go to stderr only.
@@ -58,8 +62,9 @@ reply), stderr names the chosen host and the submission key and prints the retry
 `task submit --host H --submission-key K PATH`; the CLI never resubmits to another server.
 
 `task status` for an unfinished job prints
-`{"host", "jobid", "task_id", "state", "cancel_requested", "run": {status, dispatched_at,
-started_at, exited, return_code, signal, takeovers, identity} or null, "progress":
+`{"host", "jobid", "task_id", "state", "pending_reason", "cancel_requested", "run": {status,
+dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries,
+last_gpu_busy_at, identity} or null, "progress":
 <progress.json or null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",
 "complete"}`. For a finished job it prints the final `result.json` with `host`, `complete`,
 `retry_of` and `retried_as` added at the top level.

@@ -8,6 +8,9 @@ import taskmgr_task as tt
 
 
 def main() -> None:
+    # Take both GPUs first; if another process holds one, exit 75 and wait for a relaunch.
+    # torch below reuses the primary contexts retained here.
+    tt.claim_gpu()
     devices = [d for d in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if d]
     _ = tt.write_progress(
         "inspecting", percent=50, message="order=%s" % os.environ.get("CUDA_DEVICE_ORDER")
