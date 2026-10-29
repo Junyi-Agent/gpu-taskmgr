@@ -67,8 +67,9 @@ class QueryTest(Env):
         rc, out, _ = self.task("status", "0123456789abcdef")
         self.assertEqual((rc, out["error"]["code"]), (2, "not_found"))
         # Same jobid on two servers: ambiguity.
-        shutil.copytree(self.job_dir(j, "s3"), os.path.join(self.root("s2"), "queue", j),
-                        symlinks=True)
+        shutil.copytree(
+            self.job_dir(j, "s3"), os.path.join(self.root("s2"), "queue", j), symlinks=True
+        )
         rc, out, _ = self.task("status", j)
         self.assertEqual((rc, out["error"]["code"]), (2, "ambiguous"))
         self.assertEqual(sorted(out["error"]["details"]["hosts"]), ["s2", "s3"])
@@ -79,8 +80,9 @@ class QueryTest(Env):
 
     def test_wait_outcomes(self):
         self.start_daemon("s1")
-        ok = self.submit(self.make_pkg(
-            script="sleep 1; echo '{\"outputs\": {}}' > $TASKMGR_RESULT_FILE"))
+        ok = self.submit(
+            self.make_pkg(script="sleep 1; echo '{\"outputs\": {}}' > $TASKMGR_RESULT_FILE")
+        )
         rc, out, _ = self.task("status", ok, "--wait", "--poll-interval", "0.2")
         self.assertEqual(rc, 0)
         self.assertEqual(out["_taskmgr"]["status"], "succeeded")
@@ -90,8 +92,9 @@ class QueryTest(Env):
         self.assertEqual(out["_taskmgr"]["status"], "failed")
         slow = self.submit(self.make_pkg(script="sleep 30"))
         t0 = time.time()
-        rc, out, _ = self.task("status", slow, "--host", "s1", "--wait", "--poll-interval", "0.2",
-                               "--timeout", "1")
+        rc, out, _ = self.task(
+            "status", slow, "--host", "s1", "--wait", "--poll-interval", "0.2", "--timeout", "1"
+        )
         self.assertEqual(rc, 2)
         self.assertLess(time.time() - t0, 10)
         self.assertEqual(out["state"], "running")
@@ -103,24 +106,38 @@ class QueryTest(Env):
         flag = os.path.join(self.tmp, "down")
         self.server("s1")["local"] = {"fail_if_exists": flag}
         self.write_machines()
-        j = self.submit(self.make_pkg(
-            script="sleep 2; echo '{\"outputs\": {}}' > $TASKMGR_RESULT_FILE"))
+        j = self.submit(
+            self.make_pkg(script="sleep 2; echo '{\"outputs\": {}}' > $TASKMGR_RESULT_FILE")
+        )
         open(flag, "w").close()
         threading.Timer(1.5, lambda: os.unlink(flag)).start()
-        rc, out, err = self.task("status", j, "--host", "s1", "--wait", "--poll-interval", "0.2",
-                                 "--retry-timeout", "30")
+        rc, out, err = self.task(
+            "status", j, "--host", "s1", "--wait", "--poll-interval", "0.2", "--retry-timeout", "30"
+        )
         self.assertEqual(rc, 0, err)
         self.assertIn("retrying", err)
         # Beyond --retry-timeout it gives up with a connection error.
         j2 = self.submit(self.make_pkg(script="sleep 30"))
         open(flag, "w").close()
-        rc, out, _ = self.task("status", j2, "--host", "s1", "--wait", "--poll-interval", "0.2",
-                               "--retry-timeout", "1")
+        rc, out, _ = self.task(
+            "status", j2, "--host", "s1", "--wait", "--poll-interval", "0.2", "--retry-timeout", "1"
+        )
         self.assertEqual((rc, out["error"]["code"]), (2, "connection_error"))
         # --timeout still applies while connection failures are being retried.
         t0 = time.time()
-        rc, out, _ = self.task("status", j2, "--host", "s1", "--wait", "--poll-interval", "0.2",
-                               "--retry-timeout", "60", "--timeout", "1")
+        rc, out, _ = self.task(
+            "status",
+            j2,
+            "--host",
+            "s1",
+            "--wait",
+            "--poll-interval",
+            "0.2",
+            "--retry-timeout",
+            "60",
+            "--timeout",
+            "1",
+        )
         self.assertEqual((rc, out["error"]["code"]), (2, "wait_timeout"))
         self.assertLess(time.time() - t0, 15)
         os.unlink(flag)
@@ -132,9 +149,12 @@ class QueryTest(Env):
         flag = os.path.join(self.tmp, "s1down")
         self.server("s1")["local"] = {"fail_if_exists": flag}
         self.write_machines()
-        p = subprocess.Popen([sys.executable, TASK, "status", j, "--wait", "--poll-interval",
-                              "0.2"], env=self.env, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE)
+        p = subprocess.Popen(
+            [sys.executable, TASK, "status", j, "--wait", "--poll-interval", "0.2"],
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         time.sleep(0.8)
         open(flag, "w").close()  # s1 going down after the lookup does not matter
         out, err = p.communicate(timeout=30)
@@ -142,10 +162,15 @@ class QueryTest(Env):
 
     def test_logs_and_follow(self):
         self.start_daemon("s1")
-        j = self.submit(self.make_pkg(
-            script="for i in 1 2 3; do echo line$i; sleep 0.5; done; echo err >&2"))
-        p = subprocess.Popen([sys.executable, TASK, "logs", j, "--host", "s1", "--follow"],
-                             env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        j = self.submit(
+            self.make_pkg(script="for i in 1 2 3; do echo line$i; sleep 0.5; done; echo err >&2")
+        )
+        p = subprocess.Popen(
+            [sys.executable, TASK, "logs", j, "--host", "s1", "--follow"],
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         out, err = p.communicate(timeout=30)
         self.assertEqual(p.returncode, 0, err)
         self.assertEqual(out.decode(), "line1\nline2\nline3\n")
@@ -159,28 +184,44 @@ class QueryTest(Env):
 
     def test_fetch(self):
         self.start_daemon("s1")
-        j = self.submit(self.make_pkg(
-            script="mkdir -p artifacts; echo a,b > artifacts/x.csv; echo hi; "
-                   "echo '{\"outputs\": {\"k\": 1}}' > $TASKMGR_RESULT_FILE"))
+        j = self.submit(
+            self.make_pkg(
+                script="mkdir -p artifacts; echo a,b > artifacts/x.csv; echo hi; "
+                'echo \'{"outputs": {"k": 1}}\' > $TASKMGR_RESULT_FILE'
+            )
+        )
         self.wait_state(j, "succeeded")
         outdir = os.path.join(self.tmp, "results")
         out = self.ok("fetch", j, "--host", "s1", "--output", outdir)
         self.assertFalse(out["partial"])
         base = os.path.join(outdir, "s1", j, "attempts", "0001")
-        for rel in ("runner.json", "stdout.log", "stderr.log", "shim.log",
-                    "workdir/result.json", "workdir/progress.json", "workdir/artifacts/x.csv",
-                    "workdir/task.json"):
+        for rel in (
+            "runner.json",
+            "stdout.log",
+            "stderr.log",
+            "shim.log",
+            "workdir/result.json",
+            "workdir/progress.json",
+            "workdir/artifacts/x.csv",
+            "workdir/task.json",
+        ):
             self.assertTrue(os.path.exists(os.path.join(base, rel)), rel)
         with open(os.path.join(base, "stdout.log")) as f:
             self.assertEqual(f.read(), "hi\n")
-        self.assertTrue(os.path.exists(os.path.join(self.job_dir(j), "attempts", "0001",
-                                                    "workdir", "artifacts", "x.csv")))
+        self.assertTrue(
+            os.path.exists(
+                os.path.join(self.job_dir(j), "attempts", "0001", "workdir", "artifacts", "x.csv")
+            )
+        )
         rc, out, _ = self.task("fetch", j, "--host", "s1", "--output", outdir)
         self.assertEqual((rc, out["error"]["code"]), (2, "exists"))
         # --all-attempts after a retry.
         self.ok("retry", j, "--host", "s1")
-        self.wait_for(lambda: len(self.job(j)["attempts"]) == 2 and
-                      self.job(j)["state"] == "succeeded", 20, "retry")
+        self.wait_for(
+            lambda: len(self.job(j)["attempts"]) == 2 and self.job(j)["state"] == "succeeded",
+            20,
+            "retry",
+        )
         out2 = os.path.join(self.tmp, "results2")
         out = self.ok("fetch", j, "--host", "s1", "--output", out2, "--all-attempts")
         self.assertEqual([a["attempt"] for a in out["attempts"]], [1, 2])
@@ -190,11 +231,17 @@ class QueryTest(Env):
     def test_fetch_running_is_partial(self):
         self.start_daemon("s1")
         j = self.submit(self.make_pkg(script="echo started; sleep 30"))
-        self.wait_for(lambda: any(os.path.exists(os.path.join(self.root(), d, j, "attempts",
-                                                              "0001", "stdout.log"))
-                                  for d in ("in-progress", "done")), 10, "stdout")
-        rc, out, err = self.task("fetch", j, "--host", "s1", "--output",
-                                 os.path.join(self.tmp, "r"))
+        self.wait_for(
+            lambda: any(
+                os.path.exists(os.path.join(self.root(), d, j, "attempts", "0001", "stdout.log"))
+                for d in ("in-progress", "done")
+            ),
+            10,
+            "stdout",
+        )
+        rc, out, err = self.task(
+            "fetch", j, "--host", "s1", "--output", os.path.join(self.tmp, "r")
+        )
         self.assertEqual(rc, 0, err)
         self.assertTrue(out["partial"])
         self.assertIn("incomplete", err)

@@ -1,4 +1,5 @@
 """Report the GPUs this task was given."""
+
 import os
 
 import taskmgr_task as tt
@@ -6,11 +7,13 @@ import taskmgr_task as tt
 
 def main():
     devices = [d for d in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if d]
-    tt.write_progress("inspecting", percent=50, message="order=%s"
-                      % os.environ.get("CUDA_DEVICE_ORDER"))
+    tt.write_progress(
+        "inspecting", percent=50, message="order=%s" % os.environ.get("CUDA_DEVICE_ORDER")
+    )
     count = len(devices)
     try:
         import torch  # pyright: ignore[reportMissingImports]  # optional; real GPU servers only
+
         if torch.cuda.is_available():
             count = torch.cuda.device_count()
     except ImportError:

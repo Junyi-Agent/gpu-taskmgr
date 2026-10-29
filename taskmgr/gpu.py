@@ -9,16 +9,23 @@ from .common import TaskmgrError
 
 def nvidia_smi_path():
     # TASKMGR_NVIDIA_SMI: test-only override pointing at a fake nvidia-smi script.
-    return os.environ.get("TASKMGR_NVIDIA_SMI") or shutil.which("nvidia-smi") \
-        or "/usr/bin/nvidia-smi"
+    return (
+        os.environ.get("TASKMGR_NVIDIA_SMI") or shutil.which("nvidia-smi") or "/usr/bin/nvidia-smi"
+    )
 
 
 def query_gpus():
     """Return [(index, uuid), ...] in nvidia-smi index (PCI bus) order."""
     cmd = [nvidia_smi_path(), "--query-gpu=index,uuid", "--format=csv,noheader"]
     try:
-        out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             stdin=subprocess.DEVNULL, timeout=60, check=True).stdout
+        out = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+            check=True,
+        ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         raise TaskmgrError("nvidia_smi_failed", "cannot query GPUs with nvidia-smi: %s" % e)
     gpus = []

@@ -23,7 +23,7 @@ def read_stat(pid):
         return None
     except OSError as e:
         raise ProcUnavailable(str(e))
-    rest = data[data.rfind(")") + 2:].split()
+    rest = data[data.rfind(")") + 2 :].split()
     # rest[0] is field 3 (state); field 5 is pgrp; field 22 is starttime.
     return rest[0], int(rest[2]), int(rest[19])
 

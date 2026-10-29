@@ -20,13 +20,20 @@ REMOTE = os.path.join(REPO, "bin", "taskmgr-remote")
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-FAST_CONFIG = {"stop_grace_seconds": 1, "kill_confirm_seconds": 1, "control_poll_seconds": 0.3,
-               "scheduler_poll_seconds": 0.2, "max_auto_restarts": 2}
-OK_RESULT = "echo '{\"outputs\": {}}' > \"$TASKMGR_RESULT_FILE\""
-GPUS = [(0, "GPU-00000000-0000-0000-0000-000000000000"),
-        (1, "GPU-11111111-1111-1111-1111-111111111111"),
-        (2, "GPU-22222222-2222-2222-2222-222222222222"),
-        (3, "GPU-33333333-3333-3333-3333-333333333333")]
+FAST_CONFIG = {
+    "stop_grace_seconds": 1,
+    "kill_confirm_seconds": 1,
+    "control_poll_seconds": 0.3,
+    "scheduler_poll_seconds": 0.2,
+    "max_auto_restarts": 2,
+}
+OK_RESULT = 'echo \'{"outputs": {}}\' > "$TASKMGR_RESULT_FILE"'
+GPUS = [
+    (0, "GPU-00000000-0000-0000-0000-000000000000"),
+    (1, "GPU-11111111-1111-1111-1111-111111111111"),
+    (2, "GPU-22222222-2222-2222-2222-222222222222"),
+    (3, "GPU-33333333-3333-3333-3333-333333333333"),
+]
 
 
 class Env(unittest.TestCase):
@@ -48,11 +55,21 @@ class Env(unittest.TestCase):
         self.boot_file = os.path.join(self.tmp, "boot_id")
         self.set_boot("boot-1")
         self.env = dict(os.environ)
-        self.env.update({"TASKMGR_HOME": self.home, "TASKMGR_NVIDIA_SMI": self.smi,
-                         "TASKMGR_BOOT_ID_FILE": self.boot_file,
-                         "PYTHONPATH": REPO, "PYTHONDONTWRITEBYTECODE": "1"})
-        for k in ("TASKMGR_TEST_SHIM_CRASH", "TASKMGR_SHIM_EXECUTABLE",
-                  "TASKMGR_TEST_SKIP_DAEMON_LOCK", "TASKMGR_TEST_PROTOCOL_VERSION"):
+        self.env.update(
+            {
+                "TASKMGR_HOME": self.home,
+                "TASKMGR_NVIDIA_SMI": self.smi,
+                "TASKMGR_BOOT_ID_FILE": self.boot_file,
+                "PYTHONPATH": REPO,
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+        )
+        for k in (
+            "TASKMGR_TEST_SHIM_CRASH",
+            "TASKMGR_SHIM_EXECUTABLE",
+            "TASKMGR_TEST_SKIP_DAEMON_LOCK",
+            "TASKMGR_TEST_PROTOCOL_VERSION",
+        ):
             self.env.pop(k, None)
         self.machines = []
         for name in self.servers:
@@ -62,9 +79,15 @@ class Env(unittest.TestCase):
             cfg.update(self.remote_config)
             with open(os.path.join(root, "config.json"), "w") as f:
                 json.dump(cfg, f)
-            self.machines.append({"name": name, "enabled": True, "transport": "local",
-                                  "remote_root": root,
-                                  "remote_command": "%s %s" % (sys.executable, REMOTE)})
+            self.machines.append(
+                {
+                    "name": name,
+                    "enabled": True,
+                    "transport": "local",
+                    "remote_root": root,
+                    "remote_command": "%s %s" % (sys.executable, REMOTE),
+                }
+            )
         self.write_machines()
         self.daemons = {}
         self.pkg_count = 0
@@ -128,15 +151,29 @@ class Env(unittest.TestCase):
         with open(p, "w") as f:
             json.dump(cfg, f)
 
-    def make_pkg(self, task_id="AA-01", script=None, gpus=(), required=None, extra=None,
-                 files=None, argv=None, timeout=None, env=None):
+    def make_pkg(
+        self,
+        task_id="AA-01",
+        script=None,
+        gpus=(),
+        required=None,
+        extra=None,
+        files=None,
+        argv=None,
+        timeout=None,
+        env=None,
+    ):
         """Create a package whose entry runs `sh -c script` (default: write a valid result)."""
         script = OK_RESULT if script is None else script
         self.pkg_count += 1
         d = os.path.join(self.tmp, "pkg-%d" % self.pkg_count)
         os.makedirs(d)
-        task = {"schema_version": 1, "task_id": task_id,
-                "entry": {"argv": argv or ["sh", "-c", script]}, "gpus": list(gpus)}
+        task = {
+            "schema_version": 1,
+            "task_id": task_id,
+            "entry": {"argv": argv or ["sh", "-c", script]},
+            "gpus": list(gpus),
+        }
         if required is not None:
             task["result"] = {"required_outputs": list(required)}
         if timeout is not None:
@@ -150,8 +187,9 @@ class Env(unittest.TestCase):
         with open(os.path.join(d, "TASK.md"), "w") as f:
             f.write("# %s\n\nTest task.\n" % task_id)
         with open(os.path.join(d, "progress.json"), "w") as f:
-            json.dump({"schema_version": 1, "stage": "init",
-                       "updated_at": "2026-10-29T08:00:00Z"}, f)
+            json.dump(
+                {"schema_version": 1, "stage": "init", "updated_at": "2026-10-29T08:00:00Z"}, f
+            )
         for rel, content in (files or {}).items():
             p = os.path.join(d, rel)
             os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -163,8 +201,13 @@ class Env(unittest.TestCase):
     def task(self, *args, env=None, timeout=120) -> tuple[int, Any, str]:
         e = dict(self.env)
         e.update(env or {})
-        p = subprocess.run([sys.executable, TASK] + [str(a) for a in args], env=e,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        p = subprocess.run(
+            [sys.executable, TASK] + [str(a) for a in args],
+            env=e,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
         out = p.stdout.decode()
         obj: Any
         try:
@@ -179,17 +222,24 @@ class Env(unittest.TestCase):
         return obj
 
     def submit(self, pkg, host="s1", key=None):
-        args = ["submit", pkg] + (["--host", host] if host else []) + \
-            (["--submission-key", key] if key else [])
+        args = (
+            ["submit", pkg]
+            + (["--host", host] if host else [])
+            + (["--submission-key", key] if key else [])
+        )
         return self.ok(*args)["jobid"]
 
     def remote(self, *args, name="s1", env=None, stdin=None) -> tuple[int, Any, str]:
         e = dict(self.env)
         e.update(env or {})
-        p = subprocess.run([sys.executable, REMOTE, "--root", self.root(name)] +
-                           [str(a) for a in args], env=e, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, stdin=stdin or subprocess.DEVNULL,
-                           timeout=60)
+        p = subprocess.run(
+            [sys.executable, REMOTE, "--root", self.root(name)] + [str(a) for a in args],
+            env=e,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=stdin or subprocess.DEVNULL,
+            timeout=60,
+        )
         obj: Any
         try:
             obj = json.loads(p.stdout.decode())
@@ -201,8 +251,13 @@ class Env(unittest.TestCase):
         e = dict(self.env)
         e.update(env or {})
         log = open(os.path.join(self.tmp, "daemon-%s.log" % name), "ab")
-        p = subprocess.Popen([sys.executable, REMOTE, "--root", self.root(name), "serve"],
-                             env=e, stdout=log, stderr=log, start_new_session=True)
+        p = subprocess.Popen(
+            [sys.executable, REMOTE, "--root", self.root(name), "serve"],
+            env=e,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
         log.close()
         self.daemons.setdefault(name, []).append(p)
         return p
@@ -241,13 +296,17 @@ class Env(unittest.TestCase):
             return json.load(f)
 
     def runner(self, jobid, n=1, name="s1"):
-        with open(os.path.join(self.job_dir(jobid, name), "attempts", "%04d" % n,
-                               "runner.json")) as f:
+        with open(
+            os.path.join(self.job_dir(jobid, name), "attempts", "%04d" % n, "runner.json")
+        ) as f:
             return json.load(f)
 
     def result(self, jobid, n=1, name="s1"):
-        with open(os.path.join(self.job_dir(jobid, name), "attempts", "%04d" % n, "workdir",
-                               "result.json")) as f:
+        with open(
+            os.path.join(
+                self.job_dir(jobid, name), "attempts", "%04d" % n, "workdir", "result.json"
+            )
+        ) as f:
             return json.load(f)
 
     def wait_for(self, pred, timeout=30, msg="condition", interval=0.1):
@@ -268,6 +327,7 @@ class Env(unittest.TestCase):
                 return self.job(jobid, name)["state"] in states
             except (OSError, ValueError, TypeError):
                 return False
+
         self.wait_for(check, timeout, "job %s to reach %s" % (jobid, states))
         return self.job(jobid, name)
 
@@ -277,6 +337,7 @@ class Env(unittest.TestCase):
                 return self.runner(jobid, n, name).get(key) is not None
             except (OSError, ValueError, TypeError):
                 return False
+
         self.wait_for(check, timeout, "runner.%s of %s" % (key, jobid))
         return self.runner(jobid, n, name)
 

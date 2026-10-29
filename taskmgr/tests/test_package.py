@@ -90,11 +90,14 @@ class PackageTest(Env):
         with open(os.path.join(target, "TASK.md")) as f:
             md = f.read()
         import re
+
         with open(os.path.join(target, "TASK.md"), "w") as f:
             f.write(re.sub(r"<REQUIRED[^>]*>", "filled", md))
         rc, out, _ = self.task("validate", target)
-        self.assertEqual((rc, out), (0, {"valid": True, "task_id": "AA-01",
-                                         "content_hash": out.get("content_hash")}))
+        self.assertEqual(
+            (rc, out),
+            (0, {"valid": True, "task_id": "AA-01", "content_hash": out.get("content_hash")}),
+        )
 
     def test_examples_are_valid(self):
         ex = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples")
@@ -229,17 +232,21 @@ class PackageTest(Env):
         rc, out, _ = self.task("validate", pkg)
         self.assertEqual(rc, 1)
         self.assertEqual([e["path"] for e in out["errors"] if e["code"] == "symlink"], ["y"])
-        path = self._tar_with([({"name": "x", "type": tarfile.SYMTYPE, "linkname": "."}, None),
-                               ({"name": "y", "type": tarfile.SYMTYPE, "linkname": "x/.."},
-                                None)])
+        path = self._tar_with(
+            [
+                ({"name": "x", "type": tarfile.SYMTYPE, "linkname": "."}, None),
+                ({"name": "y", "type": tarfile.SYMTYPE, "linkname": "x/.."}, None),
+            ]
+        )
         self.assertEqual(self.task("validate", path)[0], 1)
         with open(path, "rb") as f:
             rc, out, _ = self.remote("receive", stdin=f)
         self.assertEqual((rc, out["error"]["code"]), (2, "unsafe_package"))
 
     def test_validate_archive_reports_all_errors(self):
-        path = self._tar_with([({"name": "../a", "mode": 0o644}, b"x"),
-                               ({"name": "/b", "mode": 0o644}, b"x")])
+        path = self._tar_with(
+            [({"name": "../a", "mode": 0o644}, b"x"), ({"name": "/b", "mode": 0o644}, b"x")]
+        )
         rc, out, _ = self.task("validate", path)
         self.assertEqual(rc, 1)
         self.assertEqual(len([e for e in out["errors"] if e["code"] == "unsafe_package"]), 2)
@@ -253,5 +260,6 @@ class PackageTest(Env):
 
     def test_regexes_reject_trailing_newline(self):
         from taskmgr.common import SUBMISSION_KEY_RE, TASK_ID_RE
+
         self.assertIsNone(TASK_ID_RE.match("AA-01\n"))
         self.assertIsNone(SUBMISSION_KEY_RE.match("k\n"))

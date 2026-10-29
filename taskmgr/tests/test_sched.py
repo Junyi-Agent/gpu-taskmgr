@@ -13,7 +13,9 @@ class SchedTest(Env):
     def gate(self, name):
         """Script that blocks until `release(name)` is called."""
         return "while [ ! -f %s ]; do sleep 0.05; done; %s" % (
-            os.path.join(self.tmp, "rel-" + name), OK_RESULT)
+            os.path.join(self.tmp, "rel-" + name),
+            OK_RESULT,
+        )
 
     def release(self, name):
         open(os.path.join(self.tmp, "rel-" + name), "w").close()
@@ -78,12 +80,16 @@ class SchedTest(Env):
 
     def test_index_mapping_and_cuda_visible_devices_order(self):
         out = os.path.join(self.tmp, "env.txt")
-        pkg = self.make_pkg(script="echo \"$CUDA_VISIBLE_DEVICES|$CUDA_DEVICE_ORDER\" > %s; %s" % (out, OK_RESULT),
-                            gpus=[2, GPUS[0][1]])
+        pkg = self.make_pkg(
+            script='echo "$CUDA_VISIBLE_DEVICES|$CUDA_DEVICE_ORDER" > %s; %s' % (out, OK_RESULT),
+            gpus=[2, GPUS[0][1]],
+        )
         j = self.submit(pkg)
         job = self.job(j)
-        self.assertEqual(job["gpus"], [{"declared": 2, "uuid": GPUS[2][1]},
-                                       {"declared": GPUS[0][1], "uuid": GPUS[0][1]}])
+        self.assertEqual(
+            job["gpus"],
+            [{"declared": 2, "uuid": GPUS[2][1]}, {"declared": GPUS[0][1], "uuid": GPUS[0][1]}],
+        )
         self.start_daemon()
         self.wait_state(j, "succeeded")
         with open(out) as f:
@@ -108,15 +114,20 @@ class SchedTest(Env):
     def test_second_daemon_refuses_and_lockless_daemons_never_double_dispatch(self):
         self.start_daemon()
         time.sleep(0.5)
-        p = subprocess.run([sys.executable, REMOTE, "--root", self.root(), "serve"],
-                           env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           timeout=20)
+        p = subprocess.run(
+            [sys.executable, REMOTE, "--root", self.root(), "serve"],
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
         self.assertEqual(p.returncode, 2)
         self.stop_daemon()
         # Bypass daemon.lock: state.lock alone must prevent double dispatch.
-        ids = [self.submit(self.make_pkg(script="sleep 0.2; " + OK_RESULT, gpus=[i % 4]))
-               for i in range(12)] + [self.submit(self.make_pkg(script="sleep 0.1; " + OK_RESULT))
-                                      for _ in range(6)]
+        ids = [
+            self.submit(self.make_pkg(script="sleep 0.2; " + OK_RESULT, gpus=[i % 4]))
+            for i in range(12)
+        ] + [self.submit(self.make_pkg(script="sleep 0.1; " + OK_RESULT)) for _ in range(6)]
         env = {"TASKMGR_TEST_SKIP_DAEMON_LOCK": "1"}
         for _ in range(3):
             self.start_daemon(env=env)

@@ -44,6 +44,7 @@ def _inside(rel):
 # ---------------------------------------------------------------------------
 # Schemas
 
+
 def check_task_json(task, errors):
     """Schema checks for task.json (Section 2.2)."""
     if not isinstance(task, dict):
@@ -53,12 +54,15 @@ def check_task_json(task, errors):
         _err(errors, "schema", "schema_version must be %d" % SCHEMA_VERSION, "task.json")
     tid = task.get("task_id")
     if not isinstance(tid, str) or not TASK_ID_RE.match(tid):
-        _err(errors, "task_id", "task_id %r does not match ^[A-Z]{2}-[0-9]{2,4}$" % (tid,),
-             "task.json")
+        _err(
+            errors,
+            "task_id",
+            "task_id %r does not match ^[A-Z]{2}-[0-9]{2,4}$" % (tid,),
+            "task.json",
+        )
     entry = task.get("entry")
     argv = entry.get("argv") if isinstance(entry, dict) else None
-    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)
-            and argv[0]):
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv) and argv[0]):
         _err(errors, "schema", "entry.argv must be a non-empty array of strings", "task.json")
     gpus = task.get("gpus")
     if not isinstance(gpus, list):
@@ -72,11 +76,19 @@ def check_task_json(task, errors):
                 if g.startswith("MIG-"):
                     _err(errors, "gpu", "MIG instances are not supported: %s" % g, "task.json")
                 elif not g.startswith("GPU-"):
-                    _err(errors, "schema", "GPU string must be a full UUID starting with GPU-: %r"
-                         % g, "task.json")
+                    _err(
+                        errors,
+                        "schema",
+                        "GPU string must be a full UUID starting with GPU-: %r" % g,
+                        "task.json",
+                    )
             else:
-                _err(errors, "schema", "GPU entry must be an integer index or UUID string: %r"
-                     % (g,), "task.json")
+                _err(
+                    errors,
+                    "schema",
+                    "GPU entry must be an integer index or UUID string: %r" % (g,),
+                    "task.json",
+                )
         keys = [json.dumps(g) for g in gpus]
         if len(set(keys)) != len(keys):
             _err(errors, "gpu", "gpus contains duplicate entries", "task.json")
@@ -89,10 +101,15 @@ def check_task_json(task, errors):
             if venv is not None and not (isinstance(venv, str) and venv.startswith("/")):
                 _err(errors, "schema", "environment.venv must be an absolute path", "task.json")
             rp = envi.get("required_paths")
-            if rp is not None and not (isinstance(rp, list) and all(
-                    isinstance(p, str) and p.startswith("/") for p in rp)):
-                _err(errors, "schema", "environment.required_paths must be a list of absolute "
-                     "paths", "task.json")
+            if rp is not None and not (
+                isinstance(rp, list) and all(isinstance(p, str) and p.startswith("/") for p in rp)
+            ):
+                _err(
+                    errors,
+                    "schema",
+                    "environment.required_paths must be a list of absolute paths",
+                    "task.json",
+                )
     env = task.get("env")
     if env is not None:
         if not isinstance(env, dict):
@@ -113,10 +130,15 @@ def check_task_json(task, errors):
             _err(errors, "schema", "result must be an object", "task.json")
         else:
             ro = res.get("required_outputs")
-            if ro is not None and not (isinstance(ro, list) and all(isinstance(k, str)
-                                                                    for k in ro)):
-                _err(errors, "schema", "result.required_outputs must be a list of strings",
-                     "task.json")
+            if ro is not None and not (
+                isinstance(ro, list) and all(isinstance(k, str) for k in ro)
+            ):
+                _err(
+                    errors,
+                    "schema",
+                    "result.required_outputs must be a list of strings",
+                    "task.json",
+                )
 
 
 def check_progress_json(p, errors, path="progress.json"):
@@ -140,6 +162,7 @@ def check_progress_json(p, errors, path="progress.json"):
 # ---------------------------------------------------------------------------
 # Validation
 
+
 def scan_tree(root, errors):
     """Check every entry for unsafe symlinks and special files (Section 2.4)."""
     for dirpath, dirnames, filenames in os.walk(root):
@@ -151,10 +174,12 @@ def scan_tree(root, errors):
                 target = os.readlink(full)
                 if target.startswith("/"):
                     _err(errors, "symlink", "absolute symlink -> %s" % target, rel)
-                elif not _inside(posixpath.join(posixpath.dirname(rel), target)) \
-                        or not _link_resolves_inside(root, full):
-                    _err(errors, "symlink", "symlink points outside the package -> %s" % target,
-                         rel)
+                elif not _inside(
+                    posixpath.join(posixpath.dirname(rel), target)
+                ) or not _link_resolves_inside(root, full):
+                    _err(
+                        errors, "symlink", "symlink points outside the package -> %s" % target, rel
+                    )
             elif not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
                 _err(errors, "special_file", "special files are not allowed", rel)
 
@@ -175,8 +200,12 @@ def validate_dir(root):
                 raw[f] = fh.read().decode("utf-8", errors="replace")
             if PLACEHOLDER in raw[f]:
                 lines = [i + 1 for i, line in enumerate(raw[f].splitlines()) if PLACEHOLDER in line]
-                _err(errors, "placeholder", "unfilled <REQUIRED> placeholder on line(s) %s"
-                     % ",".join(map(str, lines)), f)
+                _err(
+                    errors,
+                    "placeholder",
+                    "unfilled <REQUIRED> placeholder on line(s) %s" % ",".join(map(str, lines)),
+                    f,
+                )
     task = None
     if "task.json" in raw:
         try:
@@ -193,25 +222,41 @@ def validate_dir(root):
         else:
             check_progress_json(prog, errors)
     if isinstance(task, dict):
-        argv = (task.get("entry") or {}).get("argv") if isinstance(task.get("entry"), dict) else None
-        if isinstance(argv, list) and argv and isinstance(argv[0], str) and "/" in argv[0] \
-                and not argv[0].startswith("/"):
+        argv = (
+            (task.get("entry") or {}).get("argv") if isinstance(task.get("entry"), dict) else None
+        )
+        if (
+            isinstance(argv, list)
+            and argv
+            and isinstance(argv[0], str)
+            and "/" in argv[0]
+            and not argv[0].startswith("/")
+        ):
             a0 = argv[0]
             if not _inside(a0):
-                _err(errors, "entry", "entry argv[0] points outside the package: %s" % a0,
-                     "task.json")
+                _err(
+                    errors,
+                    "entry",
+                    "entry argv[0] points outside the package: %s" % a0,
+                    "task.json",
+                )
             else:
                 real = os.path.realpath(os.path.join(root, a0))
                 rroot = os.path.realpath(root)
                 if not (real.startswith(rroot + os.sep) and os.path.isfile(real)):
-                    _err(errors, "entry", "entry argv[0] is not a file in the package: %s" % a0,
-                         "task.json")
+                    _err(
+                        errors,
+                        "entry",
+                        "entry argv[0] is not a file in the package: %s" % a0,
+                        "task.json",
+                    )
     scan_tree(root, errors)
     return errors, (task if isinstance(task, dict) else None)
 
 
 # ---------------------------------------------------------------------------
 # Packing and hashing
+
 
 def _sorted_entries(root):
     out = []
@@ -274,6 +319,7 @@ def content_hash(root):
 
 # ---------------------------------------------------------------------------
 # Safe extraction
+
 
 def _member_name(m):
     name = m.name
@@ -360,8 +406,10 @@ def safe_extract(tar_path_or_fileobj, dest, max_bytes=None, skip_unsafe=False):
             elif m.isreg():
                 total += m.size
                 if max_bytes is not None and total > max_bytes:
-                    raise TaskmgrError("package_too_large",
-                                       "extracted size exceeds max_package_bytes (%d)" % max_bytes)
+                    raise TaskmgrError(
+                        "package_too_large",
+                        "extracted size exceeds max_package_bytes (%d)" % max_bytes,
+                    )
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 src = tar.extractfile(m)
                 if src is None:
@@ -393,8 +441,11 @@ def package_root(extracted):
     entries = os.listdir(extracted)
     if len(entries) == 1:
         only = os.path.join(extracted, entries[0])
-        if os.path.isdir(only) and not os.path.islink(only) \
-                and os.path.isfile(os.path.join(only, "task.json")):
+        if (
+            os.path.isdir(only)
+            and not os.path.islink(only)
+            and os.path.isfile(os.path.join(only, "task.json"))
+        ):
             return only
     return extracted
 
@@ -411,8 +462,9 @@ def add_tree_to_tar(tar, root, arcroot):
         arc = arcroot if not rel else arcroot + "/" + rel
         try:
             st = os.lstat(full)
-            if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)
-                    or stat.S_ISLNK(st.st_mode)):
+            if not (
+                stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode)
+            ):
                 continue
             ti = tar.gettarinfo(full, arcname=arc)
             data = None

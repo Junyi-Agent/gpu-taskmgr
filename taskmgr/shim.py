@@ -35,24 +35,25 @@ def build_env(cfg, task, job, n, workdir):
         home, user = pw.pw_dir, pw.pw_name
     except KeyError:
         home, user = os.environ.get("HOME", "/"), os.environ.get("USER", "")
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "USER": user,
-           "LANG": "C.UTF-8"}
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "USER": user, "LANG": "C.UTF-8"}
     env.update({str(k): str(v) for k, v in (cfg.get("base_env") or {}).items()})
     venv = (task.get("environment") or {}).get("venv")
     if venv:
         env["VIRTUAL_ENV"] = venv
         env["PATH"] = os.path.join(venv, "bin") + (":" + env["PATH"] if env.get("PATH") else "")
     env.update(task.get("env") or {})
-    env.update({
-        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-        "CUDA_VISIBLE_DEVICES": ",".join(g["uuid"] for g in job.get("gpus", [])),
-        "TASKMGR_JOBID": job["jobid"],
-        "TASKMGR_TASK_ID": job["task_id"],
-        "TASKMGR_ATTEMPT": str(n),
-        "TASKMGR_WORKDIR": workdir,
-        "TASKMGR_PROGRESS_FILE": os.path.join(workdir, "progress.json"),
-        "TASKMGR_RESULT_FILE": os.path.join(workdir, "result.json"),
-    })
+    env.update(
+        {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": ",".join(g["uuid"] for g in job.get("gpus", [])),
+            "TASKMGR_JOBID": job["jobid"],
+            "TASKMGR_TASK_ID": job["task_id"],
+            "TASKMGR_ATTEMPT": str(n),
+            "TASKMGR_WORKDIR": workdir,
+            "TASKMGR_PROGRESS_FILE": os.path.join(workdir, "progress.json"),
+            "TASKMGR_RESULT_FILE": os.path.join(workdir, "result.json"),
+        }
+    )
     return env
 
 
@@ -111,14 +112,23 @@ def run(store, jobid, n, lock_fd):
     jobdir, job = store.load_job(jobid)
     adir = store.attempt_dir(jobdir, n)
     runner, _ = store.read_runner(adir)
-    if job.get("current_attempt") != n or job["state"] not in ("running", "stopping") \
-            or not isinstance(runner, dict) or runner.get("pgid") is not None:
+    if (
+        job.get("current_attempt") != n
+        or job["state"] not in ("running", "stopping")
+        or not isinstance(runner, dict)
+        or runner.get("pgid") is not None
+    ):
         log("job %s attempt %d is not startable (state=%s); exiting" % (jobid, n, job["state"]))
         return 0
     cfg = store.config
     task = load_task(jobdir)
-    runner.update({"shim_pid": os.getpid(), "shim_start_time": procutil.start_time(os.getpid()),
-                   "status": "starting"})
+    runner.update(
+        {
+            "shim_pid": os.getpid(),
+            "shim_start_time": procutil.start_time(os.getpid()),
+            "status": "starting",
+        }
+    )
     store.write_runner(adir, runner)
 
     workdir = prepare_workdir(jobdir, adir)
@@ -129,8 +139,9 @@ def run(store, jobid, n, lock_fd):
     if errors or job.get("cancel_requested"):
         with store.state_lock():
             jobdir, job = store.load_job(jobid)
-            runner.update({"final": True, "ended_at": utcnow_iso(), "return_code": None,
-                           "signal": None})
+            runner.update(
+                {"final": True, "ended_at": utcnow_iso(), "return_code": None, "signal": None}
+            )
             if job.get("cancel_requested"):
                 # running -> stopping -> cancelled; nothing was started, so the stop is
                 # confirmed immediately.
@@ -149,10 +160,12 @@ def run(store, jobid, n, lock_fd):
 
     argv = task["entry"]["argv"]
     assert path is not None  # resolve_entry succeeded: no pre-start errors
-    out_fd = os.open(os.path.join(adir, "stdout.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                     0o644)
-    err_fd = os.open(os.path.join(adir, "stderr.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                     0o644)
+    out_fd = os.open(
+        os.path.join(adir, "stdout.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+    )
+    err_fd = os.open(
+        os.path.join(adir, "stderr.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+    )
     rfd, wfd = os.pipe()
     pid = os.fork()
     if pid == 0:  # child: new session, wait for the go signal, then exec
@@ -178,17 +191,19 @@ def run(store, jobid, n, lock_fd):
     os.close(err_fd)
     _crash_point("before_identity")
     leader_start = procutil.start_time(pid)
-    runner.update({
-        "boot_id": procutil.boot_id(),
-        "pgid": pid,
-        "leader_pid": pid,
-        "leader_start_time": leader_start,
-        "argv_hash": hashlib.sha256(json.dumps(argv).encode()).hexdigest(),
-        "argv": argv,
-        "started_at": utcnow_iso(),
-        "started_at_epoch": time.time(),
-        "status": "running",
-    })
+    runner.update(
+        {
+            "boot_id": procutil.boot_id(),
+            "pgid": pid,
+            "leader_pid": pid,
+            "leader_start_time": leader_start,
+            "argv_hash": hashlib.sha256(json.dumps(argv).encode()).hexdigest(),
+            "argv": argv,
+            "started_at": utcnow_iso(),
+            "started_at_epoch": time.time(),
+            "status": "running",
+        }
+    )
     store.write_runner(adir, runner)  # fsynced before the child may exec (Section 12.1)
     _crash_point("before_exec")
     os.write(wfd, b"x")
@@ -222,9 +237,14 @@ def supervise(store, jobid, n, adir, runner, pid, task, cfg):
 
     def record_exit(st):
         rc = os.waitstatus_to_exitcode(st)
-        runner.update({"exited": True, "ended_at": utcnow_iso(),
-                       "return_code": rc if rc >= 0 else None,
-                       "signal": -rc if rc < 0 else None})
+        runner.update(
+            {
+                "exited": True,
+                "ended_at": utcnow_iso(),
+                "return_code": rc if rc >= 0 else None,
+                "signal": -rc if rc < 0 else None,
+            }
+        )
         store.write_runner(adir, runner)
         log("entry exited rc=%s signal=%s" % (runner["return_code"], runner["signal"]))
         _crash_point("after_exit_recorded")
@@ -290,8 +310,14 @@ def supervise(store, jobid, n, adir, runner, pid, task, cfg):
 def unconfirmed(store, jobid, n, adir, runner, reason, alive):
     runner["stop_unconfirmed_reason"] = reason
     store.write_runner(adir, runner)
-    mark_unknown(store, jobid, n, "stop_unconfirmed",
-                 "processes still alive after SIGKILL", {"alive_pids": alive})
+    mark_unknown(
+        store,
+        jobid,
+        n,
+        "stop_unconfirmed",
+        "processes still alive after SIGKILL",
+        {"alive_pids": alive},
+    )
     log("stop unconfirmed, job is unknown; alive=%s" % alive)
     return 0
 
@@ -302,5 +328,6 @@ def main(store, jobid, n, lock_fd):
         return run(store, jobid, n, lock_fd)
     except Exception as e:  # noqa: BLE001
         import traceback
+
         log("shim error: %s\n%s" % (e, traceback.format_exc()))
         return 1

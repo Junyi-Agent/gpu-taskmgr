@@ -22,8 +22,9 @@ class SubmitTest(Env):
         package.pack_dir(pkg, tgz)
         b = self.ok("submit", "--host", "s1", tgz)
         for r in (a, b):
-            self.assertEqual(set(r) >= {"host", "jobid", "task_id", "submission_key",
-                                        "deduplicated"}, True)
+            self.assertEqual(
+                set(r) >= {"host", "jobid", "task_id", "submission_key", "deduplicated"}, True
+            )
             self.assertEqual(r["host"], "s1")
             self.assertFalse(r["deduplicated"])
             self.assertRegex(r["jobid"], r"^[0-9a-f]{16}$")
@@ -98,8 +99,12 @@ class SubmitTest(Env):
         self.assertEqual(seqs, list(range(1, 9)))
         # Concurrent retries with one key enqueue exactly one job.
         with concurrent.futures.ThreadPoolExecutor(6) as ex:
-            res = list(ex.map(lambda i: self.task("submit", "--host", "s2", "--submission-key",
-                                                  "same", pkg), range(6)))
+            res = list(
+                ex.map(
+                    lambda i: self.task("submit", "--host", "s2", "--submission-key", "same", pkg),
+                    range(6),
+                )
+            )
         self.assertEqual({r[0] for r in res}, {0})
         self.assertEqual(len({r[1]["jobid"] for r in res}), 1)
         self.assertEqual(sum(1 for r in res if not r[1]["deduplicated"]), 1)
@@ -120,8 +125,10 @@ class SubmitTest(Env):
         self.assertEqual(rc, 2)
         self.assertEqual(out["error"]["host"], "s1")
         for s in ("s2", "s3"):
-            self.assertFalse(os.listdir(os.path.join(self.root(s))) != ["config.json"] and
-                             os.listdir(os.path.join(self.root(s), "queue")))
+            self.assertFalse(
+                os.listdir(os.path.join(self.root(s))) != ["config.json"]
+                and os.listdir(os.path.join(self.root(s), "queue"))
+            )
 
     def test_dedup_answers_before_machine_dependent_checks(self):
         pkg = self.make_pkg(gpus=[1])
@@ -144,21 +151,25 @@ class SubmitTest(Env):
     def test_protocol_version_mismatch(self):
         rc, out, _ = self.remote("--protocol-version", "99", "jobs")
         self.assertEqual((rc, out["error"]["code"]), (2, "protocol_mismatch"))
-        rc, out, _ = self.task("jobs", "--host", "s1",
-                               env={"TASKMGR_TEST_PROTOCOL_VERSION": "99"})
+        rc, out, _ = self.task("jobs", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "99"})
         self.assertEqual(rc, 2)
-        p = subprocess.run([sys.executable, REMOTE, "--root", self.root(), "--protocol-version",
-                            "99", "jobs"], env=self.env, stdout=subprocess.PIPE)
+        p = subprocess.run(
+            [sys.executable, REMOTE, "--root", self.root(), "--protocol-version", "99", "jobs"],
+            env=self.env,
+            stdout=subprocess.PIPE,
+        )
         self.assertEqual(p.returncode, 2)
         self.assertEqual(json.loads(p.stdout)["error"]["code"], "protocol_mismatch")
         self.assertEqual(json.loads(p.stdout)["protocol_version"], 1)
-        rc, out, _ = self.task("status", "0123456789abcdef", "--host", "s1",
-                               env={"TASKMGR_TEST_PROTOCOL_VERSION": "2"})
+        rc, out, _ = self.task(
+            "status", "0123456789abcdef", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "2"}
+        )
         self.assertEqual(rc, 2)
         self.assertEqual(out["error"]["code"], "protocol_mismatch")
         pkg = self.make_pkg()
-        rc, out, _ = self.task("submit", "--host", "s1", pkg,
-                               env={"TASKMGR_TEST_PROTOCOL_VERSION": "2"})
+        rc, out, _ = self.task(
+            "submit", "--host", "s1", pkg, env={"TASKMGR_TEST_PROTOCOL_VERSION": "2"}
+        )
         self.assertEqual(rc, 2)
         self.assertEqual(os.listdir(self.root()), ["config.json"])  # never reached receive
 
@@ -174,10 +185,15 @@ class SubmitTest(Env):
         os.utime(stale, (old, old))
         env = dict(self.env, TASKMGR_TEST_RECEIVE_PAUSE="4")
         with open(tgz, "rb") as f:
-            p = subprocess.Popen([sys.executable, REMOTE, "--root", self.root(), "receive"],
-                                 stdin=f, stdout=subprocess.PIPE, env=env)
-        live = self.wait_for(lambda: [d for d in os.listdir(incoming) if d != "up-stale"],
-                             10, "upload dir")
+            p = subprocess.Popen(
+                [sys.executable, REMOTE, "--root", self.root(), "receive"],
+                stdin=f,
+                stdout=subprocess.PIPE,
+                env=env,
+            )
+        live = self.wait_for(
+            lambda: [d for d in os.listdir(incoming) if d != "up-stale"], 10, "upload dir"
+        )
         live = os.path.join(incoming, live[0])
         os.utime(live, (old, old))  # looks old, but it is locked
         self.start_daemon()

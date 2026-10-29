@@ -9,9 +9,20 @@ import shutil
 import socket
 import stat
 
-from .common import (DEFAULT_REMOTE_CONFIG, JOB_DIRS, JOBID_RE, SCHEMA_VERSION, STATE_DIRS,
-                     TERMINAL_STATES, TaskmgrError, atomic_write_json, fsync_dir, read_json,
-                     try_read_json, utcnow_iso)
+from .common import (
+    DEFAULT_REMOTE_CONFIG,
+    JOB_DIRS,
+    JOBID_RE,
+    SCHEMA_VERSION,
+    STATE_DIRS,
+    TERMINAL_STATES,
+    TaskmgrError,
+    atomic_write_json,
+    fsync_dir,
+    read_json,
+    try_read_json,
+    utcnow_iso,
+)
 
 
 class Store:
@@ -133,8 +144,9 @@ class Store:
     @staticmethod
     def existing_attempts(jobdir):
         try:
-            return sorted(int(n) for n in os.listdir(os.path.join(jobdir, "attempts"))
-                          if n.isdigit())
+            return sorted(
+                int(n) for n in os.listdir(os.path.join(jobdir, "attempts")) if n.isdigit()
+            )
         except FileNotFoundError:
             return []
 
@@ -168,13 +180,14 @@ def load_task(jobdir):
 # ---------------------------------------------------------------------------
 # Results and finalization (Sections 10 and 11)
 
+
 def validate_outputs(result, task):
     errs = []
     outputs = result.get("outputs") if isinstance(result, dict) else None
     if not isinstance(outputs, dict):
         errs.append("result.json has no 'outputs' object")
         return errs
-    req = ((task.get("result") or {}).get("required_outputs") or [])
+    req = (task.get("result") or {}).get("required_outputs") or []
     for k in req:
         if k not in outputs:
             errs.append("required output %r is missing" % k)
@@ -207,13 +220,19 @@ def read_task_result(workdir, own=None):
             i += 1
             keep = "%s.corrupt.%d" % (p, i)
         os.replace(p, keep)
-        return ({"schema_version": SCHEMA_VERSION},
-                ["result.json is corrupt (kept as %s): %s" % (os.path.basename(keep), e)],
-                warnings)
+        return (
+            {"schema_version": SCHEMA_VERSION},
+            ["result.json is corrupt (kept as %s): %s" % (os.path.basename(keep), e)],
+            warnings,
+        )
     if "_taskmgr" in obj:
         meta = obj.pop("_taskmgr")
-        ours = own is not None and isinstance(meta, dict) and meta.get("final") is True \
+        ours = (
+            own is not None
+            and isinstance(meta, dict)
+            and meta.get("final") is True
             and (meta.get("jobid"), meta.get("attempt")) == tuple(own)
+        )
         if not ours:
             warnings.append("task_wrote_taskmgr")
     obj.setdefault("schema_version", SCHEMA_VERSION)
@@ -224,8 +243,13 @@ def final_attempt_dir(adir, status):
     """Where the attempt directory lives once the job is in `status` (done/ for terminal)."""
     jobdir = os.path.dirname(os.path.dirname(adir))
     root = os.path.dirname(os.path.dirname(jobdir))
-    return os.path.join(root, STATE_DIRS.get(status, "in-progress"), os.path.basename(jobdir),
-                        "attempts", os.path.basename(adir))
+    return os.path.join(
+        root,
+        STATE_DIRS.get(status, "in-progress"),
+        os.path.basename(jobdir),
+        "attempts",
+        os.path.basename(adir),
+    )
 
 
 def build_meta(job, runner, adir, status, validation_errors, error, warnings):
@@ -270,8 +294,9 @@ def write_result(adir, business, meta):
     atomic_write_json(os.path.join(workdir, "result.json"), res)
 
 
-def finalize_attempt(store, jobid, n, *, status=None, error=None, warnings=(),
-                     attempt_status=None, job_extra=None):
+def finalize_attempt(
+    store, jobid, n, *, status=None, error=None, warnings=(), attempt_status=None, job_extra=None
+):
     """Finish an attempt whose process group is confirmed gone (Section 10.4 steps 3-5).
 
     status None derives the state from return code, signal and the result
@@ -315,13 +340,22 @@ def finalize_attempt(store, jobid, n, *, status=None, error=None, warnings=(),
         store.write_runner(adir, runner)
         meta = build_meta(job, runner, adir, status, verrs, error, warnings)
         write_result(adir, business, meta)
-        runner.update({"final": True, "status": attempt_status or status, "taskmgr": meta,
-                       "finalized_at": utcnow_iso()})
+        runner.update(
+            {
+                "final": True,
+                "status": attempt_status or status,
+                "taskmgr": meta,
+                "finalized_at": utcnow_iso(),
+            }
+        )
         store.write_runner(adir, runner)
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
-        if job.get("current_attempt") != n or job["state"] in TERMINAL_STATES \
-                or job["state"] == "queued":
+        if (
+            job.get("current_attempt") != n
+            or job["state"] in TERMINAL_STATES
+            or job["state"] == "queued"
+        ):
             return job
         job["state"] = status
         job["error"] = meta.get("error")
@@ -346,14 +380,23 @@ def requeue_or_end_interrupted(store, jobid, n, reason):
     """Section 12.2 step 5: mark attempt interrupted, then cancel / fail / requeue."""
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
-        if job["state"] in TERMINAL_STATES or job["state"] == "queued" \
-                or job.get("current_attempt") != n:
+        if (
+            job["state"] in TERMINAL_STATES
+            or job["state"] == "queued"
+            or job.get("current_attempt") != n
+        ):
             return job
         adir = store.attempt_dir(jobdir, n)
         runner, _ = store.read_runner(adir)
         runner = runner or {"attempt": n}
-        runner.update({"final": True, "status": "interrupted", "interrupted_reason": reason,
-                       "ended_at": runner.get("ended_at") or utcnow_iso()})
+        runner.update(
+            {
+                "final": True,
+                "status": "interrupted",
+                "interrupted_reason": reason,
+                "ended_at": runner.get("ended_at") or utcnow_iso(),
+            }
+        )
         if os.path.isdir(adir):
             store.write_runner(adir, runner)
         for a in job.get("attempts", []):
@@ -364,10 +407,19 @@ def requeue_or_end_interrupted(store, jobid, n, reason):
         if job.get("cancel_requested"):
             end_without_result(store, jobdir, job, n, "cancelled", None, runner)
         elif job.get("auto_restarts", 0) >= maxr:
-            end_without_result(store, jobdir, job, n, "failed", {
-                "kind": "too_many_interruptions",
-                "message": "interrupted %d times (max_auto_restarts=%d); last: %s"
-                           % (job.get("auto_restarts", 0) + 1, maxr, reason)}, runner)
+            end_without_result(
+                store,
+                jobdir,
+                job,
+                n,
+                "failed",
+                {
+                    "kind": "too_many_interruptions",
+                    "message": "interrupted %d times (max_auto_restarts=%d); last: %s"
+                    % (job.get("auto_restarts", 0) + 1, maxr, reason),
+                },
+                runner,
+            )
         else:
             job["auto_restarts"] = job.get("auto_restarts", 0) + 1
             job["state"] = "queued"
@@ -383,8 +435,15 @@ def end_without_result(store, jobdir, job, n, state, error, runner):
         adir = store.attempt_dir(jobdir, n)
         if os.path.isdir(adir):
             business, _, w = read_task_result(os.path.join(adir, "workdir"))
-            meta = build_meta(job, runner or {"attempt": n}, adir, state, [], error,
-                              list((runner or {}).get("warnings", [])) + w)
+            meta = build_meta(
+                job,
+                runner or {"attempt": n},
+                adir,
+                state,
+                [],
+                error,
+                list((runner or {}).get("warnings", [])) + w,
+            )
             write_result(adir, business, meta)
             if runner is not None and not runner.get("taskmgr"):
                 runner["taskmgr"] = meta
@@ -397,6 +456,7 @@ def end_without_result(store, jobdir, job, n, state, error, runner):
 
 def remove_tree(path):
     """rmtree that also handles read-only package copies."""
+
     def onerror(func, p, _exc):
         try:
             os.chmod(os.path.dirname(p), 0o700)
@@ -404,4 +464,5 @@ def remove_tree(path):
             func(p)
         except OSError:
             pass
+
     shutil.rmtree(path, onerror=onerror)

@@ -78,8 +78,12 @@ def mark_unknown(store, jobid, n, kind, message, details=None):
         adir = store.attempt_dir(jobdir, n)
         runner, _ = store.read_runner(adir)
         if isinstance(runner, dict):
-            runner["unknown"] = {"kind": kind, "message": message, "details": details,
-                                 "at": utcnow_iso()}
+            runner["unknown"] = {
+                "kind": kind,
+                "message": message,
+                "details": details,
+                "at": utcnow_iso(),
+            }
             store.write_runner(adir, runner)
         job["state"] = "unknown"
         job["error"] = {"kind": kind, "message": message}
@@ -88,8 +92,15 @@ def mark_unknown(store, jobid, n, kind, message, details=None):
 
 
 def identity_of(runner):
-    keys = ("boot_id", "shim_pid", "shim_start_time", "pgid", "leader_pid", "leader_start_time",
-            "argv_hash")
+    keys = (
+        "boot_id",
+        "shim_pid",
+        "shim_start_time",
+        "pgid",
+        "leader_pid",
+        "leader_start_time",
+        "argv_hash",
+    )
     return {k: runner.get(k) for k in keys} if isinstance(runner, dict) else None
 
 
@@ -100,13 +111,22 @@ def _has_identity(runner):
 def finish_stopped(store, jobid, n, stop_reason, exited, warnings=()):
     """Finalize once the process group is confirmed gone."""
     if stop_reason in STOP_OUTCOME:
-        return finalize_attempt(store, jobid, n, status=STOP_OUTCOME[stop_reason],
-                                warnings=warnings)
+        return finalize_attempt(
+            store, jobid, n, status=STOP_OUTCOME[stop_reason], warnings=warnings
+        )
     if exited:
         return finalize_attempt(store, jobid, n, warnings=warnings)
-    return finalize_attempt(store, jobid, n, status="failed", warnings=warnings, error={
-        "kind": "exit_code_lost",
-        "message": "the task ended while its supervisor was gone; exit code unavailable"})
+    return finalize_attempt(
+        store,
+        jobid,
+        n,
+        status="failed",
+        warnings=warnings,
+        error={
+            "kind": "exit_code_lost",
+            "message": "the task ended while its supervisor was gone; exit code unavailable",
+        },
+    )
 
 
 def assess(store, jobid, resolve=False):
@@ -144,8 +164,9 @@ def assess(store, jobid, resolve=False):
     try:
         stop_reason = job.get("stop_reason") if state in ("stopping", "unknown") else None
         exited = bool(runner.get("exited"))
-        if job.get("cancel_requested") and (state == "unknown" or (stop_reason is None
-                                                                    and not exited)):
+        if job.get("cancel_requested") and (
+            state == "unknown" or (stop_reason is None and not exited)
+        ):
             # A cancel request stays effective across restarts; on an unknown job it
             # turns into cancelled once the stop is confirmed (Section 13.2).
             stop_reason = "cancel"
@@ -155,15 +176,21 @@ def assess(store, jobid, resolve=False):
                 return {"decision": "interrupted", "state": j["state"]}
             if not resolve:
                 mark_unknown(store, jobid, n, "record_incomplete", "identity record incomplete")
-            return {"decision": "unknown", "reason": "identity record incomplete",
-                    "identity": identity_of(runner)}
+            return {
+                "decision": "unknown",
+                "reason": "identity record incomplete",
+                "identity": identity_of(runner),
+            }
         try:
             current_boot = procutil.boot_id()
         except OSError as e:
             if not resolve:
                 mark_unknown(store, jobid, n, "undeterminable", "cannot read boot_id: %s" % e)
-            return {"decision": "unknown", "reason": "cannot read boot_id",
-                    "identity": identity_of(runner)}
+            return {
+                "decision": "unknown",
+                "reason": "cannot read boot_id",
+                "identity": identity_of(runner),
+            }
         if runner.get("boot_id") != current_boot:
             if exited:
                 j = finish_stopped(store, jobid, n, stop_reason, True)
@@ -175,8 +202,11 @@ def assess(store, jobid, resolve=False):
         except procutil.ProcUnavailable as e:
             if not resolve:
                 mark_unknown(store, jobid, n, "undeterminable", "cannot read /proc: %s" % e)
-            return {"decision": "unknown", "reason": "cannot read /proc",
-                    "identity": identity_of(runner)}
+            return {
+                "decision": "unknown",
+                "reason": "cannot read /proc",
+                "identity": identity_of(runner),
+            }
         if not members:
             warnings = []
             if "leftover" in (job.get("stop_reason"), runner.get("stop_unconfirmed_reason")):
@@ -186,8 +216,11 @@ def assess(store, jobid, resolve=False):
         if resolve:
             if runner.get("stop_unconfirmed_reason"):
                 # SIGKILL already failed once: an operator has to look at it.
-                return {"decision": "still_running", "alive_pids": members,
-                        "identity": identity_of(runner)}
+                return {
+                    "decision": "still_running",
+                    "alive_pids": members,
+                    "identity": identity_of(runner),
+                }
             # The unknown came from an undeterminable check that can now be decided:
             # hand the attempt back to the daemon, which takes over tracking (case 4.4).
             with store.state_lock():
@@ -195,8 +228,11 @@ def assess(store, jobid, resolve=False):
                 job["state"] = "stopping" if job.get("stop_reason") else "running"
                 job["error"] = None
                 store.save_job(jobdir, job)
-            return {"decision": "handed_to_daemon", "alive_pids": members,
-                    "identity": identity_of(runner)}
+            return {
+                "decision": "handed_to_daemon",
+                "alive_pids": members,
+                "identity": identity_of(runner),
+            }
         keep_fd = True
         tk = Takeover(store, jobid, n, runner, lock_fd, exited, job)
         return {"decision": "takeover", "takeover": tk, "alive_pids": members}
@@ -215,8 +251,9 @@ class Takeover:
         self.min_start = runner["leader_start_time"]
         self.exited = exited
         self.started_epoch = runner.get("started_at_epoch")
-        self.timeout = load_task(os.path.dirname(os.path.dirname(store.attempt_dir(
-            store.find_job_dir(jobid), n)))).get("timeout_seconds")
+        self.timeout = load_task(
+            os.path.dirname(os.path.dirname(store.attempt_dir(store.find_job_dir(jobid), n)))
+        ).get("timeout_seconds")
         self.stop_reason = job.get("stop_reason") if job["state"] == "stopping" else None
         self.stopper = None
         self.last_poll = 0.0
@@ -224,8 +261,10 @@ class Takeover:
         self.done = False
         cfg = store.config
         self.poll = float(cfg.get("control_poll_seconds", 2))
-        self.grace, self.confirm = cfg.get("stop_grace_seconds", 30), cfg.get(
-            "kill_confirm_seconds", 10)
+        self.grace, self.confirm = (
+            cfg.get("stop_grace_seconds", 30),
+            cfg.get("kill_confirm_seconds", 10),
+        )
         self._note()
         if self.exited:
             if self.stop_reason in (None, "leftover"):
@@ -260,33 +299,39 @@ class Takeover:
         try:
             if self.stopper is None:
                 if not procutil.group_members(self.pgid, self.min_start):
-                    finish_stopped(self.store, self.jobid, self.n, None, self.exited,
-                                   self.warnings)
+                    finish_stopped(self.store, self.jobid, self.n, None, self.exited, self.warnings)
                     return self.close()
                 now = time.monotonic()
                 if now - self.last_poll >= self.poll:
                     self.last_poll = now
                     _, job = self.store.load_job(self.jobid)
-                    if job["state"] not in ("running", "stopping") \
-                            or job.get("current_attempt") != self.n:
+                    if (
+                        job["state"] not in ("running", "stopping")
+                        or job.get("current_attempt") != self.n
+                    ):
                         return self.close()
                     if job.get("cancel_requested"):
                         self._begin_stop("cancel")
-                    elif self.timeout and self.started_epoch and \
-                            time.time() - self.started_epoch >= self.timeout:
+                    elif (
+                        self.timeout
+                        and self.started_epoch
+                        and time.time() - self.started_epoch >= self.timeout
+                    ):
                         self._begin_stop("timeout")
                 return
             r = self.stopper.step()
             if r == "stopped":
-                finish_stopped(self.store, self.jobid, self.n, self.stop_reason, self.exited,
-                               self.warnings)
+                finish_stopped(
+                    self.store, self.jobid, self.n, self.stop_reason, self.exited, self.warnings
+                )
                 self.close()
             elif r == "unconfirmed":
                 self._record_unconfirmed()
                 self.close()
         except procutil.ProcUnavailable as e:
-            mark_unknown(self.store, self.jobid, self.n, "undeterminable",
-                         "cannot read /proc: %s" % e)
+            mark_unknown(
+                self.store, self.jobid, self.n, "undeterminable", "cannot read /proc: %s" % e
+            )
             self.close()
 
     def _record_unconfirmed(self):
@@ -295,9 +340,14 @@ class Takeover:
         if isinstance(runner, dict):
             runner["stop_unconfirmed_reason"] = self.stop_reason
             self.store.write_runner(adir, runner)
-        mark_unknown(self.store, self.jobid, self.n, "stop_unconfirmed",
-                     "processes still alive after SIGKILL",
-                     {"alive_pids": self.stopper.alive if self.stopper else []})
+        mark_unknown(
+            self.store,
+            self.jobid,
+            self.n,
+            "stop_unconfirmed",
+            "processes still alive after SIGKILL",
+            {"alive_pids": self.stopper.alive if self.stopper else []},
+        )
 
 
 def runner_status_snapshot(adir):

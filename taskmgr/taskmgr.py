@@ -18,8 +18,17 @@ import tempfile
 import time
 
 from . import package
-from .common import (PROTOCOL_VERSION, SUBMISSION_KEY_RE, TASK_ID_RE, TERMINAL_STATES,
-                     TaskmgrError, atomic_write_json, flocked, read_json, utcnow_iso)
+from .common import (
+    PROTOCOL_VERSION,
+    SUBMISSION_KEY_RE,
+    TASK_ID_RE,
+    TERMINAL_STATES,
+    TaskmgrError,
+    atomic_write_json,
+    flocked,
+    read_json,
+    utcnow_iso,
+)
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template")
 
@@ -36,6 +45,7 @@ def eprint(*a):
 # ---------------------------------------------------------------------------
 # Machine list and transports
 
+
 def home_dir(args=None):
     h = getattr(args, "home", None) or os.environ.get("TASKMGR_HOME") or "~/.taskmgr"
     return os.path.abspath(os.path.expanduser(h))
@@ -48,22 +58,26 @@ def load_machines(home):
     except ValueError as e:
         raise TaskmgrError("bad_machines", "%s is not valid JSON: %s" % (path, e))
     if data is None:
-        raise TaskmgrError("no_machines", "machine list %s does not exist (see "
-                           "taskmgr/deploy/machines.example.json)" % path)
+        raise TaskmgrError(
+            "no_machines",
+            "machine list %s does not exist (see taskmgr/deploy/machines.example.json)" % path,
+        )
     servers = data.get("servers") if isinstance(data, dict) else data
     if not isinstance(servers, list):
-        raise TaskmgrError("bad_machines", "%s must contain a \"servers\" array" % path)
+        raise TaskmgrError("bad_machines", '%s must contain a "servers" array' % path)
     names = set()
     for s in servers:
         if not isinstance(s, dict) or not s.get("name") or s["name"] in names:
             raise TaskmgrError("bad_machines", "every server needs a unique name: %r" % (s,))
         names.add(s["name"])
         if s.get("transport", "ssh") not in ("ssh", "local"):
-            raise TaskmgrError("bad_machines", "server %s: transport must be ssh or local"
-                               % s["name"])
+            raise TaskmgrError(
+                "bad_machines", "server %s: transport must be ssh or local" % s["name"]
+            )
         if not s.get("remote_root") or not s.get("remote_command"):
-            raise TaskmgrError("bad_machines", "server %s needs remote_root and remote_command"
-                               % s["name"])
+            raise TaskmgrError(
+                "bad_machines", "server %s needs remote_root and remote_command" % s["name"]
+            )
     return servers
 
 
@@ -83,9 +97,10 @@ def pick_round_robin(home, servers):
         state = read_json(os.path.join(home, "rr.json"), {}) or {}
         cursor = int(state.get("cursor", 0))
         chosen = enabled[cursor % len(enabled)]
-        atomic_write_json(os.path.join(home, "rr.json"),
-                          {"cursor": cursor + 1, "last": chosen["name"],
-                           "updated_at": utcnow_iso()})
+        atomic_write_json(
+            os.path.join(home, "rr.json"),
+            {"cursor": cursor + 1, "last": chosen["name"], "updated_at": utcnow_iso()},
+        )
     return chosen
 
 
@@ -96,8 +111,12 @@ class Remote:
 
     def argv(self, args):
         s = self.server
-        base = shlex.split(s["remote_command"]) + ["--root", s["remote_root"],
-                                                   "--protocol-version", str(PROTOCOL_VERSION)]
+        base = shlex.split(s["remote_command"]) + [
+            "--root",
+            s["remote_root"],
+            "--protocol-version",
+            str(PROTOCOL_VERSION),
+        ]
         base += [str(a) for a in args]
         if s.get("transport", "ssh") == "local":
             return base
@@ -132,9 +151,13 @@ class Remote:
         self._inject()
         upload = open(stdin_path, "rb") if stdin_path else None
         try:
-            p = subprocess.run(self.argv(args),
-                               stdin=upload if upload is not None else subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+            p = subprocess.run(
+                self.argv(args),
+                stdin=upload if upload is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+            )
         except subprocess.TimeoutExpired:
             raise ConnError("remote call timed out", self.name)
         except OSError as e:
@@ -154,22 +177,24 @@ class Remote:
                     pass
                 break
         if not isinstance(obj, dict):
-            raise ConnError("no valid JSON from remote (exit %d): %s" % (p.returncode,
-                                                                          err[-2000:]),
-                            self.name)
+            raise ConnError(
+                "no valid JSON from remote (exit %d): %s" % (p.returncode, err[-2000:]), self.name
+            )
         check_protocol(obj, self.name)
         if "error" in obj:
             e = obj["error"]
-            raise TaskmgrError(e.get("code", "remote_error"), e.get("message", ""), 2,
-                               self.name, e.get("details"))
+            raise TaskmgrError(
+                e.get("code", "remote_error"), e.get("message", ""), 2, self.name, e.get("details")
+            )
         return obj
 
     def stream(self, args, stdout):
         """Run a streaming subcommand (logs/fetch) writing to stdout; returns exit code."""
         self._inject()
         try:
-            p = subprocess.run(self.argv(args), stdin=subprocess.DEVNULL, stdout=stdout,
-                               stderr=subprocess.PIPE)
+            p = subprocess.run(
+                self.argv(args), stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.PIPE
+            )
         except OSError as e:
             raise ConnError("cannot run transport: %s" % e, self.name)
         err = p.stderr.decode(errors="replace").strip()
@@ -186,19 +211,24 @@ class Remote:
             if isinstance(obj, dict) and "error" in obj:
                 check_protocol(obj, self.name)
                 e = obj["error"]
-                raise TaskmgrError(e.get("code", "remote_error"), e.get("message", ""), 2,
-                                   self.name)
-            raise TaskmgrError("remote_error", "remote exited %d: %s" % (p.returncode,
-                                                                        err[-2000:]), 2,
-                               self.name)
+                raise TaskmgrError(
+                    e.get("code", "remote_error"), e.get("message", ""), 2, self.name
+                )
+            raise TaskmgrError(
+                "remote_error", "remote exited %d: %s" % (p.returncode, err[-2000:]), 2, self.name
+            )
         return 0
 
 
 def check_protocol(obj, host):
     v = obj.get("protocol_version")
     if v != PROTOCOL_VERSION:
-        raise TaskmgrError("protocol_mismatch", "remote protocol_version %r is incompatible "
-                           "with local %d" % (v, PROTOCOL_VERSION), 2, host)
+        raise TaskmgrError(
+            "protocol_mismatch",
+            "remote protocol_version %r is incompatible with local %d" % (v, PROTOCOL_VERSION),
+            2,
+            host,
+        )
 
 
 def query_all(servers, args):
@@ -222,6 +252,7 @@ def query_all(servers, args):
 # ---------------------------------------------------------------------------
 # init / validate
 
+
 def cmd_init(args):
     if not TASK_ID_RE.match(args.task_id):
         raise TaskmgrError("bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$")
@@ -237,8 +268,17 @@ def cmd_init(args):
             f.write(text)
     prog = os.path.join(target, "progress.json")
     with open(prog, "w") as f:
-        json.dump({"schema_version": 1, "stage": "not_started", "updated_at": utcnow_iso(),
-                   "percent": 0, "message": "not started"}, f, indent=2)
+        json.dump(
+            {
+                "schema_version": 1,
+                "stage": "not_started",
+                "updated_at": utcnow_iso(),
+                "percent": 0,
+                "message": "not started",
+            },
+            f,
+            indent=2,
+        )
         f.write("\n")
     return {"path": target, "task_id": args.task_id}, 0
 
@@ -255,8 +295,14 @@ def validate_path(path):
             skipped = package.safe_extract(path, tmp, skip_unsafe=True)
         except TaskmgrError as e:
             return [{"code": e.code, "message": e.message}], None, None
-        unsafe = [{"code": "unsafe_package", "message": "unsafe archive entry: %s" % s["reason"],
-                   "path": s["path"]} for s in skipped]
+        unsafe = [
+            {
+                "code": "unsafe_package",
+                "message": "unsafe archive entry: %s" % s["reason"],
+                "path": s["path"],
+            }
+            for s in skipped
+        ]
         root = package.package_root(tmp)
         errors, task = package.validate_dir(root)
         errors = unsafe + errors  # report every error, not only the first unsafe entry
@@ -274,17 +320,21 @@ def cmd_validate(args):
 # ---------------------------------------------------------------------------
 # submit
 
+
 def cmd_submit(args):
     if args.submission_key and not args.host:
-        raise TaskmgrError("bad_args", "--submission-key requires --host (a round-robin retry "
-                           "could land on another server)")
+        raise TaskmgrError(
+            "bad_args",
+            "--submission-key requires --host (a round-robin retry could land on another server)",
+        )
     if args.submission_key and not SUBMISSION_KEY_RE.match(args.submission_key):
         raise TaskmgrError("bad_args", "--submission-key must match ^[A-Za-z0-9._-]{1,128}$")
     path = os.path.abspath(args.path)
     errors, task, _ = validate_path(path)
     if errors:
-        raise TaskmgrError("invalid_package", "package validation failed (%d errors)"
-                           % len(errors), details=errors)
+        raise TaskmgrError(
+            "invalid_package", "package validation failed (%d errors)" % len(errors), details=errors
+        )
     home = home_dir(args)
     servers = load_machines(home)
     server = find_server(servers, args.host) if args.host else pick_round_robin(home, servers)
@@ -300,20 +350,32 @@ def cmd_submit(args):
             ack = remote.call(["receive", "--submission-key", key], stdin_path=upload)
         except (ConnError, KeyboardInterrupt) as e:
             msg = e.message if isinstance(e, ConnError) else "interrupted during upload"
-            eprint("submission outcome is uncertain on host %s (submission key %s): %s"
-                   % (server["name"], key, msg))
+            eprint(
+                "submission outcome is uncertain on host %s (submission key %s): %s"
+                % (server["name"], key, msg)
+            )
             eprint("do NOT resubmit elsewhere; retry safely with:")
-            eprint("  task submit --host %s --submission-key %s %s"
-                   % (shlex.quote(server["name"]), shlex.quote(key), shlex.quote(args.path)))
-            raise TaskmgrError("submission_uncertain", msg, 2, server["name"],
-                               {"submission_key": key})
-    return {"host": server["name"], "jobid": ack["jobid"], "task_id": ack["task_id"],
-            "submission_key": ack["submission_key"], "deduplicated": ack["deduplicated"],
-            "content_hash": ack.get("content_hash"), "state": ack.get("state")}, 0
+            eprint(
+                "  task submit --host %s --submission-key %s %s"
+                % (shlex.quote(server["name"]), shlex.quote(key), shlex.quote(args.path))
+            )
+            raise TaskmgrError(
+                "submission_uncertain", msg, 2, server["name"], {"submission_key": key}
+            )
+    return {
+        "host": server["name"],
+        "jobid": ack["jobid"],
+        "task_id": ack["task_id"],
+        "submission_key": ack["submission_key"],
+        "deduplicated": ack["deduplicated"],
+        "content_hash": ack.get("content_hash"),
+        "state": ack.get("state"),
+    }, 0
 
 
 # ---------------------------------------------------------------------------
 # jobs / status
+
 
 def cmd_jobs(args):
     servers = load_machines(home_dir(args))
@@ -339,10 +401,19 @@ def render_status(host, st, complete):
         out["complete"] = complete
         return out
     j = st["job"]
-    return {"host": host, "jobid": j["jobid"], "task_id": j["task_id"], "state": j["state"],
-            "cancel_requested": j["cancel_requested"], "attempt": st.get("attempt_info"),
-            "progress": st.get("progress"), "submitted_at": j["submitted_at"],
-            "gpus": j["gpus"], "error": j.get("error"), "complete": complete}
+    return {
+        "host": host,
+        "jobid": j["jobid"],
+        "task_id": j["task_id"],
+        "state": j["state"],
+        "cancel_requested": j["cancel_requested"],
+        "attempt": st.get("attempt_info"),
+        "progress": st.get("progress"),
+        "submitted_at": j["submitted_at"],
+        "gpus": j["gpus"],
+        "error": j.get("error"),
+        "complete": complete,
+    }
 
 
 def locate(args, servers):
@@ -351,25 +422,35 @@ def locate(args, servers):
         server = find_server(servers, args.host)
         st = Remote(server).call(["status", args.jobid])
         if not st.get("found"):
-            raise TaskmgrError("not_found", "job %s not found on %s" % (args.jobid, args.host),
-                               2, args.host)
+            raise TaskmgrError(
+                "not_found", "job %s not found on %s" % (args.jobid, args.host), 2, args.host
+            )
         return server, st, True
     results, errors = query_all(servers, ["status", args.jobid])
-    matches = [(s, results[s["name"]]) for s in servers
-               if results.get(s["name"], {}).get("found")]
+    matches = [(s, results[s["name"]]) for s in servers if results.get(s["name"], {}).get("found")]
     if len(matches) > 1:
         hosts = [s["name"] for s, _ in matches]
-        raise TaskmgrError("ambiguous", "job %s exists on several servers %s; use --host"
-                           % (args.jobid, hosts), 2, details={"hosts": hosts})
+        raise TaskmgrError(
+            "ambiguous",
+            "job %s exists on several servers %s; use --host" % (args.jobid, hosts),
+            2,
+            details={"hosts": hosts},
+        )
     if len(matches) == 1:
         if errors:
-            eprint("warning: some servers were unreachable (%s); uniqueness of %s could not be "
-                   "fully checked" % (", ".join(e["host"] for e in errors), args.jobid))
+            eprint(
+                "warning: some servers were unreachable (%s); uniqueness of %s could not be "
+                "fully checked" % (", ".join(e["host"] for e in errors), args.jobid)
+            )
         return matches[0][0], matches[0][1], not errors
     if errors:
-        raise TaskmgrError("incomplete", "job %s not found on reachable servers; unreachable: "
-                           "%s" % (args.jobid, ", ".join(e["host"] for e in errors)), 2,
-                           details={"errors": errors})
+        raise TaskmgrError(
+            "incomplete",
+            "job %s not found on reachable servers; unreachable: "
+            "%s" % (args.jobid, ", ".join(e["host"] for e in errors)),
+            2,
+            details={"errors": errors},
+        )
     raise TaskmgrError("not_found", "job %s not found on any server" % args.jobid)
 
 
@@ -394,8 +475,12 @@ def wait_status(args, servers):
             else:
                 st = Remote(server).call(["status", args.jobid])
                 if not st.get("found"):
-                    raise TaskmgrError("not_found", "job %s disappeared from %s"
-                                       % (args.jobid, server["name"]), 2, server["name"])
+                    raise TaskmgrError(
+                        "not_found",
+                        "job %s disappeared from %s" % (args.jobid, server["name"]),
+                        2,
+                        server["name"],
+                    )
             fail_since = None
         except ConnError as e:
             if not args.host and server is None:
@@ -403,17 +488,28 @@ def wait_status(args, servers):
             now = time.monotonic()
             fail_since = fail_since or now
             if now - fail_since >= args.retry_timeout:
-                raise TaskmgrError("connection_error", "giving up after %.0fs of connection "
-                                   "failures: %s" % (now - fail_since, e.message), 2, e.host)
+                raise TaskmgrError(
+                    "connection_error",
+                    "giving up after %.0fs of connection "
+                    "failures: %s" % (now - fail_since, e.message),
+                    2,
+                    e.host,
+                )
             if deadline is not None and now >= deadline:
                 host = server["name"] if server else args.host
                 out = render_status(host, st, complete) if st else {}
-                out["error"] = {"code": "wait_timeout", "message": "--timeout expired while "
-                                "the server was unreachable: %s" % e.message, "host": host}
+                out["error"] = {
+                    "code": "wait_timeout",
+                    "message": "--timeout expired while the server was unreachable: %s" % e.message,
+                    "host": host,
+                }
                 return out, 2
             eprint("connection failed (%s); retrying" % e.message)
-            time.sleep(args.poll_interval if deadline is None
-                       else max(0.0, min(args.poll_interval, deadline - now)))
+            time.sleep(
+                args.poll_interval
+                if deadline is None
+                else max(0.0, min(args.poll_interval, deadline - now))
+            )
             continue
         state = st["job"]["state"]
         if st["terminal"]:
@@ -425,15 +521,22 @@ def wait_status(args, servers):
             return out, 3
         if deadline is not None and time.monotonic() >= deadline:
             out = render_status(server["name"], st, complete)
-            out["error"] = {"code": "wait_timeout", "message": "job still %s after %ss"
-                            % (state, args.timeout), "host": server["name"]}
+            out["error"] = {
+                "code": "wait_timeout",
+                "message": "job still %s after %ss" % (state, args.timeout),
+                "host": server["name"],
+            }
             return out, 2
-        time.sleep(args.poll_interval if deadline is None
-                   else max(0.0, min(args.poll_interval, deadline - time.monotonic())))
+        time.sleep(
+            args.poll_interval
+            if deadline is None
+            else max(0.0, min(args.poll_interval, deadline - time.monotonic()))
+        )
 
 
 # ---------------------------------------------------------------------------
 # cancel / retry / resolve
+
 
 def _host_call(args, rargs):
     servers = load_machines(home_dir(args))
@@ -466,6 +569,7 @@ def cmd_resolve(args):
 # ---------------------------------------------------------------------------
 # logs / fetch
 
+
 def cmd_logs(args):
     servers = load_machines(home_dir(args))
     server = find_server(servers, args.host)
@@ -487,8 +591,9 @@ def cmd_fetch(args):
     remote = Remote(server)
     st = remote.call(["status", args.jobid])
     if not st.get("found"):
-        raise TaskmgrError("not_found", "job %s not found on %s" % (args.jobid, args.host), 2,
-                           args.host)
+        raise TaskmgrError(
+            "not_found", "job %s not found on %s" % (args.jobid, args.host), 2, args.host
+        )
     have = st.get("attempts", [])
     if args.all_attempts:
         nums = have
@@ -508,14 +613,17 @@ def cmd_fetch(args):
         raise TaskmgrError("exists", "target directory already exists: %s" % ", ".join(existing))
     partial = not st["terminal"]
     if partial:
-        eprint("warning: job %s is %s; fetched results may be incomplete"
-               % (args.jobid, st["job"]["state"]))
+        eprint(
+            "warning: job %s is %s; fetched results may be incomplete"
+            % (args.jobid, st["job"]["state"])
+        )
     os.makedirs(os.path.join(base, "attempts"), exist_ok=True)
     staging = tempfile.mkdtemp(prefix=".fetch-", dir=base)
     try:
         tar_path = os.path.join(staging, "stream.tar.gz")
-        rargs = ["fetch", args.jobid] + (["--all-attempts"] if args.all_attempts
-                                         else ["--attempt", nums[0]])
+        rargs = ["fetch", args.jobid] + (
+            ["--all-attempts"] if args.all_attempts else ["--attempt", nums[0]]
+        )
         with open(tar_path, "wb") as f:
             remote.stream(rargs, f)
         skipped = package.safe_extract(tar_path, os.path.join(staging, "x"), skip_unsafe=True)
@@ -532,18 +640,33 @@ def cmd_fetch(args):
             fetched.append({"attempt": n, "path": t})
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    return {"host": server["name"], "jobid": args.jobid, "state": st["job"]["state"],
-            "partial": partial, "attempts": fetched, "skipped": skipped}, 0
+    return {
+        "host": server["name"],
+        "jobid": args.jobid,
+        "state": st["job"]["state"],
+        "partial": partial,
+        "attempts": fetched,
+        "skipped": skipped,
+    }, 0
 
 
 def cmd_hosts(args):
     servers = load_machines(home_dir(args))
-    return {"servers": [{"name": s["name"], "enabled": s.get("enabled", True),
-                         "transport": s.get("transport", "ssh"),
-                         "remote_root": s["remote_root"]} for s in servers]}, 0
+    return {
+        "servers": [
+            {
+                "name": s["name"],
+                "enabled": s.get("enabled", True),
+                "transport": s.get("transport", "ssh"),
+                "remote_root": s["remote_root"],
+            }
+            for s in servers
+        ]
+    }, 0
 
 
 # ---------------------------------------------------------------------------
+
 
 def build_parser():
     p = argparse.ArgumentParser(prog="task", description="GPU task manager (local CLI)")
@@ -594,9 +717,19 @@ def build_parser():
     return p
 
 
-COMMANDS = {"init": cmd_init, "validate": cmd_validate, "submit": cmd_submit,
-            "jobs": cmd_jobs, "status": cmd_status, "cancel": cmd_cancel, "retry": cmd_retry,
-            "resolve": cmd_resolve, "logs": cmd_logs, "fetch": cmd_fetch, "hosts": cmd_hosts}
+COMMANDS = {
+    "init": cmd_init,
+    "validate": cmd_validate,
+    "submit": cmd_submit,
+    "jobs": cmd_jobs,
+    "status": cmd_status,
+    "cancel": cmd_cancel,
+    "retry": cmd_retry,
+    "resolve": cmd_resolve,
+    "logs": cmd_logs,
+    "fetch": cmd_fetch,
+    "hosts": cmd_hosts,
+}
 
 
 def main(argv=None):
@@ -606,8 +739,10 @@ def main(argv=None):
     except SystemExit as e:  # argparse errors are parameter errors: exit 2
         if e.code == 0:
             return 0
-        sys.stdout.write(json.dumps({"error": {"code": "bad_args", "message":
-                                               "invalid arguments (see stderr)"}}) + "\n")
+        sys.stdout.write(
+            json.dumps({"error": {"code": "bad_args", "message": "invalid arguments (see stderr)"}})
+            + "\n"
+        )
         return 2
     try:
         out, code = COMMANDS[args.cmd](args)
@@ -620,11 +755,14 @@ def main(argv=None):
     except KeyboardInterrupt:
         eprint("interrupted (remote jobs are not affected)")
         if args.cmd != "logs":
-            sys.stdout.write(json.dumps({"error": {"code": "interrupted",
-                                                   "message": "interrupted locally"}}) + "\n")
+            sys.stdout.write(
+                json.dumps({"error": {"code": "interrupted", "message": "interrupted locally"}})
+                + "\n"
+            )
         return 2
     except Exception as e:  # noqa: BLE001 - keep the JSON / exit-code contract
         import traceback
+
         eprint(traceback.format_exc())
         err = {"error": {"code": "internal_error", "message": "%s: %s" % (type(e).__name__, e)}}
         if args.cmd == "logs":

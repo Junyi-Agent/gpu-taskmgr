@@ -6,8 +6,9 @@ import time
 
 from helpers import GPUS, OK_RESULT, Env, pid_alive
 
-PY_RESULT = ("python3 -c 'import json,os;"
-             "json.dump(%s, open(os.environ[\"TASKMGR_RESULT_FILE\"], \"w\"))'")
+PY_RESULT = (
+    'python3 -c \'import json,os;json.dump(%s, open(os.environ["TASKMGR_RESULT_FILE"], "w"))\''
+)
 
 
 def write_result(obj):
@@ -24,22 +25,39 @@ class ExecTest(Env):
         os.makedirs(os.path.join(venv, "bin"))
         self.set_config(base_env={"LANG": "en_US.UTF-8", "EXTRA_BASE": "1"})
         out = os.path.join(self.tmp, "env.json")
-        script = ("python3 -c 'import json,os,sys; json.dump(dict(os.environ), open(\"%s\", \"w\"));"
-                  "sys.stdout.write(\"hello\\n\"); sys.stderr.write(\"oops\\n\")';"
-                  % out) + write_result({"outputs": {"speedup": 1.5}, "notes": "kept"})
-        pkg = self.make_pkg(script=script, gpus=[1], required=["speedup"],
-                            env={"NCCL_DEBUG": "WARN", "LANG": "C"},
-                            extra={"environment": {"venv": venv, "required_paths": [self.tmp]}})
+        script = (
+            'python3 -c \'import json,os,sys; json.dump(dict(os.environ), open("%s", "w"));'
+            'sys.stdout.write("hello\\n"); sys.stderr.write("oops\\n")\';' % out
+        ) + write_result({"outputs": {"speedup": 1.5}, "notes": "kept"})
+        pkg = self.make_pkg(
+            script=script,
+            gpus=[1],
+            required=["speedup"],
+            env={"NCCL_DEBUG": "WARN", "LANG": "C"},
+            extra={"environment": {"venv": venv, "required_paths": [self.tmp]}},
+        )
         j = self.submit(pkg)
         job = self.wait_state(j, "succeeded")
         res = self.result(j)
         self.assertEqual(res["outputs"], {"speedup": 1.5})
         self.assertEqual(res["notes"], "kept")
         m = res["_taskmgr"]
-        self.assertEqual((m["status"], m["return_code"], m["signal"], m["final"]),
-                         ("succeeded", 0, None, True))
-        for k in ("jobid", "task_id", "attempt", "host", "gpus", "started_at", "ended_at",
-                  "validation_errors", "error", "warnings", "paths"):
+        self.assertEqual(
+            (m["status"], m["return_code"], m["signal"], m["final"]), ("succeeded", 0, None, True)
+        )
+        for k in (
+            "jobid",
+            "task_id",
+            "attempt",
+            "host",
+            "gpus",
+            "started_at",
+            "ended_at",
+            "validation_errors",
+            "error",
+            "warnings",
+            "paths",
+        ):
             self.assertIn(k, m)
         self.assertEqual(m["gpus"], [{"declared": 1, "uuid": GPUS[1][1]}])
         with open(out) as f:
@@ -71,8 +89,15 @@ class ExecTest(Env):
         with open(os.path.join(adir, "stderr.log")) as f:
             self.assertEqual(f.read(), "oops\n")
         runner = self.runner(j)
-        for k in ("boot_id", "shim_pid", "shim_start_time", "pgid", "leader_pid",
-                  "leader_start_time", "argv_hash"):
+        for k in (
+            "boot_id",
+            "shim_pid",
+            "shim_start_time",
+            "pgid",
+            "leader_pid",
+            "leader_start_time",
+            "argv_hash",
+        ):
             self.assertIsNotNone(runner[k], k)
         self.assertEqual(runner["boot_id"], "boot-1")
         self.assertTrue(runner["final"])
@@ -84,8 +109,11 @@ class ExecTest(Env):
 
     def test_cuda_visible_devices_empty_without_gpus(self):
         out = os.path.join(self.tmp, "cvd")
-        j = self.submit(self.make_pkg(script="printf '%%s' \"${CUDA_VISIBLE_DEVICES-unset}\" > %s; %s"
-                                      % (out, OK_RESULT)))
+        j = self.submit(
+            self.make_pkg(
+                script="printf '%%s' \"${CUDA_VISIBLE_DEVICES-unset}\" > %s; %s" % (out, OK_RESULT)
+            )
+        )
         self.wait_state(j, "succeeded")
         with open(out) as f:
             self.assertEqual(f.read(), "")
@@ -93,8 +121,9 @@ class ExecTest(Env):
     def test_failure_modes(self):
         nz = self.submit(self.make_pkg(script="exit 3"))
         sig = self.submit(self.make_pkg(script="kill -9 $$"))
-        inv = self.submit(self.make_pkg(script=write_result({"outputs": {"a": 1}}),
-                                        required=["a", "b"]))
+        inv = self.submit(
+            self.make_pkg(script=write_result({"outputs": {"a": 1}}), required=["a", "b"])
+        )
         noout = self.submit(self.make_pkg(script=write_result({"x": 1})))
         r = self.wait_state(nz, "failed")
         self.assertEqual(self.result(nz)["_taskmgr"]["return_code"], 3)
@@ -109,12 +138,18 @@ class ExecTest(Env):
         self.wait_state(noout, "invalid_result")
 
     def test_result_merge_cases(self):
-        taskwrote = self.submit(self.make_pkg(script=write_result(
-            {"outputs": {}, "_taskmgr": {"status": "fake"}, "keep": 1})))
+        taskwrote = self.submit(
+            self.make_pkg(
+                script=write_result({"outputs": {}, "_taskmgr": {"status": "fake"}, "keep": 1})
+            )
+        )
         missing = self.submit(self.make_pkg(script="exit 0"))  # writes no result.json
         corrupt = self.submit(self.make_pkg(script="echo '{not json' > $TASKMGR_RESULT_FILE"))
-        clash = self.submit(self.make_pkg(
-            script="echo task > result.json.corrupt; echo '[1' > $TASKMGR_RESULT_FILE"))
+        clash = self.submit(
+            self.make_pkg(
+                script="echo task > result.json.corrupt; echo '[1' > $TASKMGR_RESULT_FILE"
+            )
+        )
         self.wait_state(taskwrote, "succeeded")
         res = self.result(taskwrote)
         self.assertEqual(res["keep"], 1)
@@ -138,12 +173,20 @@ class ExecTest(Env):
             self.assertEqual(f.read(), "[1\n")
 
     def test_progress_written_by_task_only(self):
-        j = self.submit(self.make_pkg(
-            script="python3 -c 'import json,os;json.dump({\"schema_version\":1,\"stage\":\"half\","
-                   "\"updated_at\":\"2026-10-29T08:15:00Z\",\"percent\":50},"
-                   "open(os.environ[\"TASKMGR_PROGRESS_FILE\"],\"w\"))'; sleep 2"))
-        self.wait_for(lambda: (self.ok("status", j, "--host", "s1").get("progress") or {})
-                      .get("stage") == "half", 15, "progress")
+        j = self.submit(
+            self.make_pkg(
+                script='python3 -c \'import json,os;json.dump({"schema_version":1,"stage":"half",'
+                '"updated_at":"2026-10-29T08:15:00Z","percent":50},'
+                'open(os.environ["TASKMGR_PROGRESS_FILE"],"w"))\'; sleep 2'
+            )
+        )
+        self.wait_for(
+            lambda: (
+                (self.ok("status", j, "--host", "s1").get("progress") or {}).get("stage") == "half"
+            ),
+            15,
+            "progress",
+        )
         st = self.ok("status", j, "--host", "s1")
         self.assertEqual(st["state"], "running")
         self.assertEqual(st["attempt"]["attempt"], 1)
@@ -164,8 +207,9 @@ class ExecTest(Env):
             m = self.result(j)["_taskmgr"]
             self.assertIsNone(m["return_code"])
             self.assertEqual(m["error"]["kind"], "setup")
-            self.assertFalse(os.path.exists(os.path.join(self.job_dir(j), "attempts", "0001",
-                                                         "stdout.log")))
+            self.assertFalse(
+                os.path.exists(os.path.join(self.job_dir(j), "attempts", "0001", "stdout.log"))
+            )
 
     def test_prestart_gpu_disappeared(self):
         self.stop_daemon()
@@ -200,8 +244,9 @@ class ExecTest(Env):
 
     def test_timeout_with_term_and_kill(self):
         polite = self.submit(self.make_pkg(script="sleep 60", timeout=1))
-        stubborn = self.submit(self.make_pkg(
-            script="trap '' TERM; while true; do sleep 0.1; done", timeout=1))
+        stubborn = self.submit(
+            self.make_pkg(script="trap '' TERM; while true; do sleep 0.1; done", timeout=1)
+        )
         for j in (polite, stubborn):
             job = self.wait_state(j, "timed_out", timeout=20)
             self.assertEqual(job["stop_reason"], "timeout")
@@ -247,8 +292,11 @@ class ExecTest(Env):
         rc, out, _ = self.task("retry", j, "--host", "s1")
         self.assertEqual(rc, 0)
         self.assertGreater(out["enqueue_seq"], first["enqueue_seq"])
-        self.wait_for(lambda: len(self.job(j)["attempts"]) == 2 and
-                      self.job(j)["state"] == "failed", 20, "second attempt")
+        self.wait_for(
+            lambda: len(self.job(j)["attempts"]) == 2 and self.job(j)["state"] == "failed",
+            20,
+            "second attempt",
+        )
         with open(counter) as f:
             self.assertEqual(f.read(), "x\nx\n")
         self.assertEqual(self.result(j, 1)["_taskmgr"]["attempt"], 1)

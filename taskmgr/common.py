@@ -19,14 +19,18 @@ TERMINAL_STATES = ("succeeded", "failed", "invalid_result", "cancelled", "timed_
 GPU_HOLDING_STATES = ("running", "stopping", "unknown")
 ALL_STATES = ("queued",) + GPU_HOLDING_STATES + TERMINAL_STATES
 
-STATE_DIRS = {"queued": "queue", "running": "in-progress", "stopping": "in-progress",
-              "unknown": "in-progress"}
+STATE_DIRS = {
+    "queued": "queue",
+    "running": "in-progress",
+    "stopping": "in-progress",
+    "unknown": "in-progress",
+}
 for _s in TERMINAL_STATES:
     STATE_DIRS[_s] = "done"
 JOB_DIRS = ("queue", "in-progress", "done")
 
 DEFAULT_REMOTE_CONFIG = {
-    "max_package_bytes": 1024 ** 3,
+    "max_package_bytes": 1024**3,
     "max_cpu_jobs": None,
     "max_auto_restarts": 2,
     "stop_grace_seconds": 30,

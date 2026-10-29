@@ -17,9 +17,18 @@ import tarfile
 import time
 
 from . import package
-from .common import (PROTOCOL_VERSION, SCHEMA_VERSION, SUBMISSION_KEY_RE, TERMINAL_STATES,
-                     TaskmgrError, atomic_write_json, fsync_dir, read_json,
-                     try_read_json, utcnow_iso)
+from .common import (
+    PROTOCOL_VERSION,
+    SCHEMA_VERSION,
+    SUBMISSION_KEY_RE,
+    TERMINAL_STATES,
+    TaskmgrError,
+    atomic_write_json,
+    fsync_dir,
+    read_json,
+    try_read_json,
+    utcnow_iso,
+)
 from .gpu import resolve_declarations
 from .monitor import assess, identity_of
 from .store import Store, end_without_result, job_summary, remove_tree
@@ -42,14 +51,17 @@ def emit(obj, code=0):
 # ---------------------------------------------------------------------------
 # receive (Section 5.2)
 
+
 def cmd_receive(store, args):
     store.ensure_layout()
     key = args.submission_key or ("auto-" + secrets.token_hex(12))
     if not SUBMISSION_KEY_RE.match(key):
-        raise TaskmgrError("bad_submission_key", "submission key must match "
-                           "^[A-Za-z0-9._-]{1,128}$")
-    updir = store.path("incoming", "up-%s-%s" % (time.strftime("%Y%m%d%H%M%S"),
-                                                 secrets.token_hex(6)))
+        raise TaskmgrError(
+            "bad_submission_key", "submission key must match ^[A-Za-z0-9._-]{1,128}$"
+        )
+    updir = store.path(
+        "incoming", "up-%s-%s" % (time.strftime("%Y%m%d%H%M%S"), secrets.token_hex(6))
+    )
     os.mkdir(updir)
     lock_fd = os.open(updir, os.O_RDONLY)
     fcntl.flock(lock_fd, fcntl.LOCK_EX)  # held for the whole upload and reception
@@ -73,8 +85,11 @@ def cmd_receive(store, args):
             return emit(ack)
         errors, task = package.validate_dir(root)
         if errors:
-            raise TaskmgrError("invalid_package", "package validation failed (%d errors)"
-                               % len(errors), details=errors)
+            raise TaskmgrError(
+                "invalid_package",
+                "package validation failed (%d errors)" % len(errors),
+                details=errors,
+            )
         assert task is not None  # validate_dir returns the task when there are no errors
         gpus = resolve_declarations(task.get("gpus") or [])
         pkg = os.path.join(updir, "package")
@@ -91,23 +106,44 @@ def cmd_receive(store, args):
             jobid = store.new_jobid()
             now = utcnow_iso()
             job = {
-                "schema_version": SCHEMA_VERSION, "jobid": jobid, "task_id": task["task_id"],
-                "state": "queued", "submitted_at": now, "updated_at": now,
-                "enqueue_seq": store.next_seq(), "content_hash": chash,
-                "submission_key": key, "gpus": gpus, "cancel_requested": False,
-                "auto_restarts": 0, "attempts": [], "current_attempt": None,
-                "stop_reason": None, "error": None, "retries": 0,
+                "schema_version": SCHEMA_VERSION,
+                "jobid": jobid,
+                "task_id": task["task_id"],
+                "state": "queued",
+                "submitted_at": now,
+                "updated_at": now,
+                "enqueue_seq": store.next_seq(),
+                "content_hash": chash,
+                "submission_key": key,
+                "gpus": gpus,
+                "cancel_requested": False,
+                "auto_restarts": 0,
+                "attempts": [],
+                "current_attempt": None,
+                "stop_reason": None,
+                "error": None,
+                "retries": 0,
             }
             atomic_write_json(os.path.join(updir, "job.json"), job)
             # The key mapping is written first; a mapping whose job does not exist is stale.
-            atomic_write_json(kpath, {"submission_key": key, "jobid": jobid,
-                                      "content_hash": chash, "created_at": now})
+            atomic_write_json(
+                kpath,
+                {"submission_key": key, "jobid": jobid, "content_hash": chash, "created_at": now},
+            )
             os.rename(updir, store.path("queue", jobid))
             fsync_dir(store.path("incoming"))
             fsync_dir(store.path("queue"))
-        return emit({"ok": True, "jobid": jobid, "task_id": task["task_id"],
-                     "submission_key": key, "deduplicated": False, "content_hash": chash,
-                     "state": "queued"})
+        return emit(
+            {
+                "ok": True,
+                "jobid": jobid,
+                "task_id": task["task_id"],
+                "submission_key": key,
+                "deduplicated": False,
+                "content_hash": chash,
+                "state": "queued",
+            }
+        )
     finally:
         if lock_fd is not None:
             os.close(lock_fd)
@@ -121,12 +157,21 @@ def _dedup_ack(store, key, chash):
     if not mapping or not store.find_job_dir(mapping.get("jobid")):
         return None  # unused key, or a stale mapping whose job was never enqueued
     if mapping.get("content_hash") != chash:
-        raise TaskmgrError("submission_key_conflict", "submission key %s was already used for "
-                           "different content (job %s)" % (key, mapping["jobid"]))
+        raise TaskmgrError(
+            "submission_key_conflict",
+            "submission key %s was already used for "
+            "different content (job %s)" % (key, mapping["jobid"]),
+        )
     _, old = store.load_job(mapping["jobid"])
-    return {"ok": True, "jobid": mapping["jobid"], "task_id": old["task_id"],
-            "submission_key": key, "deduplicated": True, "content_hash": chash,
-            "state": old["state"]}
+    return {
+        "ok": True,
+        "jobid": mapping["jobid"],
+        "task_id": old["task_id"],
+        "submission_key": key,
+        "deduplicated": True,
+        "content_hash": chash,
+        "state": old["state"],
+    }
 
 
 def _make_read_only(root):
@@ -141,6 +186,7 @@ def _make_read_only(root):
 # ---------------------------------------------------------------------------
 # queries
 
+
 def cmd_jobs(store, args):
     # A directory rename during the scan can show a job twice; keep its newest record.
     latest = {}
@@ -148,18 +194,31 @@ def cmd_jobs(store, args):
         old = latest.get(j["jobid"])
         if old is None or (j.get("updated_at") or "") >= (old.get("updated_at") or ""):
             latest[j["jobid"]] = j
-    jobs = [job_summary(j) for j in latest.values()
-            if not args.state or j.get("state") == args.state]
+    jobs = [
+        job_summary(j) for j in latest.values() if not args.state or j.get("state") == args.state
+    ]
     jobs.sort(key=lambda j: (j.get("submitted_at") or "", j["jobid"]))
     return emit({"jobs": jobs})
 
 
 def synthesized_result(job):
-    return {"schema_version": SCHEMA_VERSION, "_taskmgr": {
-        "jobid": job["jobid"], "task_id": job.get("task_id"), "attempt": None,
-        "status": job["state"], "return_code": None, "signal": None, "error": job.get("error"),
-        "gpus": job.get("gpus", []), "validation_errors": [], "warnings": [],
-        "note": "the job ended without running an attempt", "final": True}}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "_taskmgr": {
+            "jobid": job["jobid"],
+            "task_id": job.get("task_id"),
+            "attempt": None,
+            "status": job["state"],
+            "return_code": None,
+            "signal": None,
+            "error": job.get("error"),
+            "gpus": job.get("gpus", []),
+            "validation_errors": [],
+            "warnings": [],
+            "note": "the job ended without running an attempt",
+            "final": True,
+        },
+    }
 
 
 def job_status(store, jobid, _retry=True):
@@ -172,8 +231,12 @@ def job_status(store, jobid, _retry=True):
         if _retry:  # the directory moved between lookup and read
             return job_status(store, jobid, False)
         raise
-    out = {"found": True, "job": job_summary(job), "attempts": store.existing_attempts(jd),
-           "terminal": job["state"] in TERMINAL_STATES}
+    out = {
+        "found": True,
+        "job": job_summary(job),
+        "attempts": store.existing_attempts(jd),
+        "terminal": job["state"] in TERMINAL_STATES,
+    }
     n = job.get("current_attempt")
     adir = store.attempt_dir(jd, n) if n else None
     if out["terminal"]:
@@ -187,13 +250,25 @@ def job_status(store, jobid, _retry=True):
     if adir:
         runner, _ = store.read_runner(adir)
         runner = runner or {}
-        info = {k: runner.get(k) for k in ("attempt", "status", "dispatched_at", "started_at",
-                                           "exited", "return_code", "signal", "takeovers")}
+        info = {
+            k: runner.get(k)
+            for k in (
+                "attempt",
+                "status",
+                "dispatched_at",
+                "started_at",
+                "exited",
+                "return_code",
+                "signal",
+                "takeovers",
+            )
+        }
         info["identity"] = identity_of(runner)
         out["attempt_info"] = info
         prog, err = try_read_json(os.path.join(adir, "workdir", "progress.json"))
-        out["progress"] = prog if prog is not None else (None if err == "missing" else
-                                                         {"error": err})
+        out["progress"] = (
+            prog if prog is not None else (None if err == "missing" else {"error": err})
+        )
     return out
 
 
@@ -203,6 +278,7 @@ def cmd_status(store, args):
 
 # ---------------------------------------------------------------------------
 # control (Section 13)
+
 
 def cmd_cancel(store, args):
     with store.state_lock():
@@ -218,26 +294,50 @@ def cmd_cancel(store, args):
             job["cancel_requested"] = True  # shim / daemon picks it up within control_poll
             store.save_job(jd, job)
             changed = True
-    return emit({"jobid": job["jobid"], "state": job["state"], "changed": changed,
-                 "cancel_requested": job.get("cancel_requested", False)})
+    return emit(
+        {
+            "jobid": job["jobid"],
+            "state": job["state"],
+            "changed": changed,
+            "cancel_requested": job.get("cancel_requested", False),
+        }
+    )
 
 
 def cmd_retry(store, args):
     with store.state_lock():
         jd, job = store.load_job(args.jobid)
         if job["state"] == "unknown":
-            raise TaskmgrError("resolve_required", "job %s is unknown; run `task resolve` first"
-                               % args.jobid)
+            raise TaskmgrError(
+                "resolve_required", "job %s is unknown; run `task resolve` first" % args.jobid
+            )
         if job["state"] not in TERMINAL_STATES:
-            raise TaskmgrError("not_terminal", "job %s is %s; only terminal jobs can be retried"
-                               % (args.jobid, job["state"]))
-        job.update({"state": "queued", "enqueue_seq": store.next_seq(), "cancel_requested": False,
-                    "auto_restarts": 0, "error": None, "stop_reason": None,
-                    "current_attempt": None, "retries": job.get("retries", 0) + 1,
-                    "ended_at": None})
+            raise TaskmgrError(
+                "not_terminal",
+                "job %s is %s; only terminal jobs can be retried" % (args.jobid, job["state"]),
+            )
+        job.update(
+            {
+                "state": "queued",
+                "enqueue_seq": store.next_seq(),
+                "cancel_requested": False,
+                "auto_restarts": 0,
+                "error": None,
+                "stop_reason": None,
+                "current_attempt": None,
+                "retries": job.get("retries", 0) + 1,
+                "ended_at": None,
+            }
+        )
         store.save_job(jd, job)
-    return emit({"jobid": job["jobid"], "state": "queued", "changed": True,
-                 "enqueue_seq": job["enqueue_seq"]})
+    return emit(
+        {
+            "jobid": job["jobid"],
+            "state": "queued",
+            "changed": True,
+            "enqueue_seq": job["enqueue_seq"],
+        }
+    )
 
 
 def cmd_resolve(store, args):
@@ -249,17 +349,23 @@ def cmd_resolve(store, args):
         with store.state_lock():
             jd, job = store.load_job(args.jobid)
             if job["state"] != "unknown":
-                raise TaskmgrError("not_unknown", "job %s is %s, not unknown"
-                                   % (args.jobid, job["state"]))
+                raise TaskmgrError(
+                    "not_unknown", "job %s is %s, not unknown" % (args.jobid, job["state"])
+                )
             n = job.get("current_attempt")
             runner = None
             if n:
                 adir = store.attempt_dir(jd, n)
                 runner, _ = store.read_runner(adir)
                 runner = runner if isinstance(runner, dict) else {"attempt": n}
-                runner.update({"final": True, "status": "interrupted",
-                               "interrupted_reason": "operator_marked_stopped",
-                               "ended_at": runner.get("ended_at") or utcnow_iso()})
+                runner.update(
+                    {
+                        "final": True,
+                        "status": "interrupted",
+                        "interrupted_reason": "operator_marked_stopped",
+                        "ended_at": runner.get("ended_at") or utcnow_iso(),
+                    }
+                )
                 if os.path.isdir(adir):
                     store.write_runner(adir, runner)
                 for a in job.get("attempts", []):
@@ -268,9 +374,18 @@ def cmd_resolve(store, args):
             if job.get("cancel_requested"):
                 end_without_result(store, jd, job, n, "cancelled", None, runner)
             else:
-                end_without_result(store, jd, job, n, "failed", {
-                    "kind": "operator_marked_stopped",
-                    "message": "operator confirmed all processes are gone"}, runner)
+                end_without_result(
+                    store,
+                    jd,
+                    job,
+                    n,
+                    "failed",
+                    {
+                        "kind": "operator_marked_stopped",
+                        "message": "operator confirmed all processes are gone",
+                    },
+                    runner,
+                )
         return emit({"jobid": args.jobid, "state": job["state"], "changed": True})
     with store.state_lock():
         _, job = store.load_job(args.jobid)
@@ -278,24 +393,34 @@ def cmd_resolve(store, args):
             return emit({"jobid": args.jobid, "state": job["state"], "changed": False})
         res = assess(store, args.jobid, resolve=True)
         _, job = store.load_job(args.jobid)
-    out = {"jobid": args.jobid, "state": job["state"], "changed": job["state"] != "unknown",
-           "decision": res["decision"]}
+    out = {
+        "jobid": args.jobid,
+        "state": job["state"],
+        "changed": job["state"] != "unknown",
+        "decision": res["decision"],
+    }
     for k in ("identity", "alive_pids", "reason"):
         if k in res:
             out[k] = res[k]
     if job["state"] == "unknown":
         jd = store.find_job_dir(args.jobid)
-        runner, _ = store.read_runner(store.attempt_dir(jd, job["current_attempt"])) \
-            if job.get("current_attempt") else (None, None)
+        runner, _ = (
+            store.read_runner(store.attempt_dir(jd, job["current_attempt"]))
+            if job.get("current_attempt")
+            else (None, None)
+        )
         out["identity"] = identity_of(runner)
-        out["hint"] = ("still undecided; check `ps -o pid,pgid,lstart,cmd -g <pgid>` and "
-                       "nvidia-smi, kill leftovers, then run resolve --as stopped --confirm "
-                       "<jobid>")
+        out["hint"] = (
+            "still undecided; check `ps -o pid,pgid,lstart,cmd -g <pgid>` and "
+            "nvidia-smi, kill leftovers, then run resolve --as stopped --confirm "
+            "<jobid>"
+        )
     return emit(out)
 
 
 # ---------------------------------------------------------------------------
 # logs and fetch (Section 15)
+
 
 def _pick_attempt(store, jd, job, attempt):
     have = store.existing_attempts(jd)
@@ -338,9 +463,12 @@ def cmd_logs(store, args):
         if not args.follow:
             return 0
         runner, _ = store.read_runner(adir)
-        ended = (isinstance(runner, dict) and runner.get("final")) \
-            or job["state"] in TERMINAL_STATES or job["state"] == "unknown" \
+        ended = (
+            (isinstance(runner, dict) and runner.get("final"))
+            or job["state"] in TERMINAL_STATES
+            or job["state"] == "unknown"
             or job.get("current_attempt") not in (None, n)
+        )
         if ended:
             if f is None:
                 try:
@@ -371,6 +499,7 @@ def cmd_fetch(store, args):
 
 
 # ---------------------------------------------------------------------------
+
 
 def build_parser():
     p = argparse.ArgumentParser(prog="taskmgr-remote")
@@ -406,9 +535,16 @@ def build_parser():
     return p
 
 
-COMMANDS = {"receive": cmd_receive, "jobs": cmd_jobs, "status": cmd_status,
-            "cancel": cmd_cancel, "retry": cmd_retry, "resolve": cmd_resolve,
-            "logs": cmd_logs, "fetch": cmd_fetch}
+COMMANDS = {
+    "receive": cmd_receive,
+    "jobs": cmd_jobs,
+    "status": cmd_status,
+    "cancel": cmd_cancel,
+    "retry": cmd_retry,
+    "resolve": cmd_resolve,
+    "logs": cmd_logs,
+    "fetch": cmd_fetch,
+}
 
 
 def main(argv=None):
@@ -418,29 +554,34 @@ def main(argv=None):
         store = Store(args.root)
         if args.cmd == "shim":
             from . import shim
+
             return shim.main(store, args.jobid, args.attempt, args.lock_fd)
         if args.cmd == "serve":
             from .daemon import Daemon
+
             return Daemon(store).run()
-        if args.protocol_version is not None and args.protocol_version != \
-                remote_protocol_version():
-            raise TaskmgrError("protocol_mismatch", "client protocol %s is incompatible with "
-                               "remote protocol %s" % (args.protocol_version,
-                                                       remote_protocol_version()))
+        if args.protocol_version is not None and args.protocol_version != remote_protocol_version():
+            raise TaskmgrError(
+                "protocol_mismatch",
+                "client protocol %s is incompatible with "
+                "remote protocol %s" % (args.protocol_version, remote_protocol_version()),
+            )
         if args.cmd == "version":
             return emit({"ok": True})
         store.ensure_layout()
         return COMMANDS[args.cmd](store, args)
     except TaskmgrError as e:
         if stream_cmd:
-            sys.stderr.write(json.dumps(dict(e.to_json(), protocol_version=PROTOCOL_VERSION))
-                             + "\n")
+            sys.stderr.write(
+                json.dumps(dict(e.to_json(), protocol_version=PROTOCOL_VERSION)) + "\n"
+            )
             return e.exit_code
         return emit(e.to_json(), e.exit_code)
     except BrokenPipeError:
         return 0
     except Exception as e:  # noqa: BLE001 - always answer with JSON
         import traceback
+
         sys.stderr.write(traceback.format_exc())
         err = {"error": {"code": "internal_error", "message": "%s: %s" % (type(e).__name__, e)}}
         if stream_cmd:

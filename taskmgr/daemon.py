@@ -71,6 +71,7 @@ class Daemon:
                 jid = job["jobid"]
                 # Directory follows state; job.json wins.
                 from .common import STATE_DIRS
+
                 want = st.path(STATE_DIRS.get(job["state"], "in-progress"), jid)
                 if os.path.abspath(jobdir) != want:
                     log("repairing location of %s -> %s" % (jid, want))
@@ -82,11 +83,16 @@ class Daemon:
 
     def repair_terminal(self, jobid):
         from .store import finalize_attempt, _result_complete
+
         jobdir, job = self.store.load_job(jobid)
         adir = self.store.attempt_dir(jobdir, job["current_attempt"])
         runner, _ = self.store.read_runner(adir)
-        if isinstance(runner, dict) and runner.get("final") and runner.get("taskmgr") \
-                and not _result_complete(adir):
+        if (
+            isinstance(runner, dict)
+            and runner.get("final")
+            and runner.get("taskmgr")
+            and not _result_complete(adir)
+        ):
             finalize_attempt(self.store, jobid, job["current_attempt"])
 
     def check_attempt(self, jobid):
@@ -98,8 +104,7 @@ class Daemon:
             log("taking over tracking of %s (alive pids %s)" % (jobid, res["alive_pids"]))
             self.takeovers[jobid] = res["takeover"]
         elif d not in ("shim_alive", "none"):
-            log("recovery of %s: %s" % (jobid, {k: v for k, v in res.items()
-                                               if k != "takeover"}))
+            log("recovery of %s: %s" % (jobid, {k: v for k, v in res.items() if k != "takeover"}))
 
     # -- scheduling -----------------------------------------------------------
     def schedule_pass(self):
@@ -116,8 +121,10 @@ class Daemon:
                             held[g["uuid"]] = job["state"]
                     else:
                         cpu_active += 1
-            queued = sorted((j for j in jobs if j[1]["state"] == "queued"),
-                            key=lambda e: (e[1].get("enqueue_seq", 0), e[1]["jobid"]))
+            queued = sorted(
+                (j for j in jobs if j[1]["state"] == "queued"),
+                key=lambda e: (e[1].get("enqueue_seq", 0), e[1]["jobid"]),
+            )
             reserved = set()
             max_cpu = cfg.get("max_cpu_jobs")
             for jobdir, job in queued:
@@ -145,33 +152,51 @@ class Daemon:
         n = max([len(job.get("attempts", []))] + st.existing_attempts(jobdir)) + 1
         adir = st.attempt_dir(jobdir, n)
         os.makedirs(adir)
-        runner = {"schema_version": 1, "attempt": n, "jobid": job["jobid"], "status": "dispatched",
-                  "gpus": job.get("gpus", []), "dispatched_at": utcnow_iso(), "final": False,
-                  "exited": False}
+        runner = {
+            "schema_version": 1,
+            "attempt": n,
+            "jobid": job["jobid"],
+            "status": "dispatched",
+            "gpus": job.get("gpus", []),
+            "dispatched_at": utcnow_iso(),
+            "final": False,
+            "exited": False,
+        }
         st.write_runner(adir, runner)
         job["state"] = "running"
         job["current_attempt"] = n
         job["stop_reason"] = None
         job["error"] = None
-        job.setdefault("attempts", []).append({"attempt": n, "status": "running",
-                                               "dispatched_at": runner["dispatched_at"]})
+        job.setdefault("attempts", []).append(
+            {"attempt": n, "status": "running", "dispatched_at": runner["dispatched_at"]}
+        )
         jobdir = st.save_job(jobdir, job)
         adir = st.attempt_dir(jobdir, n)
         err = self.spawn_shim(job["jobid"], n, adir)
         if err:
             log("shim start failed for %s: %s" % (job["jobid"], err))
-            runner.update({"final": True, "status": "failed", "return_code": None,
-                           "signal": None, "ended_at": utcnow_iso(),
-                           "error": {"kind": "shim_start_failed", "message": err}})
+            runner.update(
+                {
+                    "final": True,
+                    "status": "failed",
+                    "return_code": None,
+                    "signal": None,
+                    "ended_at": utcnow_iso(),
+                    "error": {"kind": "shim_start_failed", "message": err},
+                }
+            )
             st.write_runner(adir, runner)
             for a in job["attempts"]:
                 if a["attempt"] == n:
                     a["status"] = "failed"
-            end_without_result(st, jobdir, job, n, "failed",
-                               {"kind": "shim_start_failed", "message": err}, runner)
+            end_without_result(
+                st, jobdir, job, n, "failed", {"kind": "shim_start_failed", "message": err}, runner
+            )
             return False
-        log("dispatched %s attempt %d gpus=%s" % (job["jobid"], n,
-                                                 [g["uuid"] for g in job.get("gpus", [])]))
+        log(
+            "dispatched %s attempt %d gpus=%s"
+            % (job["jobid"], n, [g["uuid"] for g in job.get("gpus", [])])
+        )
         return True
 
     def spawn_shim(self, jobid, n, adir):
@@ -181,11 +206,20 @@ class Daemon:
         pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # TASKMGR_SHIM_EXECUTABLE: test-only override to simulate a shim that cannot start.
         exe = os.environ.get("TASKMGR_SHIM_EXECUTABLE") or sys.executable
-        argv = [exe, "-m", "taskmgr.remote", "--root", self.store.root, "shim", jobid, str(n),
-                "--lock-fd", str(lock_fd)]
+        argv = [
+            exe,
+            "-m",
+            "taskmgr.remote",
+            "--root",
+            self.store.root,
+            "shim",
+            jobid,
+            str(n),
+            "--lock-fd",
+            str(lock_fd),
+        ]
         env = dict(os.environ)
-        env["PYTHONPATH"] = pkg_parent + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH")
-                                          else "")
+        env["PYTHONPATH"] = pkg_parent + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         rfd, wfd = os.pipe()
         try:
             pid = os.fork()
@@ -199,8 +233,9 @@ class Daemon:
                 os.setsid()
                 if os.fork() > 0:
                     os._exit(0)
-                log_fd = os.open(os.path.join(adir, "shim.log"),
-                                 os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+                log_fd = os.open(
+                    os.path.join(adir, "shim.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+                )
                 devnull = os.open(os.devnull, os.O_RDONLY)
                 os.dup2(devnull, 0)
                 os.dup2(log_fd, 1)
@@ -247,8 +282,10 @@ class Daemon:
         st = self.store
         st.ensure_layout()
         if not self.acquire_instance_lock():
-            sys.stdout.write('{"error": {"code": "daemon_running", "message": '
-                             '"another daemon holds locks/daemon.lock"}}\n')
+            sys.stdout.write(
+                '{"error": {"code": "daemon_running", "message": '
+                '"another daemon holds locks/daemon.lock"}}\n'
+            )
             return 2
         global _log_file
         _log_file = open(st.path("daemon", "daemon.log"), "a")
@@ -258,8 +295,10 @@ class Daemon:
         log("starting; root=%s" % st.root)
         self.clean_incoming()
         self.recover()
-        interval = min(float(st.config.get("scheduler_poll_seconds", 1)),
-                       float(st.config.get("control_poll_seconds", 2)))
+        interval = min(
+            float(st.config.get("scheduler_poll_seconds", 1)),
+            float(st.config.get("control_poll_seconds", 2)),
+        )
         last_health = 0.0
         while not self.stop:
             try:
@@ -271,6 +310,7 @@ class Daemon:
                 self.schedule_pass()
             except Exception as e:  # noqa: BLE001 - keep the daemon alive
                 import traceback
+
                 log("loop error: %s\n%s" % (e, traceback.format_exc()))
             self._sleep(interval)
         log("stopping (running shims and tasks are left alone)")
