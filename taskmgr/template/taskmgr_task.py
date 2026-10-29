@@ -18,7 +18,7 @@ import json
 import os
 import tempfile
 from collections.abc import Generator, Mapping
-from typing import Any, cast
+from typing import cast
 
 SCHEMA_VERSION = 1
 
@@ -35,14 +35,14 @@ def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def atomic_write_json(path: str, obj: Any) -> None:
+def atomic_write_json(path: str, obj: object) -> None:
     """Write JSON via temp file + fsync + os.replace so readers never see a partial file."""
     d = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=d)
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(obj, f, indent=2, sort_keys=True)
-            f.write("\n")
+            _ = f.write("\n")
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -63,11 +63,11 @@ def locked(path: str) -> Generator[None, None, None]:
         os.close(fd)
 
 
-def _read(path: str, default: dict[str, Any]) -> dict[str, Any]:
+def _read(path: str, default: dict[str, object]) -> dict[str, object]:
     try:
         with open(path) as f:
-            obj = json.load(f)
-        return cast("dict[str, Any]", obj) if isinstance(obj, dict) else default
+            obj = cast(object, json.load(f))
+        return cast("dict[str, object]", obj) if isinstance(obj, dict) else default
     except (FileNotFoundError, ValueError):
         return default
 
@@ -76,11 +76,11 @@ def write_progress(
     stage: object,
     percent: float | None = None,
     message: object = None,
-    **extra: Any,
-) -> dict[str, Any]:
+    **extra: object,
+) -> dict[str, object]:
     """Replace progress.json (stage and updated_at are always set)."""
     path = progress_path()
-    obj: dict[str, Any] = {
+    obj: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "stage": str(stage),
         "updated_at": _now(),
@@ -95,7 +95,7 @@ def write_progress(
     return obj
 
 
-def update_progress(**fields: Any) -> dict[str, Any]:
+def update_progress(**fields: object) -> dict[str, object]:
     """Merge fields into progress.json under the lock."""
     path = progress_path()
     with locked(path):
@@ -106,26 +106,28 @@ def update_progress(**fields: Any) -> dict[str, Any]:
     return obj
 
 
-def write_result(outputs: Mapping[str, Any], **extra: Any) -> dict[str, Any]:
+def write_result(outputs: Mapping[str, object], **extra: object) -> dict[str, object]:
     """Replace result.json with the given outputs object."""
     path = result_path()
-    obj: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "outputs": dict(outputs)}
+    obj: dict[str, object] = {"schema_version": SCHEMA_VERSION, "outputs": dict(outputs)}
     obj.update({k: v for k, v in extra.items() if k != "_taskmgr"})
     with locked(path):
         atomic_write_json(path, obj)
     return obj
 
 
-def update_outputs(**outputs: Any) -> dict[str, Any]:
+def update_outputs(**outputs: object) -> dict[str, object]:
     """Merge keys into result.json "outputs" under the lock (safe across processes)."""
     path = result_path()
     with locked(path):
         obj = _read(path, {"schema_version": SCHEMA_VERSION})
-        obj.pop("_taskmgr", None)
+        _ = obj.pop("_taskmgr", None)
         prev = obj.get("outputs")
-        out: dict[str, Any] = dict(cast("dict[str, Any]", prev)) if isinstance(prev, dict) else {}
+        out: dict[str, object] = (
+            dict(cast("dict[str, object]", prev)) if isinstance(prev, dict) else {}
+        )
         out.update(outputs)
         obj["outputs"] = out
-        obj.setdefault("schema_version", SCHEMA_VERSION)
+        _ = obj.setdefault("schema_version", SCHEMA_VERSION)
         atomic_write_json(path, obj)
     return obj

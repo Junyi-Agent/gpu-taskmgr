@@ -15,7 +15,8 @@ import stat
 import sys
 import tarfile
 import time
-from typing import IO, Any, Callable, Mapping, cast
+from collections.abc import Callable, Mapping
+from typing import IO, cast
 
 from . import package
 from .common import (
@@ -23,7 +24,6 @@ from .common import (
     SCHEMA_VERSION,
     SUBMISSION_KEY_RE,
     TERMINAL_STATES,
-    JsonDict,
     TaskmgrError,
     atomic_write_json,
     fsync_dir,
@@ -33,7 +33,28 @@ from .common import (
 )
 from .gpu import resolve_declarations
 from .monitor import assess, identity_of
+from .records import ErrorInfo, Job, JsonValue, KeyMapping, Runner
 from .store import Store, end_without_result, job_summary, remove_tree
+
+
+class Args(argparse.Namespace):
+    """Typed view of the parsed command line; attributes exist only for their subcommand."""
+
+    # Class-level defaults equal the argparse defaults: argparse only fills a top-level
+    # default when the attribute is missing, and copies every subcommand value over.
+    root: str = ""
+    protocol_version: int | None = None
+    cmd: str = ""
+    submission_key: str | None = None
+    state: str | None = None
+    jobid: str = ""
+    as_: str | None = None
+    confirm: str | None = None
+    attempt: int | None = None  # `logs` / `fetch`: optional; `shim`: a required positional
+    stream: str = "stdout"
+    follow: bool = False
+    all_attempts: bool = False
+    lock_fd: int = -1
 
 
 def remote_protocol_version() -> int:
@@ -42,11 +63,11 @@ def remote_protocol_version() -> int:
     return int(v) if v else PROTOCOL_VERSION
 
 
-def emit(obj: Mapping[str, Any], code: int = 0) -> int:
-    obj = dict(obj)
-    obj["protocol_version"] = remote_protocol_version()
-    sys.stdout.write(json.dumps(obj, sort_keys=True) + "\n")
-    sys.stdout.flush()
+def emit(obj: Mapping[str, object], code: int = 0) -> int:
+    out = dict(obj)
+    out["protocol_version"] = remote_protocol_version()
+    _ = sys.stdout.write(json.dumps(out, sort_keys=True) + "\n")
+    _ = sys.stdout.flush()
     return code
 
 
@@ -54,7 +75,7 @@ def emit(obj: Mapping[str, Any], code: int = 0) -> int:
 # receive (Section 5.2)
 
 
-def cmd_receive(store: Store, args: argparse.Namespace) -> int:
+def cmd_receive(store: Store, args: Args) -> int:
     store.ensure_layout()
     key = args.submission_key or ("auto-" + secrets.token_hex(12))
     if not SUBMISSION_KEY_RE.match(key):
@@ -76,7 +97,7 @@ def cmd_receive(store: Store, args: argparse.Namespace) -> int:
         if os.environ.get("TASKMGR_TEST_RECEIVE_PAUSE"):  # test-only: hold the upload open
             time.sleep(float(os.environ["TASKMGR_TEST_RECEIVE_PAUSE"]))
         ext = os.path.join(updir, "extract")
-        package.safe_extract(tar_path, ext, store.config.get("max_package_bytes"))
+        _ = package.safe_extract(tar_path, ext, store.config.get("max_package_bytes"))
         root = package.package_root(ext)
         chash = package.content_hash(root)
         # A retry of an already enqueued submission answers from the key mapping before
@@ -107,7 +128,7 @@ def cmd_receive(store: Store, args: argparse.Namespace) -> int:
             kpath = store.path("submission-keys", key + ".json")
             jobid = store.new_jobid()
             now = utcnow_iso()
-            job: JsonDict = {
+            job: Job = {
                 "schema_version": SCHEMA_VERSION,
                 "jobid": jobid,
                 "task_id": task["task_id"],
@@ -152,16 +173,16 @@ def cmd_receive(store: Store, args: argparse.Namespace) -> int:
             remove_tree(updir)
 
 
-def _dedup_ack(store: Store, key: str, chash: str) -> JsonDict | None:
+def _dedup_ack(store: Store, key: str, chash: str) -> dict[str, object] | None:
     """Section 6.2 lookup; needs the state lock. Returns an ACK, None, or raises."""
-    mapping = read_json(store.path("submission-keys", key + ".json"))
+    mapping = cast(KeyMapping | None, read_json(store.path("submission-keys", key + ".json")))
     if not mapping or not store.find_job_dir(mapping.get("jobid")):
         return None  # unused key, or a stale mapping whose job was never enqueued
     if mapping.get("content_hash") != chash:
         raise TaskmgrError(
             "submission_key_conflict",
-            "submission key %s was already used for "
-            "different content (job %s)" % (key, mapping["jobid"]),
+            "submission key %s was already used for different content (job %s)"
+            % (key, mapping["jobid"]),
         )
     _, old = store.load_job(mapping["jobid"])
     return {
@@ -188,9 +209,9 @@ def _make_read_only(root: str) -> None:
 # queries
 
 
-def cmd_jobs(store: Store, args: argparse.Namespace) -> int:
+def cmd_jobs(store: Store, args: Args) -> int:
     # A directory rename during the scan can show a job twice; keep its newest record.
-    latest: dict[str, JsonDict] = {}
+    latest: dict[str, Job] = {}
     for _, j in store.iter_jobs():
         old = latest.get(j["jobid"])
         if old is None or (j.get("updated_at") or "") >= (old.get("updated_at") or ""):
@@ -202,7 +223,7 @@ def cmd_jobs(store: Store, args: argparse.Namespace) -> int:
     return emit({"jobs": jobs})
 
 
-def synthesized_result(job: JsonDict) -> JsonDict:
+def synthesized_result(job: Job) -> dict[str, object]:
     return {
         "schema_version": SCHEMA_VERSION,
         "_taskmgr": {
@@ -222,7 +243,7 @@ def synthesized_result(job: JsonDict) -> JsonDict:
     }
 
 
-def job_status(store: Store, jobid: str, _retry: bool = True) -> JsonDict:
+def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, object]:
     jd = store.find_job_dir(jobid)
     if jd is None:
         return {"found": False, "jobid": jobid}
@@ -232,27 +253,27 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> JsonDict:
         if _retry:  # the directory moved between lookup and read
             return job_status(store, jobid, False)
         raise
-    out: JsonDict = {
+    terminal = job["state"] in TERMINAL_STATES
+    out: dict[str, object] = {
         "found": True,
         "job": job_summary(job),
         "attempts": store.existing_attempts(jd),
-        "terminal": job["state"] in TERMINAL_STATES,
+        "terminal": terminal,
     }
     n = job.get("current_attempt")
     adir = store.attempt_dir(jd, n) if n else None
-    if out["terminal"]:
-        res: Any = None
+    if terminal:
+        res: JsonValue = None
         if adir:
             res, _ = try_read_json(os.path.join(adir, "workdir", "result.json"))
             if not isinstance(res, dict) and _retry:
                 return job_status(store, jobid, False)
-        out["result"] = cast(JsonDict, res) if isinstance(res, dict) else synthesized_result(job)
+        out["result"] = res if isinstance(res, dict) else synthesized_result(job)
         return out
     if adir:
-        runner: JsonDict | None
-        runner, _ = store.read_runner(adir)
-        runner = runner or {}
-        info = {
+        found, _ = store.read_runner(adir)
+        runner: Mapping[str, object] = found or {}
+        info: dict[str, object] = {
             k: runner.get(k)
             for k in (
                 "attempt",
@@ -274,7 +295,7 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> JsonDict:
     return out
 
 
-def cmd_status(store: Store, args: argparse.Namespace) -> int:
+def cmd_status(store: Store, args: Args) -> int:
     return emit(job_status(store, args.jobid))
 
 
@@ -282,7 +303,7 @@ def cmd_status(store: Store, args: argparse.Namespace) -> int:
 # control (Section 13)
 
 
-def cmd_cancel(store: Store, args: argparse.Namespace) -> int:
+def cmd_cancel(store: Store, args: Args) -> int:
     with store.state_lock():
         jd, job = store.load_job(args.jobid)
         changed = False
@@ -290,11 +311,11 @@ def cmd_cancel(store: Store, args: argparse.Namespace) -> int:
             pass
         elif job["state"] == "queued":
             job["cancel_requested"] = True
-            end_without_result(store, jd, job, None, "cancelled", None, None)
+            _ = end_without_result(store, jd, job, None, "cancelled", None, None)
             changed = True
         elif not job.get("cancel_requested"):
             job["cancel_requested"] = True  # shim / daemon picks it up within control_poll
-            store.save_job(jd, job)
+            _ = store.save_job(jd, job)
             changed = True
     return emit(
         {
@@ -306,7 +327,7 @@ def cmd_cancel(store: Store, args: argparse.Namespace) -> int:
     )
 
 
-def cmd_retry(store: Store, args: argparse.Namespace) -> int:
+def cmd_retry(store: Store, args: Args) -> int:
     with store.state_lock():
         jd, job = store.load_job(args.jobid)
         if job["state"] == "unknown":
@@ -331,7 +352,7 @@ def cmd_retry(store: Store, args: argparse.Namespace) -> int:
                 "ended_at": None,
             }
         )
-        store.save_job(jd, job)
+        _ = store.save_job(jd, job)
     return emit(
         {
             "jobid": job["jobid"],
@@ -342,7 +363,7 @@ def cmd_retry(store: Store, args: argparse.Namespace) -> int:
     )
 
 
-def cmd_resolve(store: Store, args: argparse.Namespace) -> int:
+def cmd_resolve(store: Store, args: Args) -> int:
     if args.as_ is not None:
         if args.as_ != "stopped":
             raise TaskmgrError("bad_args", "--as only accepts 'stopped'")
@@ -355,11 +376,11 @@ def cmd_resolve(store: Store, args: argparse.Namespace) -> int:
                     "not_unknown", "job %s is %s, not unknown" % (args.jobid, job["state"])
                 )
             n = job.get("current_attempt")
-            runner: JsonDict | None = None
+            runner: Runner | None = None
             if n:
                 adir = store.attempt_dir(jd, n)
                 runner, _ = store.read_runner(adir)
-                runner = runner if isinstance(runner, dict) else {"attempt": n}
+                runner = runner if runner is not None else {"attempt": n}
                 runner.update(
                     {
                         "final": True,
@@ -374,20 +395,13 @@ def cmd_resolve(store: Store, args: argparse.Namespace) -> int:
                     if a.get("attempt") == n:
                         a["status"] = "interrupted"
             if job.get("cancel_requested"):
-                end_without_result(store, jd, job, n, "cancelled", None, runner)
+                _ = end_without_result(store, jd, job, n, "cancelled", None, runner)
             else:
-                end_without_result(
-                    store,
-                    jd,
-                    job,
-                    n,
-                    "failed",
-                    {
-                        "kind": "operator_marked_stopped",
-                        "message": "operator confirmed all processes are gone",
-                    },
-                    runner,
-                )
+                error: ErrorInfo = {
+                    "kind": "operator_marked_stopped",
+                    "message": "operator confirmed all processes are gone",
+                }
+                _ = end_without_result(store, jd, job, n, "failed", error, runner)
         return emit({"jobid": args.jobid, "state": job["state"], "changed": True})
     with store.state_lock():
         _, job = store.load_job(args.jobid)
@@ -395,27 +409,28 @@ def cmd_resolve(store: Store, args: argparse.Namespace) -> int:
             return emit({"jobid": args.jobid, "state": job["state"], "changed": False})
         res = assess(store, args.jobid, resolve=True)
         _, job = store.load_job(args.jobid)
-    out: JsonDict = {
+    out: dict[str, object] = {
         "jobid": args.jobid,
         "state": job["state"],
         "changed": job["state"] != "unknown",
         "decision": res["decision"],
     }
-    for k in ("identity", "alive_pids", "reason"):
-        if k in res:
-            out[k] = res[k]
+    if "identity" in res:
+        out["identity"] = res["identity"]
+    if "alive_pids" in res:
+        out["alive_pids"] = res["alive_pids"]
+    if "reason" in res:
+        out["reason"] = res["reason"]
     if job["state"] == "unknown":
         jd = store.find_job_dir(args.jobid)
+        cur = job.get("current_attempt")
         runner, _ = (
-            store.read_runner(store.attempt_dir(cast(str, jd), job["current_attempt"]))
-            if job.get("current_attempt")
-            else (None, None)
+            store.read_runner(store.attempt_dir(cast(str, jd), cur)) if cur else (None, None)
         )
         out["identity"] = identity_of(runner)
         out["hint"] = (
-            "still undecided; check `ps -o pid,pgid,lstart,cmd -g <pgid>` and "
-            "nvidia-smi, kill leftovers, then run resolve --as stopped --confirm "
-            "<jobid>"
+            "still undecided; check `ps -o pid,pgid,lstart,cmd -g <pgid>` and nvidia-smi, "
+            + "kill leftovers, then run resolve --as stopped --confirm <jobid>"
         )
     return emit(out)
 
@@ -424,7 +439,7 @@ def cmd_resolve(store: Store, args: argparse.Namespace) -> int:
 # logs and fetch (Section 15)
 
 
-def _pick_attempt(store: Store, jd: str, job: JsonDict, attempt: int | None) -> int | None:
+def _pick_attempt(store: Store, jd: str, job: Job, attempt: int | None) -> int | None:
     have = store.existing_attempts(jd)
     if attempt is not None:
         if attempt not in have:
@@ -435,7 +450,7 @@ def _pick_attempt(store: Store, jd: str, job: JsonDict, attempt: int | None) -> 
     return have[-1] if have else None
 
 
-def cmd_logs(store: Store, args: argparse.Namespace) -> int:
+def cmd_logs(store: Store, args: Args) -> int:
     jd, job = store.load_job(args.jobid)
     n = _pick_attempt(store, jd, job, args.attempt)
     while n is None:
@@ -447,7 +462,7 @@ def cmd_logs(store: Store, args: argparse.Namespace) -> int:
     name = {"stdout": "stdout.log", "stderr": "stderr.log", "shim": "shim.log"}[args.stream]
     out = sys.stdout.buffer
     f: IO[bytes] | None = None
-    runner: JsonDict | None
+    runner: Runner | None
     while True:
         jd, job = store.load_job(args.jobid)
         adir = store.attempt_dir(jd, n)
@@ -461,8 +476,8 @@ def cmd_logs(store: Store, args: argparse.Namespace) -> int:
                 chunk = f.read(1 << 16)
                 if not chunk:
                     break
-                out.write(chunk)
-            out.flush()
+                _ = out.write(chunk)
+            _ = out.flush()
         if not args.follow:
             return 0
         runner, _ = store.read_runner(adir)
@@ -478,13 +493,13 @@ def cmd_logs(store: Store, args: argparse.Namespace) -> int:
                     f = open(os.path.join(adir, name), "rb")
                 except FileNotFoundError:
                     return 0
-            out.write(f.read())
-            out.flush()
+            _ = out.write(f.read())
+            _ = out.flush()
             return 0
         time.sleep(0.5)
 
 
-def cmd_fetch(store: Store, args: argparse.Namespace) -> int:
+def cmd_fetch(store: Store, args: Args) -> int:
     jd, job = store.load_job(args.jobid)
     have = store.existing_attempts(jd)
     nums: list[int]
@@ -498,7 +513,7 @@ def cmd_fetch(store: Store, args: argparse.Namespace) -> int:
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|gz") as tar:
         for n in nums:
             package.add_tree_to_tar(tar, store.attempt_dir(jd, n), "attempts/%04d" % n)
-    sys.stdout.buffer.flush()
+    _ = sys.stdout.buffer.flush()
     return 0
 
 
@@ -507,39 +522,39 @@ def cmd_fetch(store: Store, args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="taskmgr-remote")
-    p.add_argument("--root", required=True, help="remote storage root (from the machine list)")
-    p.add_argument("--protocol-version", type=int, default=None)
+    _ = p.add_argument("--root", required=True, help="remote storage root (from the machine list)")
+    _ = p.add_argument("--protocol-version", type=int, default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("version")
+    _ = sub.add_parser("version")
     r = sub.add_parser("receive")
-    r.add_argument("--submission-key")
+    _ = r.add_argument("--submission-key")
     j = sub.add_parser("jobs")
-    j.add_argument("--state")
+    _ = j.add_argument("--state")
     for name in ("status", "cancel", "retry"):
         s = sub.add_parser(name)
-        s.add_argument("jobid")
+        _ = s.add_argument("jobid")
     s = sub.add_parser("resolve")
-    s.add_argument("jobid")
-    s.add_argument("--as", dest="as_")
-    s.add_argument("--confirm")
+    _ = s.add_argument("jobid")
+    _ = s.add_argument("--as", dest="as_")
+    _ = s.add_argument("--confirm")
     lg = sub.add_parser("logs")
-    lg.add_argument("jobid")
-    lg.add_argument("--attempt", type=int)
-    lg.add_argument("--stream", choices=("stdout", "stderr", "shim"), default="stdout")
-    lg.add_argument("--follow", action="store_true")
+    _ = lg.add_argument("jobid")
+    _ = lg.add_argument("--attempt", type=int)
+    _ = lg.add_argument("--stream", choices=("stdout", "stderr", "shim"), default="stdout")
+    _ = lg.add_argument("--follow", action="store_true")
     fe = sub.add_parser("fetch")
-    fe.add_argument("jobid")
-    fe.add_argument("--attempt", type=int)
-    fe.add_argument("--all-attempts", action="store_true")
-    sub.add_parser("serve")
+    _ = fe.add_argument("jobid")
+    _ = fe.add_argument("--attempt", type=int)
+    _ = fe.add_argument("--all-attempts", action="store_true")
+    _ = sub.add_parser("serve")
     sh = sub.add_parser("shim")
-    sh.add_argument("jobid")
-    sh.add_argument("attempt", type=int)
-    sh.add_argument("--lock-fd", type=int, required=True)
+    _ = sh.add_argument("jobid")
+    _ = sh.add_argument("attempt", type=int)
+    _ = sh.add_argument("--lock-fd", type=int, required=True)
     return p
 
 
-COMMANDS: dict[str, Callable[[Store, argparse.Namespace], int]] = {
+COMMANDS: dict[str, Callable[[Store, Args], int]] = {
     "receive": cmd_receive,
     "jobs": cmd_jobs,
     "status": cmd_status,
@@ -552,14 +567,14 @@ COMMANDS: dict[str, Callable[[Store, argparse.Namespace], int]] = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(argv, namespace=Args())
     stream_cmd = args.cmd in ("logs", "fetch")
     try:
         store = Store(args.root)
         if args.cmd == "shim":
             from . import shim
 
-            return shim.main(store, args.jobid, args.attempt, args.lock_fd)
+            return shim.main(store, args.jobid, cast(int, args.attempt), args.lock_fd)
         if args.cmd == "serve":
             from .daemon import Daemon
 
@@ -567,8 +582,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.protocol_version is not None and args.protocol_version != remote_protocol_version():
             raise TaskmgrError(
                 "protocol_mismatch",
-                "client protocol %s is incompatible with "
-                "remote protocol %s" % (args.protocol_version, remote_protocol_version()),
+                "client protocol %s is incompatible with remote protocol %s"
+                % (args.protocol_version, remote_protocol_version()),
             )
         if args.cmd == "version":
             return emit({"ok": True})
@@ -576,7 +591,7 @@ def main(argv: list[str] | None = None) -> int:
         return COMMANDS[args.cmd](store, args)
     except TaskmgrError as e:
         if stream_cmd:
-            sys.stderr.write(
+            _ = sys.stderr.write(
                 json.dumps(dict(e.to_json(), protocol_version=PROTOCOL_VERSION)) + "\n"
             )
             return e.exit_code
@@ -586,10 +601,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # noqa: BLE001 - always answer with JSON
         import traceback
 
-        sys.stderr.write(traceback.format_exc())
-        err = {"error": {"code": "internal_error", "message": "%s: %s" % (type(e).__name__, e)}}
+        _ = sys.stderr.write(traceback.format_exc())
+        err: dict[str, object] = {
+            "error": {"code": "internal_error", "message": "%s: %s" % (type(e).__name__, e)}
+        }
         if stream_cmd:
-            sys.stderr.write(json.dumps(dict(err, protocol_version=PROTOCOL_VERSION)) + "\n")
+            _ = sys.stderr.write(json.dumps(dict(err, protocol_version=PROTOCOL_VERSION)) + "\n")
             return 2
         return emit(err, 2)
 

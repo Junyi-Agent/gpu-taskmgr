@@ -7,14 +7,48 @@ detection, takeover) and `taskmgr-remote resolve`.
 import os
 import signal
 import time
-from collections.abc import Callable, Iterable
-from typing import Any, cast
+from collections.abc import Callable, Iterable, Mapping
+from typing import Literal, TypedDict, cast
 
 from . import procutil
-from .common import TERMINAL_STATES, JsonDict, try_flock_fd, try_read_json, utcnow_iso
+from .common import TERMINAL_STATES, try_flock_fd, try_read_json, utcnow_iso
+from .records import Job, JsonDict, JsonValue, Runner
 from .store import Store, finalize_attempt, load_task, requeue_or_end_interrupted
 
 STOP_OUTCOME = {"cancel": "cancelled", "timeout": "timed_out"}
+
+Decision = Literal[
+    "none",
+    "unknown",
+    "restored",
+    "shim_alive",
+    "interrupted",
+    "finalized",
+    "still_running",
+    "handed_to_daemon",
+    "takeover",
+]
+
+
+class _AssessmentBase(TypedDict):
+    decision: Decision
+
+
+class Assessment(_AssessmentBase, total=False):
+    """Result of `assess`. Which optional keys are present depends on `decision`:
+
+    state      none, restored, interrupted, finalized
+    reason     unknown
+    identity   unknown (except record_incomplete), shim_alive, still_running, handed_to_daemon
+    alive_pids still_running, handed_to_daemon, takeover
+    takeover   takeover (the caller owns its shim.lock fd)
+    """
+
+    state: str
+    reason: str
+    identity: JsonDict | None
+    alive_pids: list[int]
+    takeover: "Takeover"
 
 
 class GroupStopper:
@@ -54,7 +88,7 @@ class GroupStopper:
     def step(self) -> str | None:
         """Advance; returns None (in progress), "stopped" or "unconfirmed"."""
         if self.reap:
-            self.reap()
+            _ = self.reap()
         self.alive = procutil.group_members(self.pgid, self.min_start)
         if not self.alive:
             return "stopped"
@@ -77,7 +111,7 @@ def set_stopping(store: Store, jobid: str, n: int, reason: str) -> bool:
         if job["state"] == "running" or job.get("stop_reason") != reason:
             job["state"] = "stopping"
             job["stop_reason"] = reason
-            store.save_job(jobdir, job)
+            _ = store.save_job(jobdir, job)
         return True
 
 
@@ -87,27 +121,26 @@ def mark_unknown(
     n: int | None,
     kind: str,
     message: str,
-    details: Any = None,
-) -> JsonDict:
+    details: object = None,
+) -> Job:
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
         if job.get("current_attempt") != n or job["state"] not in ("running", "stopping"):
             return job
         if n is not None:  # a job without a current attempt has no runner.json to annotate
             adir = store.attempt_dir(jobdir, n)
-            raw_runner, _ = store.read_runner(adir)
-            if isinstance(raw_runner, dict):
-                runner = cast(JsonDict, raw_runner)
+            runner, _ = store.read_runner(adir)
+            if runner is not None:
                 runner["unknown"] = {
                     "kind": kind,
                     "message": message,
-                    "details": details,
+                    "details": cast(JsonValue, details),  # passed through to JSON
                     "at": utcnow_iso(),
                 }
                 store.write_runner(adir, runner)
         job["state"] = "unknown"
         job["error"] = {"kind": kind, "message": message}
-        store.save_job(jobdir, job)
+        _ = store.save_job(jobdir, job)
         return job
 
 
@@ -127,8 +160,12 @@ def identity_of(runner: object) -> JsonDict | None:
     return {k: r.get(k) for k in keys}
 
 
-def _has_identity(runner: JsonDict) -> bool:
-    return all(runner.get(k) is not None for k in ("boot_id", "pgid", "leader_start_time"))
+def _has_identity(runner: Runner) -> bool:
+    return (
+        runner.get("boot_id") is not None
+        and runner.get("pgid") is not None
+        and runner.get("leader_start_time") is not None
+    )
 
 
 def finish_stopped(
@@ -138,7 +175,7 @@ def finish_stopped(
     stop_reason: str | None,
     exited: bool,
     warnings: Iterable[str] = (),
-) -> JsonDict:
+) -> Job:
     """Finalize once the process group is confirmed gone."""
     if stop_reason in STOP_OUTCOME:
         return finalize_attempt(
@@ -159,10 +196,10 @@ def finish_stopped(
     )
 
 
-def assess(store: Store, jobid: str, resolve: bool = False) -> dict[str, Any]:
+def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
     """Section 12.2 check for one job in running/stopping (or unknown when resolve=True).
 
-    Returns a dict describing the decision. For decision "takeover" the dict
+    Returns an Assessment describing the decision. For decision "takeover" it
     holds a Takeover object (the caller owns its shim.lock fd).
     """
     jobdir, job = store.load_job(jobid)
@@ -171,15 +208,14 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> dict[str, Any]:
         return {"decision": "none", "state": state}
     n = job.get("current_attempt")
     if n is None:
-        mark_unknown(store, jobid, n, "record_incomplete", "job has no current attempt")
+        _ = mark_unknown(store, jobid, n, "record_incomplete", "job has no current attempt")
         return {"decision": "unknown", "reason": "record_incomplete"}
     adir = store.attempt_dir(jobdir, n)
-    raw_runner, err = store.read_runner(adir)
-    if not isinstance(raw_runner, dict):
+    runner, err = store.read_runner(adir)
+    if runner is None:
         if not resolve:
-            mark_unknown(store, jobid, n, "record_incomplete", "runner.json is %s" % err)
+            _ = mark_unknown(store, jobid, n, "record_incomplete", "runner.json is %s" % err)
         return {"decision": "unknown", "reason": "runner.json is %s" % err}
-    runner = cast(JsonDict, raw_runner)
 
     if runner.get("final"):
         if runner.get("status") == "interrupted":
@@ -206,7 +242,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> dict[str, Any]:
                 j = requeue_or_end_interrupted(store, jobid, n, "entry command never started")
                 return {"decision": "interrupted", "state": j["state"]}
             if not resolve:
-                mark_unknown(store, jobid, n, "record_incomplete", "identity record incomplete")
+                _ = mark_unknown(store, jobid, n, "record_incomplete", "identity record incomplete")
             return {
                 "decision": "unknown",
                 "reason": "identity record incomplete",
@@ -216,7 +252,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> dict[str, Any]:
             current_boot = procutil.boot_id()
         except OSError as e:
             if not resolve:
-                mark_unknown(store, jobid, n, "undeterminable", "cannot read boot_id: %s" % e)
+                _ = mark_unknown(store, jobid, n, "undeterminable", "cannot read boot_id: %s" % e)
             return {
                 "decision": "unknown",
                 "reason": "cannot read boot_id",
@@ -228,11 +264,12 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> dict[str, Any]:
                 return {"decision": "finalized", "state": j["state"]}
             j = requeue_or_end_interrupted(store, jobid, n, "machine rebooted")
             return {"decision": "interrupted", "state": j["state"]}
+        pgid, leader_start = _group_identity(runner)
         try:
-            members = procutil.group_members(runner["pgid"], runner["leader_start_time"])
+            members = procutil.group_members(pgid, leader_start)
         except procutil.ProcUnavailable as e:
             if not resolve:
-                mark_unknown(store, jobid, n, "undeterminable", "cannot read /proc: %s" % e)
+                _ = mark_unknown(store, jobid, n, "undeterminable", "cannot read /proc: %s" % e)
             return {
                 "decision": "unknown",
                 "reason": "cannot read /proc",
@@ -258,7 +295,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> dict[str, Any]:
                 jobdir, job = store.load_job(jobid)
                 job["state"] = "stopping" if job.get("stop_reason") else "running"
                 job["error"] = None
-                store.save_job(jobdir, job)
+                _ = store.save_job(jobdir, job)
             return {
                 "decision": "handed_to_daemon",
                 "alive_pids": members,
@@ -272,6 +309,16 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> dict[str, Any]:
             os.close(lock_fd)
 
 
+def _group_identity(runner: Runner) -> tuple[int, int]:
+    """(pgid, leader_start_time), read with plain subscripts as before.
+
+    Missing keys raise KeyError; the values are not re-checked (a None pgid
+    simply matches no process in procutil.group_members).
+    """
+    r = cast(Mapping[str, object], cast(object, runner))
+    return cast(int, r["pgid"]), cast(int, r["leader_start_time"])
+
+
 class Takeover:
     """Daemon-side tracking of an attempt whose shim died while the task lives on."""
 
@@ -280,17 +327,18 @@ class Takeover:
         store: Store,
         jobid: str,
         n: int,
-        runner: JsonDict,
+        runner: Runner,
         lock_fd: int | None,
         exited: bool,
-        job: JsonDict,
+        job: Job,
     ) -> None:
         self.store: Store = store
         self.jobid: str = jobid
         self.n: int = n
         self.lock_fd: int | None = lock_fd
-        self.pgid: int = runner["pgid"]
-        self.min_start: int = runner["leader_start_time"]
+        self.pgid: int
+        self.min_start: int
+        self.pgid, self.min_start = _group_identity(runner)
         self.exited: bool = exited
         self.started_epoch: float | None = runner.get("started_at_epoch")
         self.timeout: float | None = load_task(
@@ -307,12 +355,8 @@ class Takeover:
         self.done: bool = False
         cfg = store.config
         self.poll: float = float(cfg.get("control_poll_seconds", 2))
-        self.grace: float
-        self.confirm: float
-        self.grace, self.confirm = (
-            cfg.get("stop_grace_seconds", 30),
-            cfg.get("kill_confirm_seconds", 10),
-        )
+        self.grace: float = cfg.get("stop_grace_seconds", 30)
+        self.confirm: float = cfg.get("kill_confirm_seconds", 10)
         self._note()
         if self.exited:
             if self.stop_reason in (None, "leftover"):
@@ -323,16 +367,15 @@ class Takeover:
 
     def _note(self) -> None:
         adir = self.store.attempt_dir(cast(str, self.store.find_job_dir(self.jobid)), self.n)
-        raw_runner, _ = self.store.read_runner(adir)
-        if isinstance(raw_runner, dict):
-            runner = cast(JsonDict, raw_runner)
+        runner, _ = self.store.read_runner(adir)
+        if runner is not None:
             runner.setdefault("takeovers", []).append({"at": utcnow_iso(), "by_pid": os.getpid()})
             self.store.write_runner(adir, runner)
 
     def _begin_stop(self, reason: str) -> None:
         self.stop_reason = reason
         if reason in STOP_OUTCOME:
-            set_stopping(self.store, self.jobid, self.n, reason)
+            _ = set_stopping(self.store, self.jobid, self.n, reason)
         self.stopper = GroupStopper(self.pgid, self.min_start, self.grace, self.confirm)
         self.stopper.start()
 
@@ -348,7 +391,9 @@ class Takeover:
         try:
             if self.stopper is None:
                 if not procutil.group_members(self.pgid, self.min_start):
-                    finish_stopped(self.store, self.jobid, self.n, None, self.exited, self.warnings)
+                    _ = finish_stopped(
+                        self.store, self.jobid, self.n, None, self.exited, self.warnings
+                    )
                     return self.close()
                 now = time.monotonic()
                 if now - self.last_poll >= self.poll:
@@ -370,7 +415,7 @@ class Takeover:
                 return
             r = self.stopper.step()
             if r == "stopped":
-                finish_stopped(
+                _ = finish_stopped(
                     self.store, self.jobid, self.n, self.stop_reason, self.exited, self.warnings
                 )
                 self.close()
@@ -378,19 +423,18 @@ class Takeover:
                 self._record_unconfirmed()
                 self.close()
         except procutil.ProcUnavailable as e:
-            mark_unknown(
+            _ = mark_unknown(
                 self.store, self.jobid, self.n, "undeterminable", "cannot read /proc: %s" % e
             )
             self.close()
 
     def _record_unconfirmed(self) -> None:
         adir = self.store.attempt_dir(cast(str, self.store.find_job_dir(self.jobid)), self.n)
-        raw_runner, _ = self.store.read_runner(adir)
-        if isinstance(raw_runner, dict):
-            runner = cast(JsonDict, raw_runner)
+        runner, _ = self.store.read_runner(adir)
+        if runner is not None:
             runner["stop_unconfirmed_reason"] = self.stop_reason
             self.store.write_runner(adir, runner)
-        mark_unknown(
+        _ = mark_unknown(
             self.store,
             self.jobid,
             self.n,
@@ -400,6 +444,6 @@ class Takeover:
         )
 
 
-def runner_status_snapshot(adir: str) -> Any:
+def runner_status_snapshot(adir: str) -> JsonValue:
     runner, _ = try_read_json(os.path.join(adir, "runner.json"))
     return runner

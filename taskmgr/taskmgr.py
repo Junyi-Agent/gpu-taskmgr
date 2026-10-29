@@ -16,26 +16,62 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Sequence
-from typing import IO, Any, cast
+from collections.abc import Callable, Mapping, Sequence
+from typing import IO, TypedDict, cast
 
 from . import package
 from .common import (
     PROTOCOL_VERSION,
     SUBMISSION_KEY_RE,
     TASK_ID_RE,
-    JsonDict,
     TaskmgrError,
     atomic_write_json,
     flocked,
     read_json,
     utcnow_iso,
 )
+from .records import JsonDict, JsonValue, LocalInjection, Problem, Server, SshConfig, TaskSpec
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template")
 
 # What every local command returns: (JSON object for stdout or None, exit code).
-CmdResult = tuple[JsonDict | None, int]
+CmdResult = tuple[Mapping[str, object] | None, int]
+
+
+class Args(argparse.Namespace):
+    """Parsed command line: the union of every subcommand's attributes.
+
+    The class defaults equal the parser defaults; argparse overwrites the attributes of the
+    chosen subcommand (plus `home` and `cmd`).
+    """
+
+    home: str | None = None
+    cmd: str = ""
+    task_id: str = ""
+    output: str | None = None
+    path: str = ""
+    host: str | None = None
+    submission_key: str | None = None
+    state: str | None = None
+    jobid: str = ""
+    wait: bool = False
+    poll_interval: float = 5.0
+    retry_timeout: float = 300.0
+    timeout: float | None = None
+    as_: str | None = None
+    confirm: str | None = None
+    attempt: int | None = None
+    stream: str = "stdout"
+    follow: bool = False
+    all_attempts: bool = False
+
+
+class HostError(TypedDict):
+    """One unreachable server in a multi-server query."""
+
+    host: str
+    error: str
+    code: str
 
 
 class ConnError(TaskmgrError):
@@ -47,16 +83,47 @@ def eprint(*a: object) -> None:
     print(*a, file=sys.stderr)
 
 
+def _obj(v: JsonValue) -> JsonDict:
+    """A JSON value the remote protocol guarantees to be an object."""
+    if not isinstance(v, dict):
+        raise TypeError("expected a JSON object in the remote reply, got %r" % (v,))
+    return v
+
+
+def _arr(v: JsonValue) -> list[JsonValue]:
+    """A JSON value the remote protocol guarantees to be an array."""
+    if not isinstance(v, list):
+        raise TypeError("expected a JSON array in the remote reply, got %r" % (v,))
+    return v
+
+
+def _str(v: JsonValue, default: str) -> str:
+    return v if isinstance(v, str) else default
+
+
+def _remote_error(reply: JsonDict, host: str, with_details: bool) -> TaskmgrError:
+    """Turn a remote {"error": {...}} reply into a TaskmgrError."""
+    e = _obj(reply["error"])
+    details = e.get("details") if with_details else None
+    return TaskmgrError(
+        _str(e.get("code", "remote_error"), "remote_error"),
+        _str(e.get("message", ""), ""),
+        2,
+        host,
+        details,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Machine list and transports
 
 
-def home_dir(args: argparse.Namespace | None = None) -> str:
-    h = getattr(args, "home", None) or os.environ.get("TASKMGR_HOME") or "~/.taskmgr"
+def home_dir(args: Args | None = None) -> str:
+    h = (args.home if args is not None else None) or os.environ.get("TASKMGR_HOME") or "~/.taskmgr"
     return os.path.abspath(os.path.expanduser(h))
 
 
-def load_machines(home: str) -> list[JsonDict]:
+def load_machines(home: str) -> list[Server]:
     path = os.path.join(home, "machines.json")
     try:
         data = read_json(path)
@@ -67,12 +134,12 @@ def load_machines(home: str) -> list[JsonDict]:
             "no_machines",
             "machine list %s does not exist (see taskmgr/deploy/machines.example.json)" % path,
         )
-    servers: Any = cast(JsonDict, data).get("servers") if isinstance(data, dict) else data
+    servers = data.get("servers") if isinstance(data, dict) else data
     if not isinstance(servers, list):
         raise TaskmgrError("bad_machines", '%s must contain a "servers" array' % path)
-    names: set[Any] = set()
-    for entry in cast(list[Any], servers):
-        s = cast(JsonDict, entry) if isinstance(entry, dict) else None
+    names: set[object] = set()
+    for entry in servers:
+        s = entry if isinstance(entry, dict) else None
         if s is None or not s.get("name") or s["name"] in names:
             raise TaskmgrError("bad_machines", "every server needs a unique name: %r" % (entry,))
         names.add(s["name"])
@@ -84,24 +151,26 @@ def load_machines(home: str) -> list[JsonDict]:
             raise TaskmgrError(
                 "bad_machines", "server %s needs remote_root and remote_command" % s["name"]
             )
-    return cast(list[JsonDict], servers)
+    # Checked above: every entry is an object with name, remote_root and remote_command.
+    return cast(list[Server], servers)
 
 
-def find_server(servers: list[JsonDict], name: str) -> JsonDict:
+def find_server(servers: list[Server], name: str | None) -> Server:
     for s in servers:
         if s["name"] == name:
             return s
     raise TaskmgrError("unknown_host", "host %r is not in the machine list" % name, host=name)
 
 
-def pick_round_robin(home: str, servers: list[JsonDict]) -> JsonDict:
+def pick_round_robin(home: str, servers: list[Server]) -> Server:
     """Choose the next enabled server; cursor read+update happen under one flock."""
     enabled = [s for s in servers if s.get("enabled", True)]
     if not enabled:
         raise TaskmgrError("no_enabled_hosts", "no enabled server in the machine list")
     with flocked(os.path.join(home, "rr.lock")):
-        state: Any = read_json(os.path.join(home, "rr.json"), {}) or {}
-        cursor = int(state.get("cursor", 0))
+        state = read_json(os.path.join(home, "rr.json"), {}) or {}
+        raw_cursor = state.get("cursor", 0) if isinstance(state, dict) else 0
+        cursor = int(raw_cursor) if isinstance(raw_cursor, (int, float, str)) else 0
         chosen = enabled[cursor % len(enabled)]
         atomic_write_json(
             os.path.join(home, "rr.json"),
@@ -111,8 +180,8 @@ def pick_round_robin(home: str, servers: list[JsonDict]) -> JsonDict:
 
 
 class Remote:
-    def __init__(self, server: JsonDict) -> None:
-        self.server: JsonDict = server
+    def __init__(self, server: Server) -> None:
+        self.server: Server = server
         self.name: str = server["name"]
 
     def argv(self, args: Sequence[object]) -> list[str]:
@@ -126,15 +195,18 @@ class Remote:
         base += [str(a) for a in args]
         if s.get("transport", "ssh") == "local":
             return base
-        ssh: Any = s.get("ssh") or {}
+        ssh: SshConfig = s.get("ssh") or {}
         cmd = ["ssh", "-o", "BatchMode=yes"]
-        if ssh.get("port"):
-            cmd += ["-p", str(ssh["port"])]
-        if ssh.get("identity_file"):
-            cmd += ["-i", os.path.expanduser(ssh["identity_file"])]
+        port = ssh.get("port")
+        if port:
+            cmd += ["-p", str(port)]
+        identity_file = ssh.get("identity_file")
+        if identity_file:
+            cmd += ["-i", os.path.expanduser(identity_file)]
         cmd += list(ssh.get("options") or [])
         host = ssh.get("host") or self.name
-        cmd += ["%s@%s" % (ssh["user"], host) if ssh.get("user") else host]
+        user = ssh.get("user")
+        cmd += ["%s@%s" % (user, host) if user else host]
         cmd += ["--", shlex.join(base)]
         return cmd
 
@@ -142,9 +214,10 @@ class Remote:
         # Test-only failure injection for transport "local" (Section 18.1).
         if self.server.get("transport") != "local":
             return
-        inj: Any = self.server.get("local") or {}
-        if inj.get("fail"):
-            raise ConnError(str(inj["fail"]), self.name)
+        inj: LocalInjection = self.server.get("local") or {}
+        fail = inj.get("fail")
+        if fail:
+            raise ConnError(str(fail), self.name)
         f = inj.get("fail_if_exists")
         if f and os.path.exists(f):
             raise ConnError("injected connection failure (%s exists)" % f, self.name)
@@ -179,11 +252,11 @@ class Remote:
         err = p.stderr.decode(errors="replace").strip()
         if self._is_conn_failure(p.returncode):
             raise ConnError("ssh: %s" % (err or "connection failed"), self.name)
-        obj: Any = None
+        obj: JsonValue = None
         for line in reversed(p.stdout.decode(errors="replace").splitlines()):
             if line.strip():
                 try:
-                    obj = json.loads(line)
+                    obj = cast(JsonValue, json.loads(line))
                 except ValueError:
                     pass
                 break
@@ -191,13 +264,10 @@ class Remote:
             raise ConnError(
                 "no valid JSON from remote (exit %d): %s" % (p.returncode, err[-2000:]), self.name
             )
-        reply = cast(JsonDict, obj)
+        reply = obj
         check_protocol(reply, self.name)
         if "error" in reply:
-            e = reply["error"]
-            raise TaskmgrError(
-                e.get("code", "remote_error"), e.get("message", ""), 2, self.name, e.get("details")
-            )
+            raise _remote_error(reply, self.name, with_details=True)
         return reply
 
     def stream(self, args: Sequence[object], stdout: IO[bytes]) -> int:
@@ -213,20 +283,16 @@ class Remote:
         if self._is_conn_failure(p.returncode):
             raise ConnError("ssh: %s" % (err or "connection failed"), self.name)
         if p.returncode != 0:
-            obj: Any = None
+            obj: JsonValue = None
             for line in reversed(err.splitlines()):
                 try:
-                    obj = json.loads(line)
+                    obj = cast(JsonValue, json.loads(line))
                     break
                 except ValueError:
                     continue
             if isinstance(obj, dict) and "error" in obj:
-                reply = cast(JsonDict, obj)
-                check_protocol(reply, self.name)
-                e = reply["error"]
-                raise TaskmgrError(
-                    e.get("code", "remote_error"), e.get("message", ""), 2, self.name
-                )
+                check_protocol(obj, self.name)
+                raise _remote_error(obj, self.name, with_details=False)
             raise TaskmgrError(
                 "remote_error", "remote exited %d: %s" % (p.returncode, err[-2000:]), 2, self.name
             )
@@ -245,11 +311,11 @@ def check_protocol(obj: JsonDict, host: str | None) -> None:
 
 
 def query_all(
-    servers: list[JsonDict], args: Sequence[object]
-) -> tuple[dict[str, JsonDict], list[JsonDict]]:
+    servers: list[Server], args: Sequence[object]
+) -> tuple[dict[str, JsonDict], list[HostError]]:
     """Call a JSON subcommand on every server in parallel: ({name: obj}, [errors])."""
     results: dict[str, JsonDict] = {}
-    errors: list[JsonDict] = []
+    errors: list[HostError] = []
     if not servers:
         return results, errors
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(servers))) as ex:
@@ -271,19 +337,19 @@ def query_all(
 # init / validate
 
 
-def cmd_init(args: argparse.Namespace) -> CmdResult:
+def cmd_init(args: Args) -> CmdResult:
     if not TASK_ID_RE.match(args.task_id):
         raise TaskmgrError("bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$")
     target = os.path.abspath(args.output or args.task_id)
     if os.path.lexists(target):
         raise TaskmgrError("exists", "target %s already exists; nothing was written" % target)
-    shutil.copytree(TEMPLATE_DIR, target, ignore=shutil.ignore_patterns("__pycache__"))
+    _ = shutil.copytree(TEMPLATE_DIR, target, ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("task.json", "TASK.md"):
         p = os.path.join(target, name)
         with open(p) as f:
             text = f.read().replace("{{TASK_ID}}", args.task_id)
         with open(p, "w") as f:
-            f.write(text)
+            _ = f.write(text)
     prog = os.path.join(target, "progress.json")
     with open(prog, "w") as f:
         json.dump(
@@ -297,11 +363,11 @@ def cmd_init(args: argparse.Namespace) -> CmdResult:
             f,
             indent=2,
         )
-        f.write("\n")
+        _ = f.write("\n")
     return {"path": target, "task_id": args.task_id}, 0
 
 
-def validate_path(path: str) -> tuple[list[JsonDict], JsonDict | None, str | None]:
+def validate_path(path: str) -> tuple[list[Problem], TaskSpec | None, str | None]:
     """Validate a package directory or archive. Returns (errors, task, content_hash)."""
     if not os.path.exists(path):
         raise TaskmgrError("not_found", "path does not exist: %s" % path)
@@ -313,7 +379,7 @@ def validate_path(path: str) -> tuple[list[JsonDict], JsonDict | None, str | Non
             skipped = package.safe_extract(path, tmp, skip_unsafe=True)
         except TaskmgrError as e:
             return [{"code": e.code, "message": e.message}], None, None
-        unsafe: list[JsonDict] = [
+        unsafe: list[Problem] = [
             {
                 "code": "unsafe_package",
                 "message": "unsafe archive entry: %s" % s["reason"],
@@ -327,7 +393,7 @@ def validate_path(path: str) -> tuple[list[JsonDict], JsonDict | None, str | Non
         return errors, task, (None if errors else package.content_hash(root))
 
 
-def cmd_validate(args: argparse.Namespace) -> CmdResult:
+def cmd_validate(args: Args) -> CmdResult:
     errors, task, chash = validate_path(args.path)
     if errors:
         return {"valid": False, "errors": errors}, 1
@@ -339,7 +405,7 @@ def cmd_validate(args: argparse.Namespace) -> CmdResult:
 # submit
 
 
-def cmd_submit(args: argparse.Namespace) -> CmdResult:
+def cmd_submit(args: Args) -> CmdResult:
     if args.submission_key and not args.host:
         raise TaskmgrError(
             "bad_args",
@@ -395,7 +461,7 @@ def cmd_submit(args: argparse.Namespace) -> CmdResult:
 # jobs / status
 
 
-def cmd_jobs(args: argparse.Namespace) -> CmdResult:
+def cmd_jobs(args: Args) -> CmdResult:
     servers = load_machines(home_dir(args))
     if args.host:
         servers = [find_server(servers, args.host)]
@@ -403,22 +469,22 @@ def cmd_jobs(args: argparse.Namespace) -> CmdResult:
     results, errors = query_all(servers, rargs)
     jobs: list[JsonDict] = []
     for s in servers:
-        for j in (results.get(s["name"]) or {}).get("jobs", []):
-            jobs.append(dict({"host": s["name"]}, **j))
-    out: JsonDict = {"complete": not errors, "errors": errors, "jobs": jobs}
+        for j in _arr((results.get(s["name"]) or {}).get("jobs", [])):
+            jobs.append({"host": s["name"], **_obj(j)})
+    out: dict[str, object] = {"complete": not errors, "errors": errors, "jobs": jobs}
     if not results:
         out["error"] = {"code": "all_hosts_failed", "message": "no server could be queried"}
         return out, 2
     return out, 0
 
 
-def render_status(host: str, st: JsonDict, complete: bool) -> JsonDict:
+def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, object]:
     if st["terminal"]:
-        out: JsonDict = dict(st["result"])
+        out: dict[str, object] = dict(_obj(st["result"]))
         out["host"] = host
         out["complete"] = complete
         return out
-    j = st["job"]
+    j = _obj(st["job"])
     return {
         "host": host,
         "jobid": j["jobid"],
@@ -434,7 +500,7 @@ def render_status(host: str, st: JsonDict, complete: bool) -> JsonDict:
     }
 
 
-def locate(args: argparse.Namespace, servers: list[JsonDict]) -> tuple[JsonDict, JsonDict, bool]:
+def locate(args: Args, servers: list[Server]) -> tuple[Server, JsonDict, bool]:
     """Return (host, status, complete) per the table in Section 14.2."""
     if args.host:
         server = find_server(servers, args.host)
@@ -457,22 +523,22 @@ def locate(args: argparse.Namespace, servers: list[JsonDict]) -> tuple[JsonDict,
     if len(matches) == 1:
         if errors:
             eprint(
-                "warning: some servers were unreachable (%s); uniqueness of %s could not be "
-                "fully checked" % (", ".join(e["host"] for e in errors), args.jobid)
+                "warning: some servers were unreachable (%s); uniqueness of %s could not be fully checked"
+                % (", ".join(e["host"] for e in errors), args.jobid)
             )
         return matches[0][0], matches[0][1], not errors
     if errors:
         raise TaskmgrError(
             "incomplete",
-            "job %s not found on reachable servers; unreachable: "
-            "%s" % (args.jobid, ", ".join(e["host"] for e in errors)),
+            "job %s not found on reachable servers; unreachable: %s"
+            % (args.jobid, ", ".join(e["host"] for e in errors)),
             2,
             details={"errors": errors},
         )
     raise TaskmgrError("not_found", "job %s not found on any server" % args.jobid)
 
 
-def cmd_status(args: argparse.Namespace) -> CmdResult:
+def cmd_status(args: Args) -> CmdResult:
     servers = load_machines(home_dir(args))
     if not args.wait:
         server, st, complete = locate(args, servers)
@@ -480,12 +546,12 @@ def cmd_status(args: argparse.Namespace) -> CmdResult:
     return wait_status(args, servers)
 
 
-def wait_status(args: argparse.Namespace, servers: list[JsonDict]) -> CmdResult:
+def wait_status(args: Args, servers: list[Server]) -> CmdResult:
     t_start = time.monotonic()
     deadline: float | None = t_start + args.timeout if args.timeout is not None else None
     fail_since: float | None = None
     st: JsonDict | None = None
-    server: JsonDict | None = None
+    server: Server | None = None
     complete = True
     while True:
         try:
@@ -509,14 +575,14 @@ def wait_status(args: argparse.Namespace, servers: list[JsonDict]) -> CmdResult:
             if now - fail_since >= args.retry_timeout:
                 raise TaskmgrError(
                     "connection_error",
-                    "giving up after %.0fs of connection "
-                    "failures: %s" % (now - fail_since, e.message),
+                    "giving up after %.0fs of connection failures: %s"
+                    % (now - fail_since, e.message),
                     2,
                     e.host,
                 )
             if deadline is not None and now >= deadline:
                 host = server["name"] if server else args.host
-                out: JsonDict = render_status(host, st, complete) if st else {}
+                out: dict[str, object] = render_status(host, st, complete) if st else {}
                 out["error"] = {
                     "code": "wait_timeout",
                     "message": "--timeout expired while the server was unreachable: %s" % e.message,
@@ -530,7 +596,7 @@ def wait_status(args: argparse.Namespace, servers: list[JsonDict]) -> CmdResult:
                 else max(0.0, min(args.poll_interval, deadline - now))
             )
             continue
-        state = st["job"]["state"]
+        state = _obj(st["job"])["state"]
         if st["terminal"]:
             out = render_status(server["name"], st, complete)
             return out, (0 if state == "succeeded" else 1)
@@ -557,24 +623,24 @@ def wait_status(args: argparse.Namespace, servers: list[JsonDict]) -> CmdResult:
 # cancel / retry / resolve
 
 
-def _host_call(args: argparse.Namespace, rargs: Sequence[object]) -> CmdResult:
+def _host_call(args: Args, rargs: Sequence[object]) -> CmdResult:
     servers = load_machines(home_dir(args))
     server = find_server(servers, args.host)
     out = Remote(server).call(rargs)
-    out.pop("protocol_version", None)
+    _ = out.pop("protocol_version", None)
     out["host"] = server["name"]
     return out, 0
 
 
-def cmd_cancel(args: argparse.Namespace) -> CmdResult:
+def cmd_cancel(args: Args) -> CmdResult:
     return _host_call(args, ["cancel", args.jobid])
 
 
-def cmd_retry(args: argparse.Namespace) -> CmdResult:
+def cmd_retry(args: Args) -> CmdResult:
     return _host_call(args, ["retry", args.jobid])
 
 
-def cmd_resolve(args: argparse.Namespace) -> CmdResult:
+def cmd_resolve(args: Args) -> CmdResult:
     rargs: list[object] = ["resolve", args.jobid]
     if args.as_:
         if args.confirm is None:
@@ -589,7 +655,7 @@ def cmd_resolve(args: argparse.Namespace) -> CmdResult:
 # logs / fetch
 
 
-def cmd_logs(args: argparse.Namespace) -> CmdResult:
+def cmd_logs(args: Args) -> CmdResult:
     servers = load_machines(home_dir(args))
     server = find_server(servers, args.host)
     rargs: list[object] = ["logs", args.jobid, "--stream", args.stream]
@@ -597,12 +663,12 @@ def cmd_logs(args: argparse.Namespace) -> CmdResult:
         rargs += ["--attempt", args.attempt]
     if args.follow:
         rargs.append("--follow")
-    sys.stdout.flush()
-    Remote(server).stream(rargs, sys.stdout.buffer)
+    _ = sys.stdout.flush()
+    _ = Remote(server).stream(rargs, sys.stdout.buffer)
     return None, 0
 
 
-def cmd_fetch(args: argparse.Namespace) -> CmdResult:
+def cmd_fetch(args: Args) -> CmdResult:
     if args.attempt is not None and args.all_attempts:
         raise TaskmgrError("bad_args", "--attempt and --all-attempts are mutually exclusive")
     servers = load_machines(home_dir(args))
@@ -613,8 +679,8 @@ def cmd_fetch(args: argparse.Namespace) -> CmdResult:
         raise TaskmgrError(
             "not_found", "job %s not found on %s" % (args.jobid, args.host), 2, args.host
         )
-    have: list[Any] = st.get("attempts", [])
-    nums: list[Any]
+    have = _arr(st.get("attempts", []))
+    nums: list[JsonValue]
     if args.all_attempts:
         nums = have
     elif args.attempt is not None:
@@ -622,15 +688,16 @@ def cmd_fetch(args: argparse.Namespace) -> CmdResult:
             raise TaskmgrError("no_such_attempt", "attempt %d does not exist" % args.attempt)
         nums = [args.attempt]
     else:
-        cur = st["job"].get("attempt")
+        cur = _obj(st["job"]).get("attempt")
         nums = [cur] if cur else have[-1:]
     if not nums:
         raise TaskmgrError("no_attempt", "job %s has no attempt to fetch" % args.jobid)
-    output: str = args.output
+    output = args.output
+    assert output is not None  # --output is required for fetch
     host: str = server["name"]
     jobid: str = args.jobid
     base = os.path.join(os.path.abspath(output), host, jobid)
-    targets: dict[Any, str] = {n: os.path.join(base, "attempts", "%04d" % n) for n in nums}
+    targets: dict[JsonValue, str] = {n: os.path.join(base, "attempts", "%04d" % n) for n in nums}
     existing = [t for t in targets.values() if os.path.lexists(t)]
     if existing:
         raise TaskmgrError("exists", "target directory already exists: %s" % ", ".join(existing))
@@ -638,21 +705,20 @@ def cmd_fetch(args: argparse.Namespace) -> CmdResult:
     if partial:
         eprint(
             "warning: job %s is %s; fetched results may be incomplete"
-            % (args.jobid, st["job"]["state"])
+            % (args.jobid, _obj(st["job"])["state"])
         )
     os.makedirs(os.path.join(base, "attempts"), exist_ok=True)
     staging = tempfile.mkdtemp(prefix=".fetch-", dir=base)
     try:
         tar_path = os.path.join(staging, "stream.tar.gz")
-        rargs: Sequence[object] = ["fetch", args.jobid] + (
-            ["--all-attempts"] if args.all_attempts else ["--attempt", nums[0]]
-        )
+        rargs: list[object] = ["fetch", args.jobid]
+        rargs += ["--all-attempts"] if args.all_attempts else ["--attempt", nums[0]]
         with open(tar_path, "wb") as f:
-            remote.stream(rargs, f)
+            _ = remote.stream(rargs, f)
         skipped = package.safe_extract(tar_path, os.path.join(staging, "x"), skip_unsafe=True)
         for s in skipped:
             eprint("warning: skipped unsafe entry %s (%s)" % (s["path"], s["reason"]))
-        fetched: list[JsonDict] = []
+        fetched: list[dict[str, object]] = []
         for n, t in targets.items():
             src = os.path.join(staging, "x", "attempts", "%04d" % n)
             if not os.path.isdir(src):
@@ -666,14 +732,14 @@ def cmd_fetch(args: argparse.Namespace) -> CmdResult:
     return {
         "host": server["name"],
         "jobid": args.jobid,
-        "state": st["job"]["state"],
+        "state": _obj(st["job"])["state"],
         "partial": partial,
         "attempts": fetched,
         "skipped": skipped,
     }, 0
 
 
-def cmd_hosts(args: argparse.Namespace) -> CmdResult:
+def cmd_hosts(args: Args) -> CmdResult:
     servers = load_machines(home_dir(args))
     return {
         "servers": [
@@ -693,54 +759,54 @@ def cmd_hosts(args: argparse.Namespace) -> CmdResult:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="task", description="GPU task manager (local CLI)")
-    p.add_argument("--home", help="local state directory (default $TASKMGR_HOME or ~/.taskmgr)")
+    _ = p.add_argument("--home", help="local state directory (default $TASKMGR_HOME or ~/.taskmgr)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("init", help="create a task package template")
-    s.add_argument("task_id")
-    s.add_argument("--output", help="target directory (default ./<task_id>)")
+    _ = s.add_argument("task_id")
+    _ = s.add_argument("--output", help="target directory (default ./<task_id>)")
     s = sub.add_parser("validate", help="validate a task package directory or tar.gz")
-    s.add_argument("path")
+    _ = s.add_argument("path")
     s = sub.add_parser("submit", help="submit a task package")
-    s.add_argument("path")
-    s.add_argument("--host")
-    s.add_argument("--submission-key")
+    _ = s.add_argument("path")
+    _ = s.add_argument("--host")
+    _ = s.add_argument("--submission-key")
     s = sub.add_parser("jobs", help="list jobs")
-    s.add_argument("--host")
-    s.add_argument("--state")
+    _ = s.add_argument("--host")
+    _ = s.add_argument("--state")
     s = sub.add_parser("status", help="show (or wait for) one job")
-    s.add_argument("jobid")
-    s.add_argument("--host")
-    s.add_argument("--wait", action="store_true")
-    s.add_argument("--poll-interval", type=float, default=5.0)
-    s.add_argument("--retry-timeout", type=float, default=300.0)
-    s.add_argument("--timeout", type=float, default=None)
+    _ = s.add_argument("jobid")
+    _ = s.add_argument("--host")
+    _ = s.add_argument("--wait", action="store_true")
+    _ = s.add_argument("--poll-interval", type=float, default=5.0)
+    _ = s.add_argument("--retry-timeout", type=float, default=300.0)
+    _ = s.add_argument("--timeout", type=float, default=None)
     for name in ("cancel", "retry"):
         s = sub.add_parser(name)
-        s.add_argument("jobid")
-        s.add_argument("--host", required=True)
+        _ = s.add_argument("jobid")
+        _ = s.add_argument("--host", required=True)
     s = sub.add_parser("resolve", help="resolve a job in the unknown state")
-    s.add_argument("jobid")
-    s.add_argument("--host", required=True)
-    s.add_argument("--as", dest="as_", choices=("stopped",))
-    s.add_argument("--confirm")
+    _ = s.add_argument("jobid")
+    _ = s.add_argument("--host", required=True)
+    _ = s.add_argument("--as", dest="as_", choices=("stopped",))
+    _ = s.add_argument("--confirm")
     s = sub.add_parser("logs")
-    s.add_argument("jobid")
-    s.add_argument("--host", required=True)
-    s.add_argument("--attempt", type=int)
-    s.add_argument("--stream", choices=("stdout", "stderr", "shim"), default="stdout")
-    s.add_argument("--follow", action="store_true")
+    _ = s.add_argument("jobid")
+    _ = s.add_argument("--host", required=True)
+    _ = s.add_argument("--attempt", type=int)
+    _ = s.add_argument("--stream", choices=("stdout", "stderr", "shim"), default="stdout")
+    _ = s.add_argument("--follow", action="store_true")
     s = sub.add_parser("fetch")
-    s.add_argument("jobid")
-    s.add_argument("--host", required=True)
-    s.add_argument("--output", required=True)
-    s.add_argument("--attempt", type=int)
-    s.add_argument("--all-attempts", action="store_true")
-    sub.add_parser("hosts", help="list configured servers")
+    _ = s.add_argument("jobid")
+    _ = s.add_argument("--host", required=True)
+    _ = s.add_argument("--output", required=True)
+    _ = s.add_argument("--attempt", type=int)
+    _ = s.add_argument("--all-attempts", action="store_true")
+    _ = sub.add_parser("hosts", help="list configured servers")
     return p
 
 
-COMMANDS: dict[str, Callable[[argparse.Namespace], CmdResult]] = {
+COMMANDS: dict[str, Callable[[Args], CmdResult]] = {
     "init": cmd_init,
     "validate": cmd_validate,
     "submit": cmd_submit,
@@ -758,11 +824,11 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], CmdResult]] = {
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
-        args = parser.parse_args(argv)
+        args = parser.parse_args(argv, namespace=Args())
     except SystemExit as e:  # argparse errors are parameter errors: exit 2
         if e.code == 0:
             return 0
-        sys.stdout.write(
+        _ = sys.stdout.write(
             json.dumps({"error": {"code": "bad_args", "message": "invalid arguments (see stderr)"}})
             + "\n"
         )
@@ -778,7 +844,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         eprint("interrupted (remote jobs are not affected)")
         if args.cmd != "logs":
-            sys.stdout.write(
+            _ = sys.stdout.write(
                 json.dumps({"error": {"code": "interrupted", "message": "interrupted locally"}})
                 + "\n"
             )
@@ -791,10 +857,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.cmd == "logs":
             eprint(json.dumps(err))
         else:
-            sys.stdout.write(json.dumps(err) + "\n")
+            _ = sys.stdout.write(json.dumps(err) + "\n")
         return 2
     if out is not None:
-        sys.stdout.write(json.dumps(out, indent=2, sort_keys=True) + "\n")
+        _ = sys.stdout.write(json.dumps(out, indent=2, sort_keys=True) + "\n")
     return code
 
 

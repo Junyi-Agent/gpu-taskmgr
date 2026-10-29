@@ -5,21 +5,31 @@ import json
 import os
 import tarfile
 import time
-
-from helpers import Env
+from typing import TypedDict, cast
 
 from taskmgr import package
-from taskmgr.common import JsonDict
+from taskmgr.records import JsonDict, JsonValue
+from taskmgr.tests.helpers import Env
+
+TarEntry = tuple[dict[str, object], "bytes | None"]
 
 
-TarEntry = tuple[JsonDict, "bytes | None"]
+class PkgKw(TypedDict, total=False):
+    """The make_pkg keyword arguments test_invalid_packages_rejected varies."""
+
+    extra: JsonDict
+    argv: list[str]
+    env: dict[str, str]
+    gpus: list[int | str]
 
 
 def write_tar(path: str, entries: list[TarEntry]) -> None:
     """entries: list of (TarInfo kwargs, data or None)."""
     with tarfile.open(path, "w:gz") as tar:
         for kw, data in entries:
-            ti = tarfile.TarInfo(kw.pop("name"))
+            name = kw.pop("name")
+            assert isinstance(name, str)
+            ti = tarfile.TarInfo(name)
             for k, v in kw.items():
                 setattr(ti, k, v)
             if data is not None:
@@ -50,13 +60,13 @@ class PackageTest(Env):
             self.assertEqual(f.read(10)[4:8], b"\0\0\0\0")  # gzip header mtime 0
         h_dir = package.content_hash(pkg)
         ext = os.path.join(self.tmp, "ext")
-        package.safe_extract(a, ext)
+        _ = package.safe_extract(a, ext)
         self.assertEqual(package.content_hash(ext), h_dir)
         # The CLI reports the same hash for the directory and an archive of it.
         rc1, v1, _ = self.task("validate", pkg)
         rc2, v2, _ = self.task("validate", a)
         self.assertEqual((rc1, rc2), (0, 0))
-        self.assertEqual(v1["content_hash"], v2["content_hash"])
+        self.assertEqual(self.get(v1, "content_hash"), self.get(v2, "content_hash"))
 
     def test_hash_sees_exec_bit_and_content(self) -> None:
         pkg = self.make_pkg(files={"x.sh": "echo\n"})
@@ -68,24 +78,24 @@ class PackageTest(Env):
     def test_init_and_validate_exit_codes(self) -> None:
         target = os.path.join(self.tmp, "AA-01")
         out = self.ok("init", "AA-01", "--output", target)
-        self.assertEqual(out["path"], target)
+        self.assertEqual(self.get(out, "path"), target)
         for f in ("task.json", "TASK.md", "progress.json", "taskmgr_task.py", "run.py"):
             self.assertTrue(os.path.isfile(os.path.join(target, f)), f)
         rc, out, _ = self.task("init", "AA-01", "--output", target)
         self.assertEqual(rc, 2)
-        self.assertIn("error", out)
+        self.assertIn("error", self.obj(out))
         # Fresh template still has placeholders: validation fails with exit 1.
         rc, out, _ = self.task("validate", target)
         self.assertEqual(rc, 1)
-        self.assertFalse(out["valid"])
-        self.assertTrue(any(e["code"] == "placeholder" for e in out["errors"]))
+        self.assertFalse(self.get(out, "valid"))
+        self.assertTrue(any(e["code"] == "placeholder" for e in self.objs(out, "errors")))
         rc, out, _ = self.task("validate", os.path.join(self.tmp, "nope"))
         self.assertEqual(rc, 2)
         rc, out, _ = self.task("init", "bad-id")
         self.assertEqual(rc, 2)
         # Filling in the template makes it valid.
         with open(os.path.join(target, "task.json")) as f:
-            t = json.load(f)
+            t = self.obj(cast(JsonValue, json.load(f)))
         t["gpus"] = []
         t["environment"] = {"required_paths": []}
         t["result"] = {"required_outputs": ["example"]}
@@ -96,11 +106,18 @@ class PackageTest(Env):
         import re
 
         with open(os.path.join(target, "TASK.md"), "w") as f:
-            f.write(re.sub(r"<REQUIRED[^>]*>", "filled", md))
+            _ = f.write(re.sub(r"<REQUIRED[^>]*>", "filled", md))
         rc, out, _ = self.task("validate", target)
         self.assertEqual(
             (rc, out),
-            (0, {"valid": True, "task_id": "AA-01", "content_hash": out.get("content_hash")}),
+            (
+                0,
+                {
+                    "valid": True,
+                    "task_id": "AA-01",
+                    "content_hash": self.obj(out).get("content_hash"),
+                },
+            ),
         )
 
     def test_examples_are_valid(self) -> None:
@@ -110,7 +127,7 @@ class PackageTest(Env):
             self.assertEqual(rc, 0, (name, out, err))
 
     def test_invalid_packages_rejected(self) -> None:
-        cases: list[tuple[JsonDict, str]] = [
+        cases: list[tuple[PkgKw, str]] = [
             ({"extra": {"task_id": "A-1"}}, "task_id"),
             ({"extra": {"task_id": "aa-01"}}, "task_id"),
             ({"argv": ["./missing.sh"]}, "entry"),
@@ -125,19 +142,19 @@ class PackageTest(Env):
             pkg = self.make_pkg(**kw)
             rc, out, _ = self.task("validate", pkg)
             self.assertEqual(rc, 1, kw)
-            self.assertIn(code, [e["code"] for e in out["errors"]], (kw, out))
+            self.assertIn(code, [e["code"] for e in self.objs(out, "errors")], (kw, out))
         pkg = self.make_pkg()
         os.unlink(os.path.join(pkg, "TASK.md"))
         rc, out, _ = self.task("validate", pkg)
         self.assertEqual(rc, 1)
-        self.assertIn("missing_file", [e["code"] for e in out["errors"]])
+        self.assertIn("missing_file", [e["code"] for e in self.objs(out, "errors")])
         pkg = self.make_pkg()
         with open(os.path.join(pkg, "progress.json"), "w") as f:
-            f.write('{"schema_version": 1, "stage": "x"}')
+            _ = f.write('{"schema_version": 1, "stage": "x"}')
         self.assertEqual(self.task("validate", pkg)[0], 1)
         pkg = self.make_pkg()
         with open(os.path.join(pkg, "TASK.md"), "a") as f:
-            f.write("\n<REQUIRED: fill me>\n")
+            _ = f.write("\n<REQUIRED: fill me>\n")
         self.assertEqual(self.task("validate", pkg)[0], 1)
 
     def test_symlinks_and_special_files(self) -> None:
@@ -145,7 +162,7 @@ class PackageTest(Env):
         os.symlink("/etc/passwd", os.path.join(pkg, "abs"))
         rc, out, _ = self.task("validate", pkg)
         self.assertEqual(rc, 1)
-        self.assertIn("symlink", [e["code"] for e in out["errors"]])
+        self.assertIn("symlink", [e["code"] for e in self.objs(out, "errors")])
         pkg = self.make_pkg()
         os.makedirs(os.path.join(pkg, "d"))
         os.symlink("../../x", os.path.join(pkg, "d", "up"))
@@ -154,7 +171,7 @@ class PackageTest(Env):
         os.mkfifo(os.path.join(pkg, "fifo"))
         rc, out, _ = self.task("validate", pkg)
         self.assertEqual(rc, 1)
-        self.assertIn("special_file", [e["code"] for e in out["errors"]])
+        self.assertIn("special_file", [e["code"] for e in self.objs(out, "errors")])
         pkg = self.make_pkg(files={"d/f": "x"})
         os.symlink("d/f", os.path.join(pkg, "ok"))  # internal relative link is fine
         self.assertEqual(self.task("validate", pkg)[0], 0)
@@ -191,12 +208,12 @@ class PackageTest(Env):
             path = self._tar_with(extra)
             rc, out, _ = self.task("validate", path)
             self.assertEqual(rc, 1, (extra, out))
-            self.assertFalse(out["valid"])
+            self.assertFalse(self.get(out, "valid"))
             # The remote side refuses it independently of the local check.
             with open(path, "rb") as f:
                 rc, out, _ = self.remote("receive", stdin=f)
             self.assertEqual(rc, 2, (extra, out))
-            self.assertEqual(out["error"]["code"], "unsafe_package")
+            self.assertEqual(self.get(out, "error", "code"), "unsafe_package")
         self.assertEqual(os.listdir(os.path.join(self.root(), "queue")), [])
         self.assertEqual(os.listdir(os.path.join(self.root(), "incoming")), [])
 
@@ -205,20 +222,20 @@ class PackageTest(Env):
         pkg = self.make_pkg(files={"big.bin": "x" * 5000})
         rc, out, _ = self.task("submit", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
-        self.assertEqual(out["error"]["code"], "package_too_large")
+        self.assertEqual(self.get(out, "error", "code"), "package_too_large")
 
     def test_remote_rejects_unknown_gpu(self) -> None:
         pkg = self.make_pkg(gpus=[7])
         rc, out, _ = self.task("submit", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
-        self.assertEqual(out["error"]["code"], "invalid_gpus")
+        self.assertEqual(self.get(out, "error", "code"), "invalid_gpus")
         pkg = self.make_pkg(gpus=["GPU-doesnotexist"])
         self.assertEqual(self.task("submit", "--host", "s1", pkg)[0], 2)
         # Index and UUID naming the same device are duplicates.
         pkg = self.make_pkg(gpus=[0, "GPU-00000000-0000-0000-0000-000000000000"])
         rc, out, _ = self.task("submit", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
-        self.assertIn("duplicate", out["error"]["message"])
+        self.assertIn("duplicate", self.text(out, "error", "message"))
 
     def test_wrapped_archive_with_top_level_directory(self) -> None:
         pkg = self.make_pkg()
@@ -226,8 +243,8 @@ class PackageTest(Env):
         with tarfile.open(path, "w:gz") as tar:
             tar.add(pkg, arcname="AA-01")
         out = self.ok("submit", "--host", "s1", path)
-        self.assertEqual(out["task_id"], "AA-01")
-        self.assertEqual(out["content_hash"], package.content_hash(pkg))
+        self.assertEqual(self.get(out, "task_id"), "AA-01")
+        self.assertEqual(self.get(out, "content_hash"), package.content_hash(pkg))
 
     def test_symlink_chain_escaping_package_is_rejected(self) -> None:
         pkg = self.make_pkg()
@@ -235,7 +252,9 @@ class PackageTest(Env):
         os.symlink("x/..", os.path.join(pkg, "y"))  # lexically ".", physically the parent
         rc, out, _ = self.task("validate", pkg)
         self.assertEqual(rc, 1)
-        self.assertEqual([e["path"] for e in out["errors"] if e["code"] == "symlink"], ["y"])
+        self.assertEqual(
+            [e["path"] for e in self.objs(out, "errors") if e["code"] == "symlink"], ["y"]
+        )
         path = self._tar_with(
             [
                 ({"name": "x", "type": tarfile.SYMTYPE, "linkname": "."}, None),
@@ -245,7 +264,7 @@ class PackageTest(Env):
         self.assertEqual(self.task("validate", path)[0], 1)
         with open(path, "rb") as f:
             rc, out, _ = self.remote("receive", stdin=f)
-        self.assertEqual((rc, out["error"]["code"]), (2, "unsafe_package"))
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "unsafe_package"))
 
     def test_validate_archive_reports_all_errors(self) -> None:
         path = self._tar_with(
@@ -253,12 +272,14 @@ class PackageTest(Env):
         )
         rc, out, _ = self.task("validate", path)
         self.assertEqual(rc, 1)
-        self.assertEqual(len([e for e in out["errors"] if e["code"] == "unsafe_package"]), 2)
+        self.assertEqual(
+            len([e for e in self.objs(out, "errors") if e["code"] == "unsafe_package"]), 2
+        )
         junk = os.path.join(self.tmp, "junk.tar.gz")
         with open(junk, "w") as f:
-            f.write("not an archive")
+            _ = f.write("not an archive")
         rc, out, _ = self.task("validate", junk)
-        self.assertEqual((rc, out["errors"][0]["code"]), (1, "bad_archive"))
+        self.assertEqual((rc, self.get(out, "errors", 0, "code")), (1, "bad_archive"))
         rc, out, _ = self.task("validate", "--", "\n")
         self.assertEqual(rc, 2)
 

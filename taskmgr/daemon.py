@@ -6,10 +6,11 @@ import signal
 import sys
 import time
 from types import FrameType
-from typing import TextIO, cast
+from typing import TextIO
 
-from .common import TERMINAL_STATES, JsonDict, try_flock_fd, utcnow_iso
+from .common import TERMINAL_STATES, try_flock_fd, utcnow_iso
 from .monitor import Takeover, assess
+from .records import ErrorInfo, Job, Runner
 from .store import Store, end_without_result, remove_tree
 
 INCOMING_MAX_AGE = 3600
@@ -20,18 +21,19 @@ _log_file: TextIO | None = None
 
 def log(msg: str) -> None:
     line = "%s daemon[%d] %s\n" % (utcnow_iso(), os.getpid(), msg)
-    sys.stderr.write(line)
-    sys.stderr.flush()
+    _ = sys.stderr.write(line)
+    _ = sys.stderr.flush()
     if _log_file is not None:
-        _log_file.write(line)
+        _ = _log_file.write(line)
         _log_file.flush()
 
 
 class Daemon:
     def __init__(self, store: Store) -> None:
-        self.store = store
+        self.store: Store = store
         self.takeovers: dict[str, Takeover] = {}  # jobid -> Takeover
-        self.stop = False
+        self.stop: bool = False
+        self._daemon_lock_fd: int | None = None
 
     # -- startup ------------------------------------------------------------
     def acquire_instance_lock(self) -> bool:
@@ -44,7 +46,7 @@ class Daemon:
             return False
         self._daemon_lock_fd = fd
         os.ftruncate(fd, 0)
-        os.write(fd, ("%d\n" % os.getpid()).encode())
+        _ = os.write(fd, ("%d\n" % os.getpid()).encode())
         return True
 
     def clean_incoming(self) -> None:
@@ -77,7 +79,7 @@ class Daemon:
                 want = st.path(STATE_DIRS.get(job["state"], "in-progress"), jid)
                 if os.path.abspath(jobdir) != want:
                     log("repairing location of %s -> %s" % (jid, want))
-                    st.save_job(jobdir, job)
+                    _ = st.save_job(jobdir, job)
                 if job["state"] in ("running", "stopping"):
                     self.check_attempt(jid)
                 elif job["state"] in TERMINAL_STATES and job.get("current_attempt"):
@@ -87,15 +89,18 @@ class Daemon:
         from .store import finalize_attempt, result_complete
 
         jobdir, job = self.store.load_job(jobid)
-        adir = self.store.attempt_dir(jobdir, job["current_attempt"])
+        n = job["current_attempt"]
+        if n is None:  # recover() only calls this when current_attempt is set
+            return
+        adir = self.store.attempt_dir(jobdir, n)
         runner, _ = self.store.read_runner(adir)
         if (
             isinstance(runner, dict)
-            and cast(JsonDict, runner).get("final")
-            and cast(JsonDict, runner).get("taskmgr")
+            and runner.get("final")
+            and runner.get("taskmgr")
             and not result_complete(adir)
         ):
-            finalize_attempt(self.store, jobid, job["current_attempt"])
+            _ = finalize_attempt(self.store, jobid, n)
 
     def check_attempt(self, jobid: str) -> None:
         if jobid in self.takeovers:
@@ -103,8 +108,10 @@ class Daemon:
         res = assess(self.store, jobid)
         d = res["decision"]
         if d == "takeover":
-            log("taking over tracking of %s (alive pids %s)" % (jobid, res["alive_pids"]))
-            self.takeovers[jobid] = res["takeover"]
+            tk = res.get("takeover")
+            assert tk is not None  # assess() always attaches the Takeover for this decision
+            log("taking over tracking of %s (alive pids %s)" % (jobid, res.get("alive_pids")))
+            self.takeovers[jobid] = tk
         elif d not in ("shim_alive", "none"):
             log("recovery of %s: %s" % (jobid, {k: v for k, v in res.items() if k != "takeover"}))
 
@@ -145,7 +152,7 @@ class Daemon:
                 else:
                     reserved.update(uuids)
 
-    def dispatch(self, jobdir: str, job: JsonDict) -> bool:
+    def dispatch(self, jobdir: str, job: Job) -> bool:
         """Record the dispatch, then start a detached shim. Needs the state lock."""
         st = self.store
         jobdir, job = st.load_job(job["jobid"])  # re-read under the lock
@@ -154,7 +161,7 @@ class Daemon:
         n = max([len(job.get("attempts", []))] + st.existing_attempts(jobdir)) + 1
         adir = st.attempt_dir(jobdir, n)
         os.makedirs(adir)
-        runner: JsonDict = {
+        runner: Runner = {
             "schema_version": 1,
             "attempt": n,
             "jobid": job["jobid"],
@@ -191,9 +198,8 @@ class Daemon:
             for a in job["attempts"]:
                 if a["attempt"] == n:
                     a["status"] = "failed"
-            end_without_result(
-                st, jobdir, job, n, "failed", {"kind": "shim_start_failed", "message": err}, runner
-            )
+            failure: ErrorInfo = {"kind": "shim_start_failed", "message": err}
+            _ = end_without_result(st, jobdir, job, n, "failed", failure, runner)
             return False
         log(
             "dispatched %s attempt %d gpus=%s"
@@ -239,21 +245,21 @@ class Daemon:
                     os.path.join(adir, "shim.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
                 )
                 devnull = os.open(os.devnull, os.O_RDONLY)
-                os.dup2(devnull, 0)
-                os.dup2(log_fd, 1)
-                os.dup2(log_fd, 2)
+                _ = os.dup2(devnull, 0)
+                _ = os.dup2(log_fd, 1)
+                _ = os.dup2(log_fd, 2)
                 os.set_inheritable(lock_fd, True)
                 os.chdir("/")
                 os.execve(exe, argv, env)
             except BaseException as e:  # noqa: BLE001
                 try:
-                    os.write(wfd, ("%s: %s" % (type(e).__name__, e)).encode() or b"error")
+                    _ = os.write(wfd, ("%s: %s" % (type(e).__name__, e)).encode() or b"error")
                 finally:
                     os._exit(127)
         os.close(wfd)
         os.close(lock_fd)
         try:
-            os.waitpid(pid, 0)
+            _ = os.waitpid(pid, 0)
         except ChildProcessError:
             pass
         chunks: list[bytes] = []
@@ -284,16 +290,15 @@ class Daemon:
         st = self.store
         st.ensure_layout()
         if not self.acquire_instance_lock():
-            sys.stdout.write(
-                '{"error": {"code": "daemon_running", "message": '
-                '"another daemon holds locks/daemon.lock"}}\n'
+            _ = sys.stdout.write(
+                '{"error": {"code": "daemon_running", "message": "another daemon holds locks/daemon.lock"}}\n'
             )
             return 2
         global _log_file
         _log_file = open(st.path("daemon", "daemon.log"), "a")
-        signal.signal(signal.SIGTERM, self._on_signal)
-        signal.signal(signal.SIGINT, self._on_signal)
-        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        _ = signal.signal(signal.SIGTERM, self._on_signal)
+        _ = signal.signal(signal.SIGINT, self._on_signal)
+        _ = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         log("starting; root=%s" % st.root)
         self.clean_incoming()
         self.recover()
@@ -323,5 +328,5 @@ class Daemon:
         while not self.stop and time.monotonic() < end:
             time.sleep(min(0.1, end - time.monotonic()) if end > time.monotonic() else 0)
 
-    def _on_signal(self, signum: int, frame: FrameType | None) -> None:
+    def _on_signal(self, _signum: int, _frame: FrameType | None) -> None:
         self.stop = True

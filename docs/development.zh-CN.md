@@ -18,7 +18,7 @@ up: "[[taskmgr/README.zh-CN]]"
 | 工具 | 用途 |
 | --- | --- |
 | `ruff` | 代码格式化（`ruff format`），行宽 100 |
-| `basedpyright` | 类型检查，`typeCheckingMode = "standard"`，Python 3.10，平台 Linux |
+| `basedpyright` | 类型检查，`typeCheckingMode = "all"`，Python 3.10，平台 Linux |
 | `pre-commit` | 每次提交时运行下面的 hook |
 
 ## 环境准备
@@ -47,6 +47,25 @@ uv run basedpyright                  # 手动类型检查
 
 basedpyright 配置了 `pythonPlatform = "Linux"`，因为远程端用到 `/proc`、`fork` 和 `setsid`；在 macOS
 上也能执行类型检查。测试本身需要 Linux，见 [[docs/testing.zh-CN]]。
+
+### 类型约定（`typeCheckingMode = "all"`）
+
+`all` 模式禁止 `Any`（无论是显式写出的还是推断出的）、未使用的调用返回值和隐式 override。
+
+- JSON 相关类型在 `taskmgr/records.py`：`JsonValue`（递归类型）、`JsonDict`，以及每种文件格式
+  对应的 `TypedDict` 记录（`Job`、`Runner`、`TaskSpec`、`TaskmgrMeta`、`Server`、`RemoteConfig` 等）。
+  Python 3.10 没有 `NotRequired`，可选键的写法是“必需键的基类 + `total=False` 的子类”。
+- `json.loads(...)` 用 `cast(JsonValue, ...)` 包住；从磁盘读到的值先用 `isinstance` 收窄，再 cast
+  成对应的记录类型。
+- `argparse` 的结果放进带类型的 `argparse.Namespace` 子类（`Args`）。
+- 有意忽略的返回值赋给 `_`。
+- `@override` 从 `taskmgr.records` 导入：类型检查器看到的是 `typing_extensions.override`，运行时是
+  空操作，因此运行时仍只依赖标准库。
+- `taskmgr_task.py` 和 `run.py` 会随任务包分发，不能 import `taskmgr`；JSON 值透传的地方用
+  `object`。`pyproject.toml` 通过 `executionEnvironments` 的 `extraPaths` 让 `run.py` 旁边的
+  `import taskmgr_task` 能被解析。
+- 不使用 `# type: ignore` / `# pyright: ignore`，唯一例外是 `examples/multi-gpu/run.py` 中可选的
+  `torch` import。
 
 ## 测试
 

@@ -3,10 +3,10 @@
 import os
 import shutil
 import subprocess
+from collections.abc import Sequence
 
-from typing import Any
-
-from .common import JsonDict, TaskmgrError
+from .common import TaskmgrError
+from .records import GpuDecl
 
 
 def nvidia_smi_path() -> str:
@@ -44,14 +44,14 @@ def query_gpus() -> list[tuple[int, str]]:
     return gpus
 
 
-def resolve_declarations(decls: list[Any]) -> list[JsonDict]:
+def resolve_declarations(decls: Sequence[object]) -> list[GpuDecl]:
     """Resolve declared GPU indices/UUIDs to [{"declared": d, "uuid": u}, ...]."""
     if not decls:
         return []
     available = query_gpus()
     by_index = dict(available)
     uuids = {u for _, u in available}
-    out: list[JsonDict] = []
+    out: list[GpuDecl] = []
     errors: list[str] = []
     for d in decls:
         if isinstance(d, str) and d.startswith("MIG-"):

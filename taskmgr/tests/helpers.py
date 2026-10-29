@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 from collections.abc import Callable, Iterable
-from typing import IO, Any, TypeVar
+from typing import IO, TypeVar, cast
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TASK = os.path.join(REPO, "bin", "task")
@@ -21,7 +21,8 @@ REMOTE = os.path.join(REPO, "bin", "taskmgr-remote")
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-from taskmgr.common import JsonDict  # noqa: E402
+from taskmgr.common import STATE_DIRS  # noqa: E402
+from taskmgr.records import Job, JsonDict, JsonValue, Runner, Server, override  # noqa: E402
 
 T = TypeVar("T")
 
@@ -46,7 +47,18 @@ class Env(unittest.TestCase):
 
     servers: tuple[str, ...] = ("s1",)
     remote_config: JsonDict = {}
+    # Assigned in setUp; the class-level values are placeholders.
+    tmp: str = ""
+    home: str = ""
+    gpu_file: str = ""
+    smi: str = ""
+    boot_file: str = ""
+    env: dict[str, str] = {}
+    machines: list[Server] = []
+    daemons: dict[str, list[subprocess.Popen[bytes]]] = {}
+    pkg_count: int = 0
 
+    @override
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp(prefix="taskmgr-test-")
         self.home = os.path.join(self.tmp, "home")
@@ -55,7 +67,7 @@ class Env(unittest.TestCase):
         self.set_gpus(GPUS)
         self.smi = os.path.join(self.tmp, "nvidia-smi")
         with open(self.smi, "w") as f:
-            f.write("#!/bin/sh\ncat %s\n" % self.gpu_file)
+            _ = f.write("#!/bin/sh\ncat %s\n" % self.gpu_file)
         os.chmod(self.smi, 0o755)
         self.boot_file = os.path.join(self.tmp, "boot_id")
         self.set_boot("boot-1")
@@ -75,8 +87,8 @@ class Env(unittest.TestCase):
             "TASKMGR_TEST_SKIP_DAEMON_LOCK",
             "TASKMGR_TEST_PROTOCOL_VERSION",
         ):
-            self.env.pop(k, None)
-        self.machines: list[JsonDict] = []
+            _ = self.env.pop(k, None)
+        self.machines = []
         for name in self.servers:
             root = os.path.join(self.tmp, "remote-" + name)
             os.makedirs(root)
@@ -94,9 +106,10 @@ class Env(unittest.TestCase):
                 }
             )
         self.write_machines()
-        self.daemons: dict[str, list[subprocess.Popen[bytes]]] = {}
+        self.daemons = {}
         self.pkg_count = 0
 
+    @override
     def tearDown(self) -> None:
         for name in list(self.daemons):
             self.stop_daemon(name)
@@ -132,26 +145,26 @@ class Env(unittest.TestCase):
     def set_gpus(self, gpus: Iterable[tuple[int, str]]) -> None:
         with open(self.gpu_file, "w") as f:
             for i, u in gpus:
-                f.write("%d, %s\n" % (i, u))
+                _ = f.write("%d, %s\n" % (i, u))
 
     def set_boot(self, value: str) -> None:
         with open(self.boot_file, "w") as f:
-            f.write(value + "\n")
+            _ = f.write(value + "\n")
 
     def write_machines(self) -> None:
         with open(os.path.join(self.home, "machines.json"), "w") as f:
             json.dump({"servers": self.machines}, f)
 
-    def server(self, name: str) -> JsonDict:
+    def server(self, name: str) -> Server:
         return next(m for m in self.machines if m["name"] == name)
 
     def root(self, name: str = "s1") -> str:
         return self.server(name)["remote_root"]
 
-    def set_config(self, name: str = "s1", **kw: Any) -> None:
+    def set_config(self, name: str = "s1", **kw: JsonValue) -> None:
         p = os.path.join(self.root(name), "config.json")
         with open(p) as f:
-            cfg = json.load(f)
+            cfg = self.obj(cast(JsonValue, json.load(f)))
         cfg.update(kw)
         with open(p, "w") as f:
             json.dump(cfg, f)
@@ -173,7 +186,7 @@ class Env(unittest.TestCase):
         self.pkg_count += 1
         d = os.path.join(self.tmp, "pkg-%d" % self.pkg_count)
         os.makedirs(d)
-        task: JsonDict = {
+        task: dict[str, object] = {
             "schema_version": 1,
             "task_id": task_id,
             "entry": {"argv": argv or ["sh", "-c", script]},
@@ -190,7 +203,7 @@ class Env(unittest.TestCase):
         with open(os.path.join(d, "task.json"), "w") as f:
             json.dump(task, f)
         with open(os.path.join(d, "TASK.md"), "w") as f:
-            f.write("# %s\n\nTest task.\n" % task_id)
+            _ = f.write("# %s\n\nTest task.\n" % task_id)
         with open(os.path.join(d, "progress.json"), "w") as f:
             json.dump(
                 {"schema_version": 1, "stage": "init", "updated_at": "2026-10-29T08:00:00Z"}, f
@@ -199,13 +212,13 @@ class Env(unittest.TestCase):
             p = os.path.join(d, rel)
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w") as f:
-                f.write(content)
+                _ = f.write(content)
         return d
 
     # -- running commands -----------------------------------------------------
     def task(
         self, *args: object, env: dict[str, str] | None = None, timeout: float = 120
-    ) -> tuple[int, Any, str]:
+    ) -> tuple[int, JsonValue, str]:
         e = dict(self.env)
         e.update(env or {})
         p = subprocess.run(
@@ -216,15 +229,17 @@ class Env(unittest.TestCase):
             timeout=timeout,
         )
         out = p.stdout.decode()
-        obj: Any
+        obj: JsonValue
         try:
-            obj = json.loads(out) if out.strip() else None
+            obj = cast(JsonValue, json.loads(out)) if out.strip() else None
         except ValueError:
             obj = out
         return p.returncode, obj, p.stderr.decode()
 
-    def ok(self, *args: object, **kw: Any) -> Any:
-        rc, obj, err = self.task(*args, **kw)
+    def ok(
+        self, *args: object, env: dict[str, str] | None = None, timeout: float = 120
+    ) -> JsonValue:
+        rc, obj, err = self.task(*args, env=env, timeout=timeout)
         self.assertEqual(rc, 0, "task %s -> %d\nstdout=%s\nstderr=%s" % (args, rc, obj, err))
         return obj
 
@@ -234,15 +249,15 @@ class Env(unittest.TestCase):
             + (["--host", host] if host else [])
             + (["--submission-key", key] if key else [])
         )
-        return self.ok(*args)["jobid"]
+        return self.text(self.ok(*args), "jobid")
 
     def remote(
         self,
         *args: object,
         name: str = "s1",
         env: dict[str, str] | None = None,
-        stdin: IO[Any] | None = None,
-    ) -> tuple[int, Any, str]:
+        stdin: IO[bytes] | None = None,
+    ) -> tuple[int, JsonValue, str]:
         e = dict(self.env)
         e.update(env or {})
         p = subprocess.run(
@@ -253,9 +268,9 @@ class Env(unittest.TestCase):
             stdin=stdin or subprocess.DEVNULL,
             timeout=60,
         )
-        obj: Any
+        obj: JsonValue
         try:
-            obj = json.loads(p.stdout.decode())
+            obj = cast(JsonValue, json.loads(p.stdout.decode()))
         except ValueError:
             obj = p.stdout.decode()
         return p.returncode, obj, p.stderr.decode()
@@ -285,10 +300,10 @@ class Env(unittest.TestCase):
                 else:
                     p.terminate()
                 try:
-                    p.wait(10)
+                    _ = p.wait(10)
                 except subprocess.TimeoutExpired:
                     p.kill()
-                    p.wait()
+                    _ = p.wait()
 
     def daemon_log(self, name: str = "s1") -> str:
         try:
@@ -306,23 +321,29 @@ class Env(unittest.TestCase):
                 return p
         raise FileNotFoundError("job %s has no directory on %s" % (jobid, name))
 
-    def job(self, jobid: str, name: str = "s1") -> JsonDict:
-        with open(os.path.join(self.job_dir(jobid, name), "job.json")) as f:
-            return json.load(f)
+    def job(self, jobid: str, name: str = "s1") -> Job:
+        return cast(Job, self._read_obj(os.path.join(self.job_dir(jobid, name), "job.json")))
 
-    def runner(self, jobid: str, n: int = 1, name: str = "s1") -> JsonDict:
-        with open(
-            os.path.join(self.job_dir(jobid, name), "attempts", "%04d" % n, "runner.json")
-        ) as f:
-            return json.load(f)
+    def runner(self, jobid: str, n: int = 1, name: str = "s1") -> Runner:
+        return cast(
+            Runner,
+            self._read_obj(
+                os.path.join(self.job_dir(jobid, name), "attempts", "%04d" % n, "runner.json")
+            ),
+        )
 
     def result(self, jobid: str, n: int = 1, name: str = "s1") -> JsonDict:
-        with open(
-            os.path.join(
-                self.job_dir(jobid, name), "attempts", "%04d" % n, "workdir", "result.json"
+        return self.obj(
+            self._read_obj(
+                os.path.join(
+                    self.job_dir(jobid, name), "attempts", "%04d" % n, "workdir", "result.json"
+                )
             )
-        ) as f:
-            return json.load(f)
+        )
+
+    def _read_obj(self, path: str) -> object:
+        with open(path) as f:
+            return self.obj(cast(JsonValue, json.load(f)))
 
     def wait_for(
         self,
@@ -341,30 +362,79 @@ class Env(unittest.TestCase):
 
     def wait_state(
         self, jobid: str, states: str | tuple[str, ...], name: str = "s1", timeout: float = 30
-    ) -> JsonDict:
+    ) -> Job:
         if isinstance(states, str):
             states = (states,)
 
         def check() -> bool:
+            # job.json is written before the directory is renamed (Section 8), so also wait
+            # until the directory sits where the state says; tests then read files from it.
             try:
-                return self.job(jobid, name)["state"] in states
+                state = self.job(jobid, name)["state"]
+                where = os.path.basename(os.path.dirname(self.job_dir(jobid, name)))
             except (OSError, ValueError, TypeError):
                 return False
+            return state in states and where == STATE_DIRS[state]
 
-        self.wait_for(check, timeout, "job %s to reach %s" % (jobid, states))
+        _ = self.wait_for(check, timeout, "job %s to reach %s" % (jobid, states))
         return self.job(jobid, name)
 
     def wait_runner(
         self, jobid: str, key: str, n: int = 1, name: str = "s1", timeout: float = 30
-    ) -> JsonDict:
+    ) -> Runner:
         def check() -> bool:
             try:
-                return self.runner(jobid, n, name).get(key) is not None
+                return self.obj(self.runner(jobid, n, name)).get(key) is not None
             except (OSError, ValueError, TypeError):
                 return False
 
-        self.wait_for(check, timeout, "runner.%s of %s" % (key, jobid))
+        _ = self.wait_for(check, timeout, "runner.%s of %s" % (key, jobid))
         return self.runner(jobid, n, name)
+
+    # -- typed access to parsed JSON ------------------------------------------
+    def get(self, x: object, *path: str | int) -> JsonValue:
+        """x[path[0]][path[1]]...: str steps index dicts, int steps index lists."""
+        cur = cast(JsonValue, x)
+        for p in path:
+            if isinstance(p, int):
+                if not isinstance(cur, list):
+                    self.fail("expected a list at %r in %r, got %r" % (p, path, cur))
+                cur = cur[p]
+            else:
+                if not isinstance(cur, dict):
+                    self.fail("expected an object at %r in %r, got %r" % (p, path, cur))
+                cur = cur[p]
+        return cur
+
+    def obj(self, x: object, *path: str | int) -> JsonDict:
+        v = self.get(x, *path)
+        if not isinstance(v, dict):
+            self.fail("expected an object at %r, got %r" % (path, v))
+        return v
+
+    def arr(self, x: object, *path: str | int) -> list[JsonValue]:
+        v = self.get(x, *path)
+        if not isinstance(v, list):
+            self.fail("expected a list at %r, got %r" % (path, v))
+        return v
+
+    def objs(self, x: object, *path: str | int) -> list[JsonDict]:
+        return [self.obj(e) for e in self.arr(x, *path)]
+
+    def text(self, x: object, *path: str | int) -> str:
+        v = self.get(x, *path)
+        if not isinstance(v, str):
+            self.fail("expected a string at %r, got %r" % (path, v))
+        return v
+
+    def strs(self, x: object, *path: str | int) -> list[str]:
+        return [self.text(e) for e in self.arr(x, *path)]
+
+    def num(self, x: object, *path: str | int) -> int:
+        v = self.get(x, *path)
+        if not isinstance(v, int):
+            self.fail("expected an integer at %r, got %r" % (path, v))
+        return v
 
 
 def pid_alive(pid: int) -> bool:

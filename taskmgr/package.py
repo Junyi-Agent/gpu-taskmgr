@@ -9,23 +9,24 @@ import posixpath
 import shutil
 import stat
 import tarfile
-from typing import IO, Any, cast
+from typing import IO, TypeGuard, cast
 
-from .common import SCHEMA_VERSION, TASK_ID_RE, JsonDict, TaskmgrError, parse_utc_iso
+from .common import SCHEMA_VERSION, TASK_ID_RE, TaskmgrError, parse_utc_iso
+from .records import JsonDict, JsonValue, Problem, SkippedEntry, TaskSpec
 
 REQUIRED_FILES = ("task.json", "TASK.md", "progress.json")
 PLACEHOLDER = "<REQUIRED"
 RESERVED_ENV = ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "VIRTUAL_ENV")
 
 
-def _err(errors: list[JsonDict], code: str, message: str, path: str | None = None) -> None:
-    e = {"code": code, "message": message}
+def _err(errors: list[Problem], code: str, message: str, path: str | None = None) -> None:
+    e: Problem = {"code": code, "message": message}
     if path is not None:
         e["path"] = path
     errors.append(e)
 
 
-def _is_int(v: object) -> bool:
+def _is_int(v: object) -> TypeGuard[int]:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
@@ -46,7 +47,7 @@ def _inside(rel: str) -> bool:
 # Schemas
 
 
-def check_task_json(task: object, errors: list[JsonDict]) -> None:
+def check_task_json(task: object, errors: list[Problem]) -> None:
     """Schema checks for task.json (Section 2.2)."""
     if not isinstance(task, dict):
         _err(errors, "schema", "task.json must be a JSON object", "task.json")
@@ -63,19 +64,13 @@ def check_task_json(task: object, errors: list[JsonDict]) -> None:
             "task.json",
         )
     entry = task.get("entry")
-    argv = cast(JsonDict, entry).get("argv") if isinstance(entry, dict) else None
-    if not (
-        isinstance(argv, list)
-        and argv
-        and all(isinstance(a, str) for a in cast(list[Any], argv))
-        and argv[0]
-    ):
+    argv = entry.get("argv") if isinstance(entry, dict) else None
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv) and argv[0]):
         _err(errors, "schema", "entry.argv must be a non-empty array of strings", "task.json")
     gpus = task.get("gpus")
     if not isinstance(gpus, list):
         _err(errors, "schema", "gpus must be an array (use [] for no GPU)", "task.json")
     else:
-        gpus = cast(list[Any], gpus)
         for g in gpus:
             if _is_int(g):
                 if g < 0:
@@ -105,14 +100,12 @@ def check_task_json(task: object, errors: list[JsonDict]) -> None:
         if not isinstance(envi, dict):
             _err(errors, "schema", "environment must be an object", "task.json")
         else:
-            envi = cast(JsonDict, envi)
             venv = envi.get("venv")
             if venv is not None and not (isinstance(venv, str) and venv.startswith("/")):
                 _err(errors, "schema", "environment.venv must be an absolute path", "task.json")
             rp = envi.get("required_paths")
             if rp is not None and not (
-                isinstance(rp, list)
-                and all(isinstance(p, str) and p.startswith("/") for p in cast(list[Any], rp))
+                isinstance(rp, list) and all(isinstance(p, str) and p.startswith("/") for p in rp)
             ):
                 _err(
                     errors,
@@ -125,7 +118,6 @@ def check_task_json(task: object, errors: list[JsonDict]) -> None:
         if not isinstance(env, dict):
             _err(errors, "schema", "env must be an object of strings", "task.json")
         else:
-            env = cast(JsonDict, env)
             for k, v in env.items():
                 if not isinstance(v, str):
                     _err(errors, "schema", "env value for %s must be a string" % k, "task.json")
@@ -140,10 +132,9 @@ def check_task_json(task: object, errors: list[JsonDict]) -> None:
         if not isinstance(res, dict):
             _err(errors, "schema", "result must be an object", "task.json")
         else:
-            res = cast(JsonDict, res)
             ro = res.get("required_outputs")
             if ro is not None and not (
-                isinstance(ro, list) and all(isinstance(k, str) for k in cast(list[Any], ro))
+                isinstance(ro, list) and all(isinstance(k, str) for k in ro)
             ):
                 _err(
                     errors,
@@ -153,7 +144,7 @@ def check_task_json(task: object, errors: list[JsonDict]) -> None:
                 )
 
 
-def check_progress_json(p: object, errors: list[JsonDict], path: str = "progress.json") -> None:
+def check_progress_json(p: object, errors: list[Problem], path: str = "progress.json") -> None:
     if not isinstance(p, dict):
         _err(errors, "schema", "progress.json must be a JSON object", path)
         return
@@ -176,7 +167,7 @@ def check_progress_json(p: object, errors: list[JsonDict], path: str = "progress
 # Validation
 
 
-def scan_tree(root: str, errors: list[JsonDict]) -> None:
+def scan_tree(root: str, errors: list[Problem]) -> None:
     """Check every entry for unsafe symlinks and special files (Section 2.4)."""
     for dirpath, dirnames, filenames in os.walk(root):
         for name in sorted(dirnames + filenames):
@@ -197,9 +188,13 @@ def scan_tree(root: str, errors: list[JsonDict]) -> None:
                 _err(errors, "special_file", "special files are not allowed", rel)
 
 
-def validate_dir(root: str) -> tuple[list[JsonDict], JsonDict | None]:
-    """Validate an extracted task package. Returns (errors, task_or_None)."""
-    errors: list[JsonDict] = []
+def validate_dir(root: str) -> tuple[list[Problem], TaskSpec | None]:
+    """Validate an extracted task package. Returns (errors, task_or_None).
+
+    The task is the parsed task.json whenever it is a JSON object; it only matches
+    TaskSpec when errors is empty, so callers must check errors before using it.
+    """
+    errors: list[Problem] = []
     if not os.path.isdir(root):
         raise TaskmgrError("not_found", "not a directory: %s" % root)
     for f in REQUIRED_FILES:
@@ -219,25 +214,24 @@ def validate_dir(root: str) -> tuple[list[JsonDict], JsonDict | None]:
                     "unfilled <REQUIRED> placeholder on line(s) %s" % ",".join(map(str, lines)),
                     f,
                 )
-    task: Any = None
+    task: JsonValue = None
     if "task.json" in raw:
         try:
-            task = json.loads(raw["task.json"])
+            task = cast(JsonValue, json.loads(raw["task.json"]))
         except ValueError as e:
             _err(errors, "json", "task.json is not valid JSON: %s" % e, "task.json")
         else:
             check_task_json(task, errors)
     if "progress.json" in raw:
         try:
-            prog = json.loads(raw["progress.json"])
+            prog = cast(JsonValue, json.loads(raw["progress.json"]))
         except ValueError as e:
             _err(errors, "json", "progress.json is not valid JSON: %s" % e, "progress.json")
         else:
             check_progress_json(prog, errors)
     if isinstance(task, dict):
-        task = cast(JsonDict, task)
         entry = task.get("entry")
-        argv = cast(JsonDict, entry).get("argv") if isinstance(entry, dict) else None
+        argv = entry.get("argv") if isinstance(entry, dict) else None
         if (
             isinstance(argv, list)
             and argv
@@ -264,7 +258,8 @@ def validate_dir(root: str) -> tuple[list[JsonDict], JsonDict | None]:
                         "task.json",
                     )
     scan_tree(root, errors)
-    return errors, (cast(JsonDict, task) if isinstance(task, dict) else None)
+    # Converted via object: a JsonDict and a TypedDict do not overlap for the checker.
+    return errors, (cast(TaskSpec, cast(object, task)) if isinstance(task, dict) else None)
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +321,7 @@ def content_hash(root: str) -> str:
             row = [rel, "file", bool(st.st_mode & 0o111), h.hexdigest()]
         else:
             continue
-        manifest.write(json.dumps(row) + "\n")
+        _ = manifest.write(json.dumps(row) + "\n")
     return hashlib.sha256(manifest.getvalue().encode()).hexdigest()
 
 
@@ -346,14 +341,14 @@ def safe_extract(
     dest: str,
     max_bytes: int | None = None,
     skip_unsafe: bool = False,
-) -> list[JsonDict]:
+) -> list[SkippedEntry]:
     """Extract a tar(.gz) refusing unsafe entries (Section 5.2).
 
     Returns a list of skipped entries when skip_unsafe is set; otherwise raises
     TaskmgrError on the first unsafe entry.
     """
     os.makedirs(dest, exist_ok=True)
-    skipped: list[JsonDict] = []
+    skipped: list[SkippedEntry] = []
     total = 0
     seen: set[str] = set()
 

@@ -33,4 +33,18 @@ target-version = "py310"
 pythonVersion = "3.10"
 pythonPlatform = "Linux"  # the remote side relies on /proc, fork, setsid
 include = ["taskmgr"]
-typeCheckingMode = "strict"
+typeCheckingMode = "all"
+
+# Task packages run `python3 run.py` from their own directory, so `import taskmgr_task`
+# resolves next to run.py. Tell the checker where those directories are.
+[[tool.basedpyright.executionEnvironments]]
+root = "taskmgr/template"
+extraPaths = ["taskmgr/template"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "taskmgr/examples/succeed"
+extraPaths = ["taskmgr/examples/succeed"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "taskmgr/examples/multi-gpu"
+extraPaths = ["taskmgr/examples/multi-gpu"]

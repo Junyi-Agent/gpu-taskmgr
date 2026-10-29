@@ -19,7 +19,7 @@ The runtime has no third-party dependencies. The `dev` dependency group holds th
 | Tool | Use |
 | --- | --- |
 | `ruff` | code formatting (`ruff format`), line length 100 |
-| `basedpyright` | type checking, `typeCheckingMode = "standard"`, Python 3.10, platform Linux |
+| `basedpyright` | type checking, `typeCheckingMode = "all"`, Python 3.10, platform Linux |
 | `pre-commit` | runs the hooks below on each commit |
 
 ## Setup
@@ -49,6 +49,27 @@ uv run basedpyright                  # type-check by hand
 basedpyright is configured with `pythonPlatform = "Linux"` because the remote side uses
 `/proc`, `fork` and `setsid`; it type-checks on macOS too. The tests themselves need
 Linux, see [[docs/testing]].
+
+### Typing conventions (`typeCheckingMode = "all"`)
+
+`all` forbids `Any` (explicit or inferred), unused call results and implicit overrides.
+
+- JSON types live in `taskmgr/records.py`: `JsonValue` (recursive), `JsonDict`, and
+  `TypedDict` records for every file format (`Job`, `Runner`, `TaskSpec`, `TaskmgrMeta`,
+  `Server`, `RemoteConfig`, ...). Python 3.10 has no `NotRequired`, so optional keys use a
+  required base class plus a `total=False` subclass.
+- `json.loads(...)` is wrapped in `cast(JsonValue, ...)`; values from disk are narrowed with
+  `isinstance` and then cast to the matching record.
+- `argparse` results go into typed `argparse.Namespace` subclasses (`Args`).
+- Ignored results are assigned to `_`.
+- `@override` comes from `taskmgr.records`: the real `typing_extensions.override` for the
+  checker, a no-op at runtime, so the runtime stays standard-library only.
+- `taskmgr_task.py` and the `run.py` scripts ship inside task packages and must not import
+  `taskmgr`; they use `object` where JSON values pass through. `pyproject.toml` adds
+  `executionEnvironments` with `extraPaths` so `import taskmgr_task` next to `run.py`
+  resolves.
+- No `# type: ignore` / `# pyright: ignore`, except the optional `torch` import in
+  `examples/multi-gpu/run.py`.
 
 ## Tests
 

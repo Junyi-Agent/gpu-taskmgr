@@ -8,10 +8,11 @@ import os
 import re
 import tempfile
 from collections.abc import Generator
-from typing import Any
+from typing import cast
 
-# A parsed JSON object (job.json, runner.json, result.json, CLI output, ...).
-JsonDict = dict[str, Any]
+from .records import JsonDict as JsonDict
+from .records import JsonValue as JsonValue
+from .records import RemoteConfig
 
 PROTOCOL_VERSION = 1
 SCHEMA_VERSION = 1
@@ -34,7 +35,7 @@ for _s in TERMINAL_STATES:
     STATE_DIRS[_s] = "done"
 JOB_DIRS = ("queue", "in-progress", "done")
 
-DEFAULT_REMOTE_CONFIG: JsonDict = {
+DEFAULT_REMOTE_CONFIG: RemoteConfig = {
     "max_package_bytes": 1024**3,
     "max_cpu_jobs": None,
     "max_auto_restarts": 2,
@@ -55,17 +56,17 @@ class TaskmgrError(Exception):
         message: str,
         exit_code: int = 2,
         host: str | None = None,
-        details: Any = None,
+        details: object = None,
     ) -> None:
         super().__init__(message)
-        self.code = code
-        self.message = message
-        self.exit_code = exit_code
-        self.host = host
-        self.details = details
+        self.code: str = code
+        self.message: str = message
+        self.exit_code: int = exit_code
+        self.host: str | None = host
+        self.details: object = details
 
-    def to_json(self) -> JsonDict:
-        err: JsonDict = {"code": self.code, "message": self.message}
+    def to_json(self) -> dict[str, object]:
+        err: dict[str, object] = {"code": self.code, "message": self.message}
         if self.host is not None:
             err["host"] = self.host
         if self.details is not None:
@@ -109,7 +110,7 @@ def atomic_write_bytes(path: str, data: bytes, fsync_parent: bool = True) -> Non
     fd, tmp = tempfile.mkstemp(prefix=".tmp-" + os.path.basename(path) + ".", dir=d)
     try:
         with os.fdopen(fd, "wb") as f:
-            f.write(data)
+            _ = f.write(data)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -125,20 +126,20 @@ def atomic_write_json(path: str, obj: object) -> None:
     atomic_write_bytes(path, (json.dumps(obj, indent=2, sort_keys=True) + "\n").encode())
 
 
-def read_json(path: str, default: Any = None) -> Any:
+def read_json(path: str, default: JsonValue = None) -> JsonValue:
     """Read a JSON file; return default if it does not exist."""
     try:
         with open(path, "rb") as f:
-            return json.loads(f.read().decode("utf-8"))
+            return cast(JsonValue, json.loads(f.read().decode("utf-8")))
     except FileNotFoundError:
         return default
 
 
-def try_read_json(path: str) -> tuple[Any, str | None]:
+def try_read_json(path: str) -> tuple[JsonValue, str | None]:
     """Return (obj, error_string). obj is None on missing or corrupt files."""
     try:
         with open(path, "rb") as f:
-            return json.loads(f.read().decode("utf-8")), None
+            return cast(JsonValue, json.loads(f.read().decode("utf-8"))), None
     except FileNotFoundError:
         return None, "missing"
     except (ValueError, UnicodeDecodeError) as e:
