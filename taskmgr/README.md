@@ -16,7 +16,13 @@ Spec: [[agent/desc-1.md]]. Design decisions: [[agent/desc-2.md]].
 uv tool install --editable /path/to/gpu-taskmgr
 mkdir -p ~/.taskmgr && cp taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
 
-# remote (no root): systemd user service, see docs/install.md
+# remote (no root, run on the GPU server as your user), details in docs/install.md
+#   ship the code from your machine (the repo is private):
+#   git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
+mkdir -p ~/taskmgr-root ~/.config/systemd/user
+cp ~/taskmgr/taskmgr/deploy/taskmgr-remote.user.service \
+   ~/.config/systemd/user/taskmgr-remote.service
+systemctl --user daemon-reload
 systemctl --user enable --now taskmgr-remote && loginctl enable-linger "$USER"
 
 # use

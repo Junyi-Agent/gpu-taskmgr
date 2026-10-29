@@ -41,6 +41,8 @@ root access is needed. Example for user `tuner`:
 
 ```sh
 git clone <repo> ~/taskmgr                 # provides ~/taskmgr/bin/taskmgr-remote
+# or, without git credentials on the server, from your machine:
+#   git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
 mkdir -p ~/taskmgr-root
 cp ~/taskmgr/taskmgr/deploy/config.example.json ~/taskmgr-root/config.json
 ```

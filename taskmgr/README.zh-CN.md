@@ -15,7 +15,13 @@
 uv tool install --editable /path/to/gpu-taskmgr
 mkdir -p ~/.taskmgr && cp taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
 
-# 远程（无需 root）：systemd 用户服务，见 docs/install.zh-CN.md
+# 远程（无需 root，以自己的用户在 GPU 服务器上执行），详见 docs/install.zh-CN.md
+#   先从本机把代码传过去（仓库是私有的）：
+#   git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
+mkdir -p ~/taskmgr-root ~/.config/systemd/user
+cp ~/taskmgr/taskmgr/deploy/taskmgr-remote.user.service \
+   ~/.config/systemd/user/taskmgr-remote.service
+systemctl --user daemon-reload
 systemctl --user enable --now taskmgr-remote && loginctl enable-linger "$USER"
 
 # 使用

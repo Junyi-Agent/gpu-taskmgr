@@ -41,6 +41,8 @@ task hosts
 
 ```sh
 git clone <repo> ~/taskmgr                 # 提供 ~/taskmgr/bin/taskmgr-remote
+# 服务器上没有 git 凭据时，也可以在本机执行：
+#   git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
 mkdir -p ~/taskmgr-root
 cp ~/taskmgr/taskmgr/deploy/config.example.json ~/taskmgr-root/config.json
 ```
