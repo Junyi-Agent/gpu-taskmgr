@@ -13,9 +13,16 @@ from .store import end_without_result, remove_tree
 INCOMING_MAX_AGE = 3600
 
 
+_log_file = None
+
+
 def log(msg):
-    sys.stderr.write("%s daemon[%d] %s\n" % (utcnow_iso(), os.getpid(), msg))
+    line = "%s daemon[%d] %s\n" % (utcnow_iso(), os.getpid(), msg)
+    sys.stderr.write(line)
     sys.stderr.flush()
+    if _log_file is not None:
+        _log_file.write(line)
+        _log_file.flush()
 
 
 class Daemon:
@@ -242,6 +249,8 @@ class Daemon:
             sys.stdout.write('{"error": {"code": "daemon_running", "message": '
                              '"another daemon holds locks/daemon.lock"}}\n')
             return 2
+        global _log_file
+        _log_file = open(st.path("daemon", "daemon.log"), "a")
         signal.signal(signal.SIGTERM, self._on_signal)
         signal.signal(signal.SIGINT, self._on_signal)
         signal.signal(signal.SIGCHLD, signal.SIG_DFL)

@@ -606,7 +606,9 @@ def main(argv=None):
         eprint("error: %s" % e.message)
     except KeyboardInterrupt:
         eprint("interrupted (remote jobs are not affected)")
-        return 130
+        sys.stdout.write(json.dumps({"error": {"code": "interrupted",
+                                               "message": "interrupted locally"}}) + "\n")
+        return 2
     if out is not None:
         sys.stdout.write(json.dumps(out, indent=2, sort_keys=True) + "\n")
     return code
