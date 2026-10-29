@@ -1,0 +1,31 @@
+# systemd *user* unit for the taskmgr scheduler daemon (no root needed).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp taskmgr-remote.user.service ~/.config/systemd/user/taskmgr-remote.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now taskmgr-remote
+#   loginctl enable-linger "$USER"   # keep the user manager (and tasks) alive without a login
+#
+# %h is the user's home directory. remote_root must be on a local filesystem; if $HOME is
+# on NFS, point --root at local disk (e.g. /scratch/<user>/taskmgr-root).
+#
+# KillMode=process: `systemctl --user stop/restart` signals only the daemon's main process.
+# Shims run in their own sessions but stay in this unit's cgroup, so the default
+# KillMode=control-group would kill every shim and task. The daemon handles SIGTERM by
+# exiting without touching shims or tasks; on start it recovers state (Section 12.2).
+[Unit]
+Description=taskmgr remote scheduler daemon (user service)
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/taskmgr/bin/taskmgr-remote --root %h/taskmgr-root serve
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

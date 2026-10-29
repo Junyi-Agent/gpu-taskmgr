@@ -20,7 +20,8 @@ taskmgr/
   common.py       constants, atomic JSON writes, flock helpers
   template/       package template (`task init`) incl. taskmgr_task.py
   examples/       succeed/ (EX-01, CPU-only) and multi-gpu/ (MG-01, gpus [0, 1])
-  deploy/         taskmgr-remote.service, machines.example.json, config.example.json
+  deploy/         taskmgr-remote.user.service (default), taskmgr-remote.service (root),
+                  machines.example.json, config.example.json
   tests/          unittest suite
 bin/task, bin/taskmgr-remote   wrappers that run from a checkout
 ```
@@ -50,39 +51,61 @@ Local state lives in `$TASKMGR_HOME` (default `~/.taskmgr`, or `task --home DIR 
 Task packages are ordinary local directories (or `.tar.gz` files) that you keep wherever you
 like; the local side keeps no jobid index and no run state.
 
-### Remote server
+### Remote server (no root required)
+
+The daemon runs as a **systemd user service** under the account that owns the jobs; no
+root access is needed. Example for user `tuner`:
 
 ```sh
-sudo mkdir -p /opt/taskmgr /data/taskmgr && sudo chown tuner: /opt/taskmgr /data/taskmgr
-git clone <repo> /opt/taskmgr            # provides /opt/taskmgr/bin/taskmgr-remote
-cp /opt/taskmgr/taskmgr/deploy/config.example.json /data/taskmgr/config.json
+git clone <repo> ~/taskmgr                 # provides ~/taskmgr/bin/taskmgr-remote
+mkdir -p ~/taskmgr-root
+cp ~/taskmgr/taskmgr/deploy/config.example.json ~/taskmgr-root/config.json
 ```
 
-`remote_root` (`/data/taskmgr` above) must be on a local filesystem (not NFS): all
-coordination uses `flock`. The machine-list entry's `remote_command` must point to the
-`taskmgr-remote` wrapper (or the pip-installed script).
+`remote_root` must be on a local filesystem (not NFS): all coordination uses `flock`. If
+`$HOME` is on NFS, use local disk (e.g. `/scratch/tuner/taskmgr-root`) and change `--root`
+in the unit accordingly. In the machine list use absolute paths (no `~`):
+`"remote_root": "/home/tuner/taskmgr-root"`,
+`"remote_command": "/home/tuner/taskmgr/bin/taskmgr-remote"`.
 
-#### Start / stop / enable at boot (systemd)
+#### Start / stop / enable at boot (systemd user service)
 
 ```sh
-sudo cp /opt/taskmgr/taskmgr/deploy/taskmgr-remote.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now taskmgr-remote   # start now and at boot
-sudo systemctl stop taskmgr-remote           # running tasks keep running
-journalctl -u taskmgr-remote                 # daemon log
+mkdir -p ~/.config/systemd/user
+cp ~/taskmgr/taskmgr/deploy/taskmgr-remote.user.service \
+   ~/.config/systemd/user/taskmgr-remote.service
+systemctl --user daemon-reload
+systemctl --user enable --now taskmgr-remote     # start now and with the user manager
+loginctl enable-linger "$USER"                   # start at boot, survive logout
+loginctl show-user "$USER" -p Linger             # must print Linger=yes
+systemctl --user stop taskmgr-remote             # running tasks keep running
+systemctl --user restart taskmgr-remote          # recovery runs on start
+journalctl --user -u taskmgr-remote              # daemon log (also <root>/daemon/daemon.log)
 ```
+
+**Lingering is required.** Without it the user manager starts only when you log in and
+stops at your last logout. The daemon then would not start at boot, and stopping the user
+manager stops this unit's whole cgroup, including shims and tasks. Whether a user may
+enable lingering for themselves depends on the host's polkit policy; if
+`loginctl enable-linger` is refused, an admin has to run `loginctl enable-linger tuner`
+once. That is the only step that may need root. Also check that logind does not kill user
+processes at logout (`KillUserProcesses=no`, the default on most distributions).
 
 The unit uses **`KillMode=process`**. Shims are double-forked into their own sessions, but
 they remain in the unit's cgroup, so the default `KillMode=control-group` would kill every
-shim and task on `systemctl stop`. With `KillMode=process` systemd only signals the daemon's
-main PID; the daemon exits on SIGTERM without touching shims, and on the next start runs
-restart recovery. We chose this over `systemd-run --scope` per shim because it needs no
-extra privileges or D-Bus access and keeps the daemon a plain process that also runs
-outside systemd (tmux, nohup). Without systemd: `nohup taskmgr-remote --root /data/taskmgr
-serve > /dev/null 2>&1 &` (log: `daemon/daemon.log`); stop with `kill <pid>` (pid in
+shim and task on `systemctl --user stop`. With `KillMode=process` systemd only signals the
+daemon's main PID; the daemon exits on SIGTERM without touching shims, and on the next
+start runs restart recovery. We chose this over `systemd-run --user --scope` per shim
+because it needs no D-Bus access from the daemon and keeps the daemon a plain process that
+also runs outside systemd (tmux, nohup): `nohup ~/taskmgr/bin/taskmgr-remote --root
+~/taskmgr-root serve > /dev/null 2>&1 &`; stop with `kill <pid>` (pid in
 `locks/daemon.lock`).
 
 A second `serve` on the same root exits with code 2 (it cannot take `locks/daemon.lock`).
+
+On hosts where you do have root, `deploy/taskmgr-remote.service` is the equivalent system
+unit (`/etc/systemd/system/`, `User=tuner`, `sudo systemctl enable --now
+taskmgr-remote`).
 
 ## Remote `config.json`
 
@@ -453,7 +476,7 @@ orphaned task processes must be reaped.
 | `TASKMGR_TEST_IGNORE_KILL=1` | stop procedure sends no signals (unconfirmed stop) |
 | `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` sleeps while holding the upload lock |
 
-The systemd behaviour is tested by checking `KillMode=process` in the unit and by stopping
+The systemd behaviour is tested by checking `KillMode=process` in both units and by stopping
 the daemon with SIGTERM to its whole process group: shim and task keep running and the
 real exit code is recorded.
 
@@ -461,8 +484,8 @@ real exit code is recorded.
 
 ```sh
 # on the server
-git clone <repo> /opt/taskmgr && mkdir -p /data/taskmgr
-nohup /opt/taskmgr/bin/taskmgr-remote --root /data/taskmgr serve >/tmp/taskmgr.log 2>&1 &
+git clone <repo> ~/taskmgr && mkdir -p ~/taskmgr-root
+nohup ~/taskmgr/bin/taskmgr-remote --root ~/taskmgr-root serve >/dev/null 2>&1 &
 # locally, machines.json with transport "ssh" pointing at it
 task submit --host gpu1 taskmgr/examples/succeed
 task status <jobid> --host gpu1 --wait --poll-interval 2      # exit 0, outputs present

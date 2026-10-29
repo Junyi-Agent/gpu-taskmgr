@@ -28,10 +28,12 @@ class RecoveryTest(Env):
         self.wait_for(lambda: not pid_alive(r["shim_pid"]), 10, "shim death")
         return r
 
-    def test_systemd_unit_uses_killmode_process(self):
-        with open(os.path.join(REPO, "taskmgr", "deploy", "taskmgr-remote.service")) as f:
-            unit = f.read()
-        self.assertIn("KillMode=process", unit)
+    def test_systemd_units_use_killmode_process(self):
+        for name in ("taskmgr-remote.user.service", "taskmgr-remote.service"):
+            with open(os.path.join(REPO, "taskmgr", "deploy", name)) as f:
+                unit = f.read()
+            self.assertIn("KillMode=process", unit, name)
+            self.assertIn(" serve", unit, name)
 
     def test_task_survives_daemon_stop_and_keeps_real_exit_code(self):
         self.start_daemon()
