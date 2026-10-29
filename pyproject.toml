@@ -1,11 +1,9 @@
-[build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "taskmgr"
 version = "0.1.0"
 description = "GPU performance-tuning task manager: local `task` CLI and `taskmgr-remote`"
+readme = "taskmgr/README.md"
+authors = [{ name = "Junyi Hou", email = "357197669+Junyi-Agent@users.noreply.github.com" }]
 requires-python = ">=3.10"
 dependencies = []
 
@@ -13,8 +11,26 @@ dependencies = []
 task = "taskmgr.taskmgr:main"
 taskmgr-remote = "taskmgr.remote:main"
 
-[tool.setuptools]
-packages = ["taskmgr"]
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
 
-[tool.setuptools.package-data]
-taskmgr = ["template/*", "deploy/*"]
+[tool.uv.build-backend]
+module-root = ""          # flat layout: the package is ./taskmgr
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.40.2",
+    "pre-commit>=4.6.2",
+    "ruff>=0.17.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.basedpyright]
+pythonVersion = "3.10"
+pythonPlatform = "Linux"  # the remote side relies on /proc, fork, setsid
+include = ["taskmgr"]
+typeCheckingMode = "standard"

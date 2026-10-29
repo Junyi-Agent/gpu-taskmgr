@@ -130,17 +130,18 @@ class Remote:
     def call(self, args, stdin_path=None, timeout=None):
         """Run a JSON subcommand and return its object; raise TaskmgrError/ConnError."""
         self._inject()
-        stdin = open(stdin_path, "rb") if stdin_path else subprocess.DEVNULL
+        upload = open(stdin_path, "rb") if stdin_path else None
         try:
-            p = subprocess.run(self.argv(args), stdin=stdin, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, timeout=timeout)
+            p = subprocess.run(self.argv(args),
+                               stdin=upload if upload is not None else subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
         except subprocess.TimeoutExpired:
             raise ConnError("remote call timed out", self.name)
         except OSError as e:
             raise ConnError("cannot run transport: %s" % e, self.name)
         finally:
-            if stdin_path:
-                stdin.close()
+            if upload is not None:
+                upload.close()
         err = p.stderr.decode(errors="replace").strip()
         if self._is_conn_failure(p.returncode):
             raise ConnError("ssh: %s" % (err or "connection failed"), self.name)
@@ -266,6 +267,7 @@ def cmd_validate(args):
     errors, task, chash = validate_path(args.path)
     if errors:
         return {"valid": False, "errors": errors}, 1
+    assert task is not None  # validate_dir returns the task when there are no errors
     return {"valid": True, "task_id": task["task_id"], "content_hash": chash}, 0
 
 

@@ -23,7 +23,7 @@ class GroupStopper:
         self.grace, self.confirm = float(grace), float(confirm)
         self.reap = reap
         self.phase = None
-        self.deadline = None
+        self.deadline = 0.0
         self.alive = []
 
     def _kill(self, sig):
@@ -296,7 +296,8 @@ class Takeover:
             runner["stop_unconfirmed_reason"] = self.stop_reason
             self.store.write_runner(adir, runner)
         mark_unknown(self.store, self.jobid, self.n, "stop_unconfirmed",
-                     "processes still alive after SIGKILL", {"alive_pids": self.stopper.alive})
+                     "processes still alive after SIGKILL",
+                     {"alive_pids": self.stopper.alive if self.stopper else []})
 
 
 def runner_status_snapshot(adir):

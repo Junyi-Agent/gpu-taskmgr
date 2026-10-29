@@ -190,9 +190,9 @@ class QueryTest(Env):
     def test_fetch_running_is_partial(self):
         self.start_daemon("s1")
         j = self.submit(self.make_pkg(script="echo started; sleep 30"))
-        self.wait_for(lambda: os.path.exists(os.path.join(self.job_dir(j) or "/nonexistent",
-                                                          "attempts", "0001", "stdout.log")),
-                      10, "stdout")
+        self.wait_for(lambda: any(os.path.exists(os.path.join(self.root(), d, j, "attempts",
+                                                              "0001", "stdout.log"))
+                                  for d in ("in-progress", "done")), 10, "stdout")
         rc, out, err = self.task("fetch", j, "--host", "s1", "--output",
                                  os.path.join(self.tmp, "r"))
         self.assertEqual(rc, 0, err)

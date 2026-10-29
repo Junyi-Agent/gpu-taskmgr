@@ -75,6 +75,7 @@ def cmd_receive(store, args):
         if errors:
             raise TaskmgrError("invalid_package", "package validation failed (%d errors)"
                                % len(errors), details=errors)
+        assert task is not None  # validate_dir returns the task when there are no errors
         gpus = resolve_declarations(task.get("gpus") or [])
         pkg = os.path.join(updir, "package")
         os.rename(root, pkg)

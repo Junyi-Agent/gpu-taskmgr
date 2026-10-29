@@ -364,6 +364,9 @@ def safe_extract(tar_path_or_fileobj, dest, max_bytes=None, skip_unsafe=False):
                                        "extracted size exceeds max_package_bytes (%d)" % max_bytes)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 src = tar.extractfile(m)
+                if src is None:
+                    reject(m.name, "unreadable regular file")
+                    continue
                 with open(target, "wb") as out:
                     shutil.copyfileobj(src, out)
                 os.chmod(target, (m.mode & 0o777) | 0o600)

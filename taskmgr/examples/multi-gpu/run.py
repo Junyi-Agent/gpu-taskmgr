@@ -10,7 +10,7 @@ def main():
                       % os.environ.get("CUDA_DEVICE_ORDER"))
     count = len(devices)
     try:
-        import torch  # optional; only on real GPU servers
+        import torch  # pyright: ignore[reportMissingImports]  # optional; real GPU servers only
         if torch.cuda.is_available():
             count = torch.cuda.device_count()
     except ImportError:

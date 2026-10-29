@@ -22,7 +22,7 @@ def main():
         f.write("block,latency\n")
         for b in blocks:
             f.write("%d,%.4f\n" % (b, lat[b]))
-    best = min(lat, key=lat.get)
+    best = min(lat, key=lambda b: lat[b])
     tt.update_outputs(best_config={"block": best}, speedup=round(lat[32] / lat[best], 3))
     print("best block", best, "mode", os.environ.get("EXAMPLE_MODE"))
 

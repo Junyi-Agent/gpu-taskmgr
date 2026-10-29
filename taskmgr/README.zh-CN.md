@@ -12,7 +12,7 @@
 
 ```sh
 # 本地
-pip install -e /path/to/gpu-taskmgr
+uv tool install --editable /path/to/gpu-taskmgr
 mkdir -p ~/.taskmgr && cp taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
 
 # 远程（无需 root）：systemd 用户服务，见 docs/install.zh-CN.md
@@ -37,6 +37,7 @@ task fetch <jobid> --host <host> --output ./results/
 | [[docs/recovery.zh-CN]] | 重启恢复、手动处理 `unknown` |
 | [[docs/assumptions.zh-CN]] | 需求文档未规定之处的全部假设；限制 |
 | [[docs/testing.zh-CN]] | 测试命令、仅用于测试的覆盖项、真实 SSH 冒烟测试 |
+| [[docs/development.zh-CN]] | uv 环境、pre-commit（ruff 格式化、basedpyright 检查） |
 
 需求文档要求 README 说明的几点：
 

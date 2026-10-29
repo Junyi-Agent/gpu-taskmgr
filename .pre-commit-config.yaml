@@ -1,0 +1,25 @@
+# Install once: uv run pre-commit install
+# Run on everything: uv run pre-commit run --all-files
+# ruff and basedpyright run from the project venv, so their versions come from uv.lock.
+repos:
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.10.6
+    hooks:
+      - id: uv-lock            # keep uv.lock in sync with pyproject.toml
+
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: basedpyright
+        name: basedpyright
+        entry: uv run --frozen basedpyright
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false  # type-check the whole project, configured in pyproject.toml
+        require_serial: true

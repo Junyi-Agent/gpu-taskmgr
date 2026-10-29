@@ -13,7 +13,7 @@ Spec: [[agent/desc-1.md]]. Design decisions: [[agent/desc-2.md]].
 
 ```sh
 # local
-pip install -e /path/to/gpu-taskmgr
+uv tool install --editable /path/to/gpu-taskmgr
 mkdir -p ~/.taskmgr && cp taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
 
 # remote (no root): systemd user service, see docs/install.md
@@ -38,6 +38,7 @@ task fetch <jobid> --host <host> --output ./results/
 | [[docs/recovery]] | restart recovery, resolving `unknown` by hand |
 | [[docs/assumptions]] | every assumption where the spec is silent; limitations |
 | [[docs/testing]] | test command, test-only overrides, SSH smoke test |
+| [[docs/development]] | uv setup, pre-commit (ruff format, basedpyright) |
 
 Points the spec asks the README to state:
 

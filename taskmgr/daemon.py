@@ -190,7 +190,8 @@ class Daemon:
         try:
             pid = os.fork()
         except OSError as e:
-            os.close(rfd), os.close(wfd), os.close(lock_fd)
+            for fd in (rfd, wfd, lock_fd):
+                os.close(fd)
             return "fork failed: %s" % e
         if pid == 0:
             try:

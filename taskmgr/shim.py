@@ -148,6 +148,7 @@ def run(store, jobid, n, lock_fd):
         return 0
 
     argv = task["entry"]["argv"]
+    assert path is not None  # resolve_entry succeeded: no pre-start errors
     out_fd = os.open(os.path.join(adir, "stdout.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
                      0o644)
     err_fd = os.open(os.path.join(adir, "stderr.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
@@ -280,7 +281,7 @@ def supervise(store, jobid, n, adir, runner, pid, task, cfg):
         exit_status = st
         record_exit(st)
     _crash_point("before_finalize")
-    status = STOP_OUTCOME.get(stop_reason)
+    status = STOP_OUTCOME.get(stop_reason) if stop_reason else None
     job = finalize_attempt(store, jobid, n, status=status)
     log("finalized: %s" % job["state"])
     return 0

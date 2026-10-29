@@ -5,6 +5,7 @@ Everything runs on one Linux machine without GPUs or network (Section 18.1).
 
 import json
 import os
+from typing import Any
 import shutil
 import signal
 import subprocess
@@ -159,19 +160,20 @@ class Env(unittest.TestCase):
         return d
 
     # -- running commands -----------------------------------------------------
-    def task(self, *args, env=None, timeout=120):
+    def task(self, *args, env=None, timeout=120) -> tuple[int, Any, str]:
         e = dict(self.env)
         e.update(env or {})
         p = subprocess.run([sys.executable, TASK] + [str(a) for a in args], env=e,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
         out = p.stdout.decode()
+        obj: Any
         try:
             obj = json.loads(out) if out.strip() else None
         except ValueError:
             obj = out
         return p.returncode, obj, p.stderr.decode()
 
-    def ok(self, *args, **kw):
+    def ok(self, *args, **kw) -> Any:
         rc, obj, err = self.task(*args, **kw)
         self.assertEqual(rc, 0, "task %s -> %d\nstdout=%s\nstderr=%s" % (args, rc, obj, err))
         return obj
@@ -181,13 +183,14 @@ class Env(unittest.TestCase):
             (["--submission-key", key] if key else [])
         return self.ok(*args)["jobid"]
 
-    def remote(self, *args, name="s1", env=None, stdin=None):
+    def remote(self, *args, name="s1", env=None, stdin=None) -> tuple[int, Any, str]:
         e = dict(self.env)
         e.update(env or {})
         p = subprocess.run([sys.executable, REMOTE, "--root", self.root(name)] +
                            [str(a) for a in args], env=e, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, stdin=stdin or subprocess.DEVNULL,
                            timeout=60)
+        obj: Any
         try:
             obj = json.loads(p.stdout.decode())
         except ValueError:
@@ -225,12 +228,13 @@ class Env(unittest.TestCase):
             return ""
 
     # -- inspecting remote state ----------------------------------------------
-    def job_dir(self, jobid, name="s1"):
+    def job_dir(self, jobid, name="s1") -> str:
+        """The job's current directory; FileNotFoundError (an OSError) if it has none."""
         for d in ("queue", "in-progress", "done"):
             p = os.path.join(self.root(name), d, jobid)
             if os.path.isdir(p):
                 return p
-        return None
+        raise FileNotFoundError("job %s has no directory on %s" % (jobid, name))
 
     def job(self, jobid, name="s1"):
         with open(os.path.join(self.job_dir(jobid, name), "job.json")) as f:

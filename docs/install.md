@@ -14,7 +14,7 @@ Other language: [[docs/install.zh-CN]]
 ### Local CLI
 
 ```sh
-pip install -e /path/to/gpu-taskmgr        # installs `task` and `taskmgr-remote`
+uv tool install --editable /path/to/gpu-taskmgr   # installs `task` and `taskmgr-remote`
 # or, without pip:
 ln -s /path/to/gpu-taskmgr/bin/task ~/.local/bin/task
 

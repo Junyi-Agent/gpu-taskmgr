@@ -14,7 +14,7 @@ up: "[[taskmgr/README.zh-CN]]"
 ### 本地 CLI
 
 ```sh
-pip install -e /path/to/gpu-taskmgr        # 安装 `task` 和 `taskmgr-remote`
+uv tool install --editable /path/to/gpu-taskmgr   # 安装 `task` 和 `taskmgr-remote`
 # 不用 pip 的话：
 ln -s /path/to/gpu-taskmgr/bin/task ~/.local/bin/task
 

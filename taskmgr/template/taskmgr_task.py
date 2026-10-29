@@ -61,7 +61,7 @@ def locked(path):
         os.close(fd)
 
 
-def _read(path, default):
+def _read(path, default: dict) -> dict:
     try:
         with open(path) as f:
             obj = json.load(f)
@@ -111,7 +111,8 @@ def update_outputs(**outputs):
     with locked(path):
         obj = _read(path, {"schema_version": SCHEMA_VERSION})
         obj.pop("_taskmgr", None)
-        out = obj.get("outputs") if isinstance(obj.get("outputs"), dict) else {}
+        prev = obj.get("outputs")
+        out = dict(prev) if isinstance(prev, dict) else {}
         out.update(outputs)
         obj["outputs"] = out
         obj.setdefault("schema_version", SCHEMA_VERSION)
