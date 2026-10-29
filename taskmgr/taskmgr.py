@@ -12,16 +12,14 @@ import os
 import secrets
 import shlex
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from typing import IO, TypedDict, cast
+from typing import TypedDict
 
 from . import package
 from .common import (
-    PROTOCOL_VERSION,
     SUBMISSION_KEY_RE,
     TASK_ID_RE,
     TaskmgrError,
@@ -30,7 +28,11 @@ from .common import (
     read_json,
     utcnow_iso,
 )
-from .records import JsonDict, JsonValue, LocalInjection, Problem, Server, SshConfig, TaskSpec
+from .records import JsonDict, JsonValue, Problem, Server, TaskSpec
+from .hostsetup import add_host
+from .transport import ConnError, Remote, load_machines
+from .transport import json_obj as _obj
+from .transport import json_str as _str
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template")
 
@@ -64,6 +66,16 @@ class Args(argparse.Namespace):
     follow: bool = False
     detail: bool = False
     color: str = "auto"
+    # add host
+    what: str = ""
+    name: str = ""
+    ssh: str | None = None
+    port: int | None = None
+    identity_file: str | None = None
+    remote_root: str | None = None
+    ssh_option: list[str] | None = None
+    enabled: bool | None = None
+    yes: bool = False
 
 
 class HostError(TypedDict):
@@ -74,20 +86,8 @@ class HostError(TypedDict):
     code: str
 
 
-class ConnError(TaskmgrError):
-    def __init__(self, message: str, host: str | None = None) -> None:
-        super().__init__("connection_error", message, 2, host)
-
-
 def eprint(*a: object) -> None:
     print(*a, file=sys.stderr)
-
-
-def _obj(v: JsonValue) -> JsonDict:
-    """A JSON value the remote protocol guarantees to be an object."""
-    if not isinstance(v, dict):
-        raise TypeError("expected a JSON object in the remote reply, got %r" % (v,))
-    return v
 
 
 def _arr(v: JsonValue) -> list[JsonValue]:
@@ -97,23 +97,6 @@ def _arr(v: JsonValue) -> list[JsonValue]:
     return v
 
 
-def _str(v: JsonValue, default: str) -> str:
-    return v if isinstance(v, str) else default
-
-
-def _remote_error(reply: JsonDict, host: str, with_details: bool) -> TaskmgrError:
-    """Turn a remote {"error": {...}} reply into a TaskmgrError."""
-    e = _obj(reply["error"])
-    details = e.get("details") if with_details else None
-    return TaskmgrError(
-        _str(e.get("code", "remote_error"), "remote_error"),
-        _str(e.get("message", ""), ""),
-        2,
-        host,
-        details,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Machine list and transports
 
@@ -121,38 +104,6 @@ def _remote_error(reply: JsonDict, host: str, with_details: bool) -> TaskmgrErro
 def home_dir(args: Args | None = None) -> str:
     h = (args.home if args is not None else None) or os.environ.get("TASKMGR_HOME") or "~/.taskmgr"
     return os.path.abspath(os.path.expanduser(h))
-
-
-def load_machines(home: str) -> list[Server]:
-    path = os.path.join(home, "machines.json")
-    try:
-        data = read_json(path)
-    except ValueError as e:
-        raise TaskmgrError("bad_machines", "%s is not valid JSON: %s" % (path, e))
-    if data is None:
-        raise TaskmgrError(
-            "no_machines",
-            "machine list %s does not exist (see taskmgr/deploy/machines.example.json)" % path,
-        )
-    servers = data.get("servers") if isinstance(data, dict) else data
-    if not isinstance(servers, list):
-        raise TaskmgrError("bad_machines", '%s must contain a "servers" array' % path)
-    names: set[object] = set()
-    for entry in servers:
-        s = entry if isinstance(entry, dict) else None
-        if s is None or not s.get("name") or s["name"] in names:
-            raise TaskmgrError("bad_machines", "every server needs a unique name: %r" % (entry,))
-        names.add(s["name"])
-        if s.get("transport", "ssh") not in ("ssh", "local"):
-            raise TaskmgrError(
-                "bad_machines", "server %s: transport must be ssh or local" % s["name"]
-            )
-        if not s.get("remote_root") or not s.get("remote_command"):
-            raise TaskmgrError(
-                "bad_machines", "server %s needs remote_root and remote_command" % s["name"]
-            )
-    # Checked above: every entry is an object with name, remote_root and remote_command.
-    return cast(list[Server], servers)
 
 
 def find_server(servers: list[Server], name: str | None) -> Server:
@@ -177,137 +128,6 @@ def pick_round_robin(home: str, servers: list[Server]) -> Server:
             {"cursor": cursor + 1, "last": chosen["name"], "updated_at": utcnow_iso()},
         )
     return chosen
-
-
-class Remote:
-    def __init__(self, server: Server) -> None:
-        self.server: Server = server
-        self.name: str = server["name"]
-
-    def argv(self, args: Sequence[object]) -> list[str]:
-        s = self.server
-        base = shlex.split(s["remote_command"]) + [
-            "--root",
-            s["remote_root"],
-            "--protocol-version",
-            str(PROTOCOL_VERSION),
-        ]
-        base += [str(a) for a in args]
-        if s.get("transport", "ssh") == "local":
-            return base
-        ssh: SshConfig = s.get("ssh") or {}
-        cmd = ["ssh", "-o", "BatchMode=yes"]
-        port = ssh.get("port")
-        if port:
-            cmd += ["-p", str(port)]
-        identity_file = ssh.get("identity_file")
-        if identity_file:
-            cmd += ["-i", os.path.expanduser(identity_file)]
-        cmd += list(ssh.get("options") or [])
-        host = ssh.get("host") or self.name
-        user = ssh.get("user")
-        cmd += ["%s@%s" % (user, host) if user else host]
-        cmd += ["--", shlex.join(base)]
-        return cmd
-
-    def _inject(self) -> None:
-        # Test-only failure injection for transport "local" (Section 18.1).
-        if self.server.get("transport") != "local":
-            return
-        inj: LocalInjection = self.server.get("local") or {}
-        fail = inj.get("fail")
-        if fail:
-            raise ConnError(str(fail), self.name)
-        f = inj.get("fail_if_exists")
-        if f and os.path.exists(f):
-            raise ConnError("injected connection failure (%s exists)" % f, self.name)
-
-    def _is_conn_failure(self, rc: int) -> bool:
-        return self.server.get("transport", "ssh") == "ssh" and rc == 255
-
-    def call(
-        self,
-        args: Sequence[object],
-        stdin_path: str | None = None,
-        timeout: float | None = None,
-    ) -> JsonDict:
-        """Run a JSON subcommand and return its object; raise TaskmgrError/ConnError."""
-        self._inject()
-        upload = open(stdin_path, "rb") if stdin_path else None
-        try:
-            p = subprocess.run(
-                self.argv(args),
-                stdin=upload if upload is not None else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            raise ConnError("remote call timed out", self.name)
-        except OSError as e:
-            raise ConnError("cannot run transport: %s" % e, self.name)
-        finally:
-            if upload is not None:
-                upload.close()
-        err = p.stderr.decode(errors="replace").strip()
-        if self._is_conn_failure(p.returncode):
-            raise ConnError("ssh: %s" % (err or "connection failed"), self.name)
-        obj: JsonValue = None
-        for line in reversed(p.stdout.decode(errors="replace").splitlines()):
-            if line.strip():
-                try:
-                    obj = cast(JsonValue, json.loads(line))
-                except ValueError:
-                    pass
-                break
-        if not isinstance(obj, dict):
-            raise ConnError(
-                "no valid JSON from remote (exit %d): %s" % (p.returncode, err[-2000:]), self.name
-            )
-        reply = obj
-        check_protocol(reply, self.name)
-        if "error" in reply:
-            raise _remote_error(reply, self.name, with_details=True)
-        return reply
-
-    def stream(self, args: Sequence[object], stdout: IO[bytes]) -> int:
-        """Run a streaming subcommand (logs/fetch) writing to stdout; returns exit code."""
-        self._inject()
-        try:
-            p = subprocess.run(
-                self.argv(args), stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.PIPE
-            )
-        except OSError as e:
-            raise ConnError("cannot run transport: %s" % e, self.name)
-        err = p.stderr.decode(errors="replace").strip()
-        if self._is_conn_failure(p.returncode):
-            raise ConnError("ssh: %s" % (err or "connection failed"), self.name)
-        if p.returncode != 0:
-            obj: JsonValue = None
-            for line in reversed(err.splitlines()):
-                try:
-                    obj = cast(JsonValue, json.loads(line))
-                    break
-                except ValueError:
-                    continue
-            if isinstance(obj, dict) and "error" in obj:
-                check_protocol(obj, self.name)
-                raise _remote_error(obj, self.name, with_details=False)
-            raise TaskmgrError(
-                "remote_error", "remote exited %d: %s" % (p.returncode, err[-2000:]), 2, self.name
-            )
-        return 0
-
-
-def check_protocol(obj: JsonDict, host: str | None) -> None:
-    v = obj.get("protocol_version")
-    if v != PROTOCOL_VERSION:
-        raise TaskmgrError(
-            "protocol_mismatch",
-            "remote protocol_version %r is incompatible with local %d" % (v, PROTOCOL_VERSION),
-            2,
-            host,
-        )
 
 
 def query_all(
@@ -833,6 +653,11 @@ def cmd_hosts(args: Args) -> CmdResult:
     }, 0
 
 
+def cmd_add(args: Args) -> CmdResult:
+    # args.what is "host", the only kind so far
+    return add_host(args, home_dir(args))
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -886,6 +711,32 @@ def build_parser() -> argparse.ArgumentParser:
     _ = s.add_argument("--host", required=True)
     _ = s.add_argument("--output", required=True)
     _ = sub.add_parser("hosts", help="list configured servers")
+    s = sub.add_parser("add", help="set up or update something (see `task add host -h`)")
+    add = s.add_subparsers(dest="what", required=True)
+    h = add.add_parser(
+        "host",
+        help="set up or update a server and add it to the machine list (idempotent)",
+        description="Check the server step by step and change only what differs from the "
+        + "wanted state (code, remote_root, systemd user service, linger, machine list). "
+        + "Every change is confirmed with [y/N]; a second run changes nothing.",
+    )
+    _ = h.add_argument("name", help="name in the machine list")
+    _ = h.add_argument("--ssh", metavar="USER@HOST", help="ssh destination (required when new)")
+    _ = h.add_argument("--port", type=int)
+    _ = h.add_argument("--identity-file")
+    _ = h.add_argument(
+        "--remote-root", help="remote storage root (default ~/taskmgr-root on the server)"
+    )
+    _ = h.add_argument(
+        "--ssh-option",
+        action="append",
+        metavar="KEY=VALUE",
+        help="extra `ssh -o` option (repeatable); replaces an option with the same key",
+    )
+    g = h.add_mutually_exclusive_group()
+    _ = g.add_argument("--disabled", dest="enabled", action="store_false", default=None)
+    _ = g.add_argument("--enabled", dest="enabled", action="store_true", default=None)
+    _ = h.add_argument("--yes", "-y", action="store_true", help="answer yes to every prompt")
     return p
 
 
@@ -901,6 +752,7 @@ COMMANDS: dict[str, Callable[[Args], CmdResult]] = {
     "logs": cmd_logs,
     "fetch": cmd_fetch,
     "hosts": cmd_hosts,
+    "add": cmd_add,
 }
 
 

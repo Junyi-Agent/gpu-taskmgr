@@ -245,10 +245,12 @@ class SshConfig(TypedDict, total=False):
 
 
 class LocalInjection(TypedDict, total=False):
-    """Test-only connection-failure injection for transport "local"."""
+    """Test-only settings for transport "local": connection-failure injection, and `home`,
+    the HOME of every command run for this server (`task add host` tests)."""
 
     fail: str
     fail_if_exists: str
+    home: str
 
 
 class _ServerBase(TypedDict):

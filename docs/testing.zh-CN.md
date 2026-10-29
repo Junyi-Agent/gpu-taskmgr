@@ -33,17 +33,26 @@ docker run --rm --init -v "$PWD":/src -w /src python:3.11-slim \
 | `TASKMGR_TEST_SHIM_CRASH=<point>` | shim 在 `before_identity`、`before_exec`、`after_exit_recorded`、`before_finalize` 处退出 |
 | `TASKMGR_TEST_IGNORE_KILL=1` | 停止流程不发送任何信号（模拟停止无法确认） |
 | `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` 在持有上传锁时休眠 |
+| 机器条目 `"local": {"home": "/dir"}` | `transport: local` 以 `HOME=/dir` 运行所有命令（包括 `task add host` 的脚本） |
+| `TASKMGR_TEST_LOCAL_HOME=/dir` | `task add host` 新建的条目使用 `transport: local` 和 `"local": {"home": "/dir"}` |
+| `TASKMGR_TEST_INTERACTIVE=1` | stdin 不是终端时，`task add host` 也从 stdin 读取回答 |
 
 systemd 相关行为的测试方式：检查用户 unit 中有 `KillMode=process`，并向守护进程的整个进程组
 发送 SIGTERM 来停止它，验证 shim 和任务继续运行，且记录下真实退出码。
 
+`task add host` 的测试不需要 ssh，也不需要 systemd（`taskmgr/tests/test_add_host.py`）。“服务器”
+是一个 local 传输的条目，它的 HOME 是测试目录（即上表中仅用于测试的 `"local": {"home"}`）。测试把
+伪造的 `systemctl` 和 `loginctl` 脚本写到一个目录里，并把该目录放在 PATH 最前面。它们的状态保存在
+`$HOME/.fake-systemd/`，每次调用也记录在那里：`start` 启动 unit 的 `ExecStart`（真实的守护进程），
+`stop` 只向主 PID 发送 SIGTERM（与 `KillMode=process` 相同），unit 文件改动后必须先
+`daemon-reload`，`linger-refuse` 文件存在时 `enable-linger` 失败。这些伪造脚本只存在于测试中，
+`taskmgr/` 中的代码不引用它们。
+
 ## 可选：使用真实 SSH 的冒烟测试
 
 ```sh
-# 在服务器上
-git clone <repo> ~/taskmgr && mkdir -p ~/taskmgr-root
-nohup ~/taskmgr/bin/taskmgr-remote --root ~/taskmgr-root serve >/dev/null 2>&1 &
-# 在本地，machines.json 中配置一个指向该服务器的 "ssh" transport 条目
+task add host gpu1 --ssh tuner@<server>                       # 每一步都是 ok 或 changed
+task add host gpu1                                            # 第二次：每一步都是 ok，不询问
 task submit --host gpu1 taskmgr/examples/succeed
 task status <jobid> --host gpu1 --wait --poll-interval 2      # 退出码 0，outputs 存在
 task submit --host gpu1 taskmgr/examples/multi-gpu            # 需要至少 2 块 GPU

@@ -68,4 +68,7 @@ up: "[[taskmgr/README.zh-CN]]"
 - 因其他原因退出 75 的任务会被一直重新启动，直到被取消。
 - `remote_root` 必须位于本地文件系统（flock 在 NFS 上不可靠）。
 - 不支持断点续跑：自动重跑从原始任务包重新开始。
-- 不安装任何软件或环境；venv 和所需路径必须已存在于服务器上。
+- 不安装任何软件或环境；venv 和所需路径必须已存在于服务器上。`task add host` 只安装 taskmgr
+  本身（代码、unit、`remote_root`）。
+- `task add host` 不对服务器加锁：不支持对同一台服务器同时执行两次。它以
+  `~/taskmgr/.taskmgr-code-version` 为准，所以在 `~/taskmgr` 中手工改动的文件不会被发现。

@@ -19,6 +19,8 @@ User-facing details (commands, schemas, config defaults) are in [[taskmgr/README
 | Module | Role |
 | --- | --- |
 | `taskmgr/taskmgr.py` | local CLI entry (`task`) |
+| `taskmgr/hostsetup.py` | `task add host`: server setup and update over ssh, step by step (D18) |
+| `taskmgr/transport.py` | machine list, `Remote` (ssh / test-only local transport, remote subcommands and shell scripts) |
 | `taskmgr/remote.py` | remote entry (`taskmgr-remote`): subcommands, `serve`, `shim` |
 | `taskmgr/daemon.py` | scheduler loop, shim spawn, startup recovery, dead-shim detection |
 | `taskmgr/shim.py` | per-run supervisor (one run per job, see D16; relaunches after a GPU-busy exit, see D17) |
@@ -208,6 +210,12 @@ stopping → unknown, so the shim never goes running → unknown.
 | `TASKMGR_TEST_IGNORE_KILL=1` | stop procedure sends no signals (models a process that survives SIGKILL) |
 | `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | holds an upload open across a daemon restart |
 | `"local": {"fail" \| "fail_if_exists"}` | static or toggled connection failure |
+| `"local": {"home": DIR}` | local transport runs with `HOME=DIR` (a test "server" for `task add host`) |
+| `TASKMGR_TEST_LOCAL_HOME` | `task add host` creates a new entry with the local transport and that home |
+| `TASKMGR_TEST_INTERACTIVE=1` | `task add host` reads answers from a pipe |
+
+The `task add host` tests put fake `systemctl` / `loginctl` scripts first on PATH (state in
+`$HOME/.fake-systemd/`); `start` runs the unit's `ExecStart`, `stop` signals only the main PID.
 
 ## D15. Known limitations
 
@@ -301,3 +309,45 @@ Implementation notes:
   the child's 75 with `gpu_busy()`.
 - The protocol version stays 2: the CLI only gains optional fields (`pending_reason`,
   `gpu_busy_retries`, `last_gpu_busy_at`) and older CLIs ignore them.
+
+## D18. `task add host`: idempotent server setup and update (§17)
+
+User decision 2026-10-30. The user's requirement, verbatim: "服务器那边需要做的工作，你可以用
+task add host 命令自动完成 host 那边的配置。这个命令应该是幂等的。（如果 server 需要更新，用 task
+add host 也会自动完成 server 那边的更新）。无论我 add host 多少次，最终的效果应该一致（幂等）在
+add host 的时候每一步都告诉用户在干嘛，问用户是否执行。"
+
+Interpretation agreed with the user: every step prints what it checks and what it found;
+every step that changes something (remote or local) asks `[y/N]`; read-only checks are only
+printed; `--yes` answers yes; a second run on an up-to-date server changes nothing and asks
+nothing. No root anywhere (D13). This automates the manual setup that D13 and
+[[docs/install]] describe; the manual steps stay documented as a fallback.
+
+`task add host NAME --ssh USER@HOST [--port] [--identity-file] [--remote-root]
+[--ssh-option ...] [--disabled | --enabled] [--yes]` runs nine steps: `ssh` (read-only
+checks), `code`, `remote_root`, `data`, `unit`, `service`, `linger`, `verify` (read-only),
+`machines`. Stdout gets `{"host", "steps": [{"name", "status", "detail"}], "complete"}`; exit
+0 only when every step is `ok` or `changed`. A declined or failed step stops the run; the
+remaining steps are `skipped`. Details: [[docs/install]].
+
+| Decision | Reason |
+| --- | --- |
+| One read-only probe (a Python script sent to the server's `python3` over stdin) collects everything per round trip: OS, Python, home, user, systemd, linger, code version, unit file, service state, main PID start time, `daemon.lock` holder, filesystem type | one ssh call per check; works on any Python 3, so an old one is reported instead of crashing |
+| A remote `inspect` subcommand (read-only, no `ensure_layout`) lists job directories the current code cannot handle (protocol-1 `attempts/`, protocol-1 keys, missing required `job.json` keys) with their state and submission keys | the data check needs the new code's notion of "compatible" |
+| New code is uploaded to `~/taskmgr.new-*` first and moved into place only after the `data` step passed; `inspect` runs from the staged copy. A failed or declined later step removes the staged copy | a running old daemon builds shim command lines from its install path, so new code on disk would be used by shims of old-layout jobs; this way a refused data check leaves the server as it was |
+| Incompatible job dirs are moved into `<remote_root>.backup-<UTC time>/` (same relative paths, with their `submission-keys/*.json`) after the service was stopped (asked); jobs that may still run (running, stopping, unknown, or under `in-progress/`) are never moved and fail the step | never delete server data; the old daemon must not pick up dirs while they move |
+| Code version = `package.content_hash` of the shipped tree (`taskmgr/` without `tests/`, `__pycache__`, `*.pyc`, `.DS_Store`, plus the generated `bin/taskmgr-remote`), stored in `~/taskmgr/.taskmgr-code-version` | deterministic, independent of mtimes; test-only changes do not restart servers |
+| The previous tree is kept as `~/taskmgr.old-<time>`; older `.old-*` trees are removed at the next update | one rollback copy without unbounded growth; after the swap nothing imports from it (shim `PYTHONPATH` names the path `~/taskmgr`) |
+| The unit is generated with absolute paths, including the `python3` the probe found | the version checked in step `ssh` is the one that runs; systemd's PATH may differ from the ssh PATH |
+| A restart is offered when the code or unit changed in this run, or when the main PID started before the version file or unit file was last written (0.5 s margin) | a restart declined in one run is offered again in the next one; the start time is measured from `/proc` to about 20 ms |
+| After start/restart the step waits until the service's main PID holds `locks/daemon.lock`; a daemon outside systemd holding the lock fails the step | `is-active` alone is true even while the daemon exits at once because the lock is taken |
+| `linger` is not required: a refusal (or a "no") is reported with the command an admin must run once, and `verify` and `machines` still run | the service works while the user is logged in; the run still exits 2 |
+| `--yes` or a terminal is needed only when a change is pending; otherwise the step fails with "pass --yes" before changing anything | the idempotent second run works from scripts without `--yes` |
+| A new entry gets `ServerAliveInterval=15`, `ConnectTimeout=10`, `ControlMaster=auto`, `ControlPath=~/.ssh/cm-%r@%h:%p`, `ControlPersist=10m`; `--ssh-option` replaces options with the same key. An existing entry keeps its options and `enabled` unless `--ssh-option` / `--disabled` / `--enabled` are given | reuse one connection for the many ssh calls; re-running for an update must not change settings the user chose |
+| `machines.json` is rewritten under `machines.lock` with `indent=2`, keeping the order of entries and keys; only the named entry changes | do not reorder or touch other entries |
+| `Remote` and the machine list moved from `taskmgr.py` to `transport.py`; `Remote` gained `ssh_argv`, `shell_argv`, `shell` | `hostsetup` and `taskmgr` both need them, and an import cycle is reported by the checker |
+
+Known limits: no lock against two concurrent `add host` runs for one server; files edited
+by hand in `~/taskmgr` are not noticed while the version file matches; the optional
+`task remove host` was not added.
+

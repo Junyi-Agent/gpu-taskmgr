@@ -11,8 +11,8 @@ Spec: [[agent/desc-1.md]]. Design decisions: [[agent/desc-2.md]].
 
 ## Quick start
 
-Below, `gpu1` stands for the GPU server's ssh address (e.g. `tuner@10.0.0.12`) and `tuner`
-for your user name on it. No step needs root.
+Below, `gpu1` is the name you give the GPU server in the machine list, `tuner@10.0.0.12`
+its ssh address, and `tuner` your user name on it. No step needs root.
 
 **1. Your machine: install the CLI**
 
@@ -20,58 +20,29 @@ for your user name on it. No step needs root.
 uv tool install --editable /path/to/gpu-taskmgr     # provides the `task` command
 ```
 
-**2. Your machine → server: copy the code to `~/taskmgr` on the server**
-
-Run this in the repository root on your machine. `git archive` packs only committed files
-(no `.venv`, no `.git`) and ssh unpacks them into `~/taskmgr` on the server, so the server
-needs no git credentials. Run it again to update the code.
+**2. Your machine: set up the server**
 
 ```sh
-git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
+task add host gpu1 --ssh tuner@10.0.0.12
 ```
+
+This copies the code to `~/taskmgr` on the server, creates `~/taskmgr-root` with a
+`config.json`, installs and starts the systemd user service, enables lingering, and adds
+`gpu1` to `~/.taskmgr/machines.json`. Each step says what it found; each change asks
+`[y/N]` first (`--yes` answers yes). If `loginctl enable-linger` is refused, the step
+reports the command an admin has to run once. If `$HOME` is on NFS, add
+`--remote-root /scratch/tuner/taskmgr-root` (local disk). Details: [[docs/install]].
+
+To update the server later (after `git pull`), run `task add host gpu1` again. It is
+idempotent: on an up-to-date server it changes nothing and asks nothing.
 
 The CLI and every server must speak the same `protocol_version`; a mismatch fails with
 `protocol_mismatch` (exit 2). Protocol 2 removed attempts (a job runs once; a retry is a new
-job). Job directories written by protocol 1 (`attempts/NNNN/`) are not migrated: before
-upgrading a server, let its jobs finish, then restart the daemon on a new, empty
-`remote_root` (or move the old one aside).
+job). Job directories written by protocol 1 (`attempts/NNNN/`) are not migrated: `task add
+host` moves them into `<remote_root>.backup-<time>/` after asking, and refuses while such a
+job may still be running.
 
-**3. Server: install and start the systemd user service**
-
-`ssh gpu1`, then:
-
-```sh
-mkdir -p ~/taskmgr-root ~/.config/systemd/user
-cp ~/taskmgr/taskmgr/deploy/config.example.json ~/taskmgr-root/config.json        # remote config
-cp ~/taskmgr/taskmgr/deploy/taskmgr-remote.user.service \
-   ~/.config/systemd/user/taskmgr-remote.service                                 # user unit
-systemctl --user daemon-reload                     # make systemd see the new unit
-systemctl --user enable --now taskmgr-remote       # start now and with the user manager
-loginctl enable-linger "$USER"                     # start at boot, survive logout (may need an admin once)
-systemctl --user status taskmgr-remote             # should be active (running)
-```
-
-The unit hard-codes `%h/taskmgr/bin/taskmgr-remote` and `--root %h/taskmgr-root`, which is
-why step 2 copies to `~/taskmgr`. If `$HOME` is on NFS, use local disk instead; see
-[[docs/install]].
-
-**4. Your machine: register the server**
-
-```sh
-mkdir -p ~/.taskmgr
-cp /path/to/gpu-taskmgr/taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
-```
-
-Edit `~/.taskmgr/machines.json`, one entry per server, with absolute paths (no `~`):
-
-```json
-{"servers": [{"name": "gpu1", "enabled": true, "transport": "ssh",
-              "ssh": {"host": "10.0.0.12", "user": "tuner"},
-              "remote_root": "/home/tuner/taskmgr-root",
-              "remote_command": "/home/tuner/taskmgr/bin/taskmgr-remote"}]}
-```
-
-**5. Use it**
+**3. Use it**
 
 ```sh
 task hosts                           # check the machine list
@@ -86,7 +57,7 @@ task fetch <jobid> --host gpu1 --output ./results/
 
 | Doc | Content |
 | --- | --- |
-| [[docs/install]] | local CLI, remote server, systemd user service, `config.json` |
+| [[docs/install]] | local CLI, `task add host`, systemd user service, `config.json` |
 | [[docs/usage]] | commands, JSON output, exit codes |
 | [[docs/task-package]] | `task.json`, `progress.json`, `result.json`, entry environment |
 | [[docs/internals]] | remote directory layout, `job.json` / `runner.json`, state machine, scheduling, shim, stop procedure |
@@ -113,6 +84,8 @@ Points the spec asks the README to state:
 ```
 taskmgr/
   taskmgr.py      local CLI entry (`task`)
+  hostsetup.py    `task add host`: server setup and update over ssh, step by step
+  transport.py    machine list; ssh / local transport (`Remote`)
   remote.py       remote entry (`taskmgr-remote`): subcommands, `serve`, `shim`
   daemon.py       scheduler daemon: queue scan, GPU reservation, shim spawn, recovery loop
   shim.py         per-run supervisor: pre-start checks, exec, wait, stop, finalize,

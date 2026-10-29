@@ -24,6 +24,8 @@ task resolve <jobid> --host H [--as stopped --confirm <jobid>]
 task logs  <jobid> --host H [--stream stdout|stderr|shim] [--follow]
 task fetch <jobid> --host H --output ./results/
 task hosts                             # list configured servers (extra)
+task add host NAME [--ssh USER@HOST] [--port N] [--identity-file F] [--remote-root DIR]
+              [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
 ```
 
 All commands except `logs` and the `jobs` table print one JSON object on stdout; errors are
@@ -96,3 +98,13 @@ not followed.
   `<output>/<host>/<jobid>/`. An existing target → `exists` (exit 2), nothing written. A job
   that never ran → `no_run` (exit 2). For an unfinished job stderr warns and the receipt has
   `partial: true`. Receipt: `{"host", "jobid", "state", "partial", "path", "skipped"}`.
+
+## Adding and updating servers
+
+`task add host NAME --ssh USER@HOST` sets up a GPU server over ssh and adds it to the
+machine list; `task add host NAME` checks an existing server and updates it (code,
+`remote_root`, systemd user unit and service, linger, machine entry). Each change is
+shown and asked with `[y/N]`; `--yes` answers yes. A second run on an up-to-date server
+changes nothing and asks nothing. Progress and prompts go to stderr; stdout gets
+`{"host", "steps": [{"name", "status", "detail"}], "complete"}`, exit 0 if every step is
+`ok` or `changed`, otherwise 2. The steps are described in [[docs/install]].

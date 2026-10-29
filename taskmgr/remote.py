@@ -3,6 +3,7 @@
 Invoked by the local CLI as
     ssh <host> taskmgr-remote --root <remote_root> --protocol-version N <subcommand> ...
 Every subcommand except `logs`, `fetch`, `serve` and `shim` prints one JSON object.
+`inspect` is read-only and creates nothing, so `task add host` can run it on any root.
 """
 
 import argparse
@@ -19,6 +20,9 @@ from typing import IO, cast
 
 from . import package
 from .common import (
+    GPU_HOLDING_STATES,
+    JOB_DIRS,
+    JOBID_RE,
     PROTOCOL_VERSION,
     SCHEMA_VERSION,
     SUBMISSION_KEY_RE,
@@ -479,6 +483,92 @@ def cmd_fetch(store: Store, args: Args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# inspect (read-only; used by `task add host`, desc-2 D18)
+
+# Keys every job.json of the current layout has (protocol 2, desc-2 D16).
+JOB_REQUIRED_KEYS: tuple[str, ...] = tuple(sorted(Job.__required_keys__))
+# job.json keys that only the protocol-1 layout (attempts) wrote.
+PROTOCOL1_JOB_KEYS = ("attempts", "current_attempt", "retries")
+
+
+def job_dir_problems(jobdir: str) -> tuple[str | None, list[str]]:
+    """(state or None, reasons the directory does not match the current layout)."""
+    reasons: list[str] = []
+    if os.path.isdir(os.path.join(jobdir, "attempts")):
+        reasons.append("has attempts/ (protocol 1 layout)")
+    obj, err = try_read_json(os.path.join(jobdir, "job.json"))
+    if not isinstance(obj, dict):
+        reasons.append("job.json is %s" % (err or "not a JSON object"))
+        return None, reasons
+    missing = [k for k in JOB_REQUIRED_KEYS if k not in obj]
+    if missing:
+        reasons.append("job.json lacks %s" % ", ".join(missing))
+    old = [k for k in PROTOCOL1_JOB_KEYS if k in obj]
+    if old:
+        reasons.append("job.json has protocol 1 keys %s" % ", ".join(old))
+    state = obj.get("state")
+    return (state if isinstance(state, str) else None), reasons
+
+
+def inspect_root(root: str) -> dict[str, object]:
+    """Counts per state and the job directories the current code cannot handle.
+
+    Reads only; a job is `live` when its state or location says it may still run
+    (running, stopping, unknown, or anything under in-progress/).
+    """
+    counts: dict[str, int] = {}
+    incompatible: list[dict[str, object]] = []
+    for d in JOB_DIRS:
+        try:
+            names = sorted(os.listdir(os.path.join(root, d)))
+        except OSError:
+            continue
+        for name in names:
+            jobdir = os.path.join(root, d, name)
+            if not JOBID_RE.match(name) or not os.path.isdir(jobdir):
+                continue
+            state, reasons = job_dir_problems(jobdir)
+            if not reasons:
+                key = state or "?"
+                counts[key] = counts.get(key, 0) + 1
+                continue
+            incompatible.append(
+                {
+                    "path": "%s/%s" % (d, name),
+                    "jobid": name,
+                    "state": state,
+                    "live": d == "in-progress" or state in GPU_HOLDING_STATES,
+                    "reasons": reasons,
+                    "submission_keys": [],
+                }
+            )
+    by_jobid = {cast(str, e["jobid"]): e for e in incompatible}
+    try:
+        key_files = sorted(os.listdir(os.path.join(root, "submission-keys")))
+    except OSError:
+        key_files = []
+    for name in key_files:
+        if not name.endswith(".json") or not SUBMISSION_KEY_RE.match(name[: -len(".json")]):
+            continue
+        mapping, _ = try_read_json(os.path.join(root, "submission-keys", name))
+        jobid = mapping.get("jobid") if isinstance(mapping, dict) else None
+        entry = by_jobid.get(jobid) if isinstance(jobid, str) else None
+        if entry is not None:
+            cast(list[str], entry["submission_keys"]).append("submission-keys/" + name)
+    return {
+        "root": root,
+        "exists": os.path.isdir(root),
+        "config_exists": os.path.lexists(os.path.join(root, "config.json")),
+        "counts": counts,
+        "incompatible": incompatible,
+    }
+
+
+def cmd_inspect(store: Store, _args: Args) -> int:
+    return emit(inspect_root(store.root))
+
+
+# ---------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -487,6 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = p.add_argument("--protocol-version", type=int, default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
     _ = sub.add_parser("version")
+    _ = sub.add_parser("inspect", help="read-only: job counts and incompatible job directories")
     r = sub.add_parser("receive")
     _ = r.add_argument("--submission-key")
     j = sub.add_parser("jobs")
@@ -544,6 +635,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.cmd == "version":
             return emit({"ok": True})
+        if args.cmd == "inspect":  # read-only: no ensure_layout
+            return cmd_inspect(store, args)
         store.ensure_layout()
         return COMMANDS[args.cmd](store, args)
     except TaskmgrError as e:

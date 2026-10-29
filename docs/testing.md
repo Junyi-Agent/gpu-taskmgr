@@ -33,18 +33,28 @@ orphaned task processes must be reaped.
 | `TASKMGR_TEST_SHIM_CRASH=<point>` | shim exits at `before_identity`, `before_exec`, `after_exit_recorded`, `before_finalize` |
 | `TASKMGR_TEST_IGNORE_KILL=1` | stop procedure sends no signals (unconfirmed stop) |
 | `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` sleeps while holding the upload lock |
+| machine entry `"local": {"home": "/dir"}` | `transport: local` runs every command (and `task add host` scripts) with `HOME=/dir` |
+| `TASKMGR_TEST_LOCAL_HOME=/dir` | `task add host` creates a new entry with `transport: local` and `"local": {"home": "/dir"}` |
+| `TASKMGR_TEST_INTERACTIVE=1` | `task add host` reads answers from stdin even when it is not a terminal |
 
 The systemd behaviour is tested by checking `KillMode=process` in the user unit and by stopping
 the daemon with SIGTERM to its whole process group: shim and task keep running and the
 real exit code is recorded.
 
+`task add host` is tested without ssh and without systemd (`taskmgr/tests/test_add_host.py`).
+The "server" is a local-transport entry whose HOME is a test directory (the test-only
+`"local": {"home"}` above). Fake `systemctl` and `loginctl` scripts, written by the test into a
+directory that is put first on PATH, keep their state under `$HOME/.fake-systemd/` and log
+every call there: `start` launches the unit's `ExecStart` (the real daemon), `stop` sends
+SIGTERM to the main PID only (like `KillMode=process`), `daemon-reload` is required after
+the unit file changes, and `enable-linger` fails while `linger-refuse` exists. The fakes
+exist only in the tests; nothing in `taskmgr/` refers to them.
+
 ## Optional smoke test against real SSH
 
 ```sh
-# on the server
-git clone <repo> ~/taskmgr && mkdir -p ~/taskmgr-root
-nohup ~/taskmgr/bin/taskmgr-remote --root ~/taskmgr-root serve >/dev/null 2>&1 &
-# locally, machines.json with transport "ssh" pointing at it
+task add host gpu1 --ssh tuner@<server>                       # every step ok or changed
+task add host gpu1                                            # second run: every step ok, no prompt
 task submit --host gpu1 taskmgr/examples/succeed
 task status <jobid> --host gpu1 --wait --poll-interval 2      # exit 0, outputs present
 task submit --host gpu1 taskmgr/examples/multi-gpu            # needs >= 2 GPUs

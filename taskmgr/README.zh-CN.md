@@ -10,7 +10,8 @@
 
 ## 快速开始
 
-下面用 `gpu1` 代表 GPU 服务器的 ssh 地址（例如 `tuner@10.0.0.12`），`tuner` 代表服务器上的用户名。
+下面 `gpu1` 是你在机器列表中给 GPU 服务器起的名字，`tuner@10.0.0.12` 是它的 ssh 地址，`tuner`
+是服务器上的用户名。
 整个过程不需要 root。
 
 **1. 本机：安装 CLI**
@@ -19,48 +20,27 @@
 uv tool install --editable /path/to/gpu-taskmgr     # 提供 task 命令
 ```
 
-**2. 本机 → 服务器：把代码拷贝到服务器的 `~/taskmgr`**
-
-在本机的仓库根目录执行。`git archive` 只打包已提交的文件（不含 `.venv`、`.git`），通过 ssh 解压到
-服务器的 `~/taskmgr`。服务器上不需要 git 凭据。以后更新代码时重新执行这一条即可。
+**2. 本机：配置服务器**
 
 ```sh
-git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
+task add host gpu1 --ssh tuner@10.0.0.12
 ```
+
+这条命令把代码拷贝到服务器的 `~/taskmgr`，创建 `~/taskmgr-root` 和其中的 `config.json`，安装并
+启动 systemd 用户服务，开启 lingering，并把 `gpu1` 加入 `~/.taskmgr/machines.json`。每一步都会
+说明发现了什么；每一处改动都先询问 `[y/N]`（`--yes` 回答 yes）。如果 `loginctl enable-linger`
+被拒绝，这一步会给出管理员需要执行一次的命令。如果 `$HOME` 在 NFS 上，加上
+`--remote-root /scratch/tuner/taskmgr-root`（本地磁盘）。详见 [[docs/install.zh-CN]]。
+
+以后要更新服务器（`git pull` 之后），再执行一次 `task add host gpu1`。它是幂等的：服务器已是最新
+状态时，不做改动，也不询问。
 
 CLI 和每台服务器的 `protocol_version` 必须相同，不同时命令以 `protocol_mismatch` 失败（退出码 2）。
 协议 2 去掉了 attempt（一个作业只运行一次，重试是一个新作业）。协议 1 写下的作业目录
-（`attempts/NNNN/`）不做迁移：升级服务器前先等它的作业全部结束，然后让守护进程使用一个新的空
-`remote_root`（或把旧目录移走）。
+（`attempts/NNNN/`）不做迁移：`task add host` 在询问后把它们移到 `<remote_root>.backup-<时间>/`，
+如果这样的作业可能仍在运行，则拒绝移动。
 
-**3. 服务器：安装并启动 systemd 用户服务**
-
-先 `ssh gpu1` 登录服务器，然后执行：
-
-```sh
-mkdir -p ~/taskmgr-root ~/.config/systemd/user
-cp ~/taskmgr/taskmgr/deploy/config.example.json ~/taskmgr-root/config.json        # 远程配置
-cp ~/taskmgr/taskmgr/deploy/taskmgr-remote.user.service \
-   ~/.config/systemd/user/taskmgr-remote.service                                 # 用户级 unit
-systemctl --user daemon-reload                     # 让 systemd 读到新 unit
-systemctl --user enable --now taskmgr-remote       # 立即启动，并随用户管理器自启
-loginctl enable-linger "$USER"                     # 开机启动、注销后不退出（被拒绝时需管理员执行一次）
-systemctl --user status taskmgr-remote             # 确认 active (running)
-```
-
-unit 里写死了路径 `%h/taskmgr/bin/taskmgr-remote` 和 `--root %h/taskmgr-root`，所以第 2 步必须拷到
-`~/taskmgr`。`$HOME` 在 NFS 上时要改用本地磁盘，见 [[docs/install.zh-CN]]。
-
-**4. 本机：登记这台服务器**
-
-```sh
-mkdir -p ~/.taskmgr
-cp /path/to/gpu-taskmgr/taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
-```
-
-编辑 `~/.taskmgr/machines.json`，每台服务器一项。路径要写绝对路径（不能用 `~`）：
-
-**5. 使用**
+**3. 使用**
 
 ```sh
 task hosts                           # 确认机器列表
@@ -75,7 +55,7 @@ task fetch <jobid> --host gpu1 --output ./results/
 
 | 文档 | 内容 |
 | --- | --- |
-| [[docs/install.zh-CN]] | 本地 CLI、远程服务器、systemd 用户服务、`config.json` |
+| [[docs/install.zh-CN]] | 本地 CLI、`task add host`、systemd 用户服务、`config.json` |
 | [[docs/usage.zh-CN]] | 命令、JSON 输出、退出码 |
 | [[docs/task-package.zh-CN]] | `task.json`、`progress.json`、`result.json`、入口进程环境 |
 | [[docs/internals.zh-CN]] | 远程目录结构、`job.json` / `runner.json`、状态机、调度、shim、停止流程 |
@@ -99,6 +79,8 @@ task fetch <jobid> --host gpu1 --output ./results/
 ```
 taskmgr/
   taskmgr.py      本地 CLI 入口（`task`）
+  hostsetup.py    `task add host`：通过 ssh 逐步配置和更新服务器
+  transport.py    机器列表；ssh / local 传输（`Remote`）
   remote.py       远程入口（`taskmgr-remote`）：子命令、`serve`、`shim`
   daemon.py       调度守护进程：扫描队列、GPU 预留、启动 shim、恢复循环
   shim.py         每次运行一个的监管进程：启动前检查、exec、wait、停止、收尾、

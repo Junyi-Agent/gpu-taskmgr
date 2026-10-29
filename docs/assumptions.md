@@ -82,3 +82,7 @@ Other language: [[docs/assumptions.zh-CN]]
 - `remote_root` must be on a local filesystem (flock is unreliable on NFS).
 - No checkpoint/resume: an automatic re-run starts from the original package.
 - No installation of software or environments; venvs and paths must exist on the server.
+  `task add host` installs only taskmgr itself (code, unit, `remote_root`).
+- `task add host` does not lock the server: two runs for the same server at the same time
+  are not supported. It trusts `~/taskmgr/.taskmgr-code-version`, so files edited by hand
+  in `~/taskmgr` are not noticed.

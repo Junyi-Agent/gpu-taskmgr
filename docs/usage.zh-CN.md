@@ -24,6 +24,8 @@ task resolve <jobid> --host H [--as stopped --confirm <jobid>]
 task logs  <jobid> --host H [--stream stdout|stderr|shim] [--follow]
 task fetch <jobid> --host H --output ./results/
 task hosts                             # 列出已配置的服务器（额外命令）
+task add host NAME [--ssh USER@HOST] [--port N] [--identity-file F] [--remote-root DIR]
+              [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
 ```
 
 除 `logs` 和 `jobs` 表格外，所有命令都在 stdout 输出一个 JSON 对象；出错时输出
@@ -90,3 +92,12 @@ jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key �
   `<output>/<host>/<jobid>/`。目标已存在 → `exists`（退出码 2），不写任何文件。从未运行的作业 →
   `no_run`（退出码 2）。作业未结束时 stderr 给出警告，回执中 `partial: true`。回执：
   `{"host", "jobid", "state", "partial", "path", "skipped"}`。
+
+## 添加和更新服务器
+
+`task add host NAME --ssh USER@HOST` 通过 ssh 配置一台 GPU 服务器，并把它加入机器列表；
+`task add host NAME` 检查一台已有的服务器并更新它（代码、`remote_root`、systemd 用户 unit 和
+服务、linger、机器列表条目）。每一处改动都会先显示，再用 `[y/N]` 询问；`--yes` 回答 yes。
+服务器已是最新状态时，再执行一次不做改动，也不询问。进度和询问写到 stderr；stdout 输出
+`{"host", "steps": [{"name", "status", "detail"}], "complete"}`，所有步骤都是 `ok` 或
+`changed` 时退出码为 0，否则为 2。各步骤见 [[docs/install.zh-CN]]。
