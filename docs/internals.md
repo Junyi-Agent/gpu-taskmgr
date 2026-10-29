@@ -35,7 +35,7 @@ Other language: [[docs/internals.zh-CN]]
   runner.prev-N.json  run record set aside when the job was queued again after a GPU-busy exit
   shim.lock         flock held by the shim for its whole life
   stdout.log  stderr.log  shim.log   appended across relaunches, never truncated
-  workdir/          fresh copy of package/ (per launch) + progress.json, result.json, artifacts/
+  workdir/          copy of package/ (made once per job, reused by GPU-busy relaunches) + progress.json, result.json, artifacts/
 ```
 
 A job runs at most once. A retry (`task retry`) or an automatic re-run after an interruption
@@ -148,8 +148,9 @@ identity; if it has one, the job becomes `unknown` and keeps its GPUs.
    record), sets `job.json` `pending_reason` (and moves a `stopping`/`leftover` job back
    to `running`), and waits `gpu_retry_interval_seconds`, re-reading `job.json` every
    `control_poll_seconds`. A cancel request while waiting ends the job running → stopping →
-   cancelled (no process is running). Then it deletes `workdir/`, copies `package/` again,
-   appends `--- taskmgr: relaunch #N after GPU busy ---` to `stdout.log` and `stderr.log`,
+   cancelled (no process is running). Then it keeps `workdir/` as it is (the busy launch
+   did no work under the GPU contract, and copying the package on every retry would only
+   cost I/O), appends `--- taskmgr: relaunch #N after GPU busy ---` to `stdout.log` and `stderr.log`,
    and starts the entry again with step 2 (new pgid, leader, start time, identity record).
    Time spent waiting does not count toward `timeout_seconds`. `pending_reason` is removed
    once a relaunch has kept running for `gpu_retry_interval_seconds` (so a job that keeps

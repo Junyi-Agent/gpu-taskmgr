@@ -20,7 +20,7 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
    Exception, GPU busy: if the exit code is `gpu_busy_exit_code` and the job was not
    stopped for cancel or timeout, the entry did no work. Once the group is gone (after a
    takeover if members are alive) the job goes back to `queued` with the **same** jobid
-   and `enqueue_seq`: `workdir/` is removed, `runner.json` is renamed to
+   and `enqueue_seq`: `workdir/` is kept (the next dispatch reuses it), `runner.json` is renamed to
    `runner.prev-N.json`, `dispatched_at` is cleared, the logs are kept. This is not an
    interruption: `auto_restarts` does not change and `max_auto_restarts` does not apply.
    With `cancel_requested` the job ends `cancelled` instead. The same applies to

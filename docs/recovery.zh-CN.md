@@ -18,7 +18,7 @@ up: "[[taskmgr/README.zh-CN]]"
 2. 已记录 `exited` 但未 final → 完成收尾（残留进程检查、合并结果、标记 final），不重跑。
    例外是 GPU 忙：如果退出码是 `gpu_busy_exit_code`，且作业不是因取消或超时而停止，说明入口
    命令没有做任何工作。进程组全部退出后（若还有存活成员，先经过接管），作业以**同一个** jobid
-   和 `enqueue_seq` 回到 `queued`：删除 `workdir/`，把 `runner.json` 重命名为
+   和 `enqueue_seq` 回到 `queued`：保留 `workdir/`（下次派发时复用），把 `runner.json` 重命名为
    `runner.prev-N.json`，清空 `dispatched_at`，保留日志。这不算中断：`auto_restarts` 不变，也不受
    `max_auto_restarts` 限制。若已请求取消，作业改为以 `cancelled` 结束。`runner.json` 状态为
    `waiting_gpu` 且 shim 已死（在等待重新启动时死亡，进程组此前已全部退出）时同样处理。

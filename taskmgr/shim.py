@@ -15,7 +15,7 @@ from . import gpu, procutil
 from .common import TaskmgrError, utcnow_iso
 from .monitor import STOP_OUTCOME, GroupStopper, mark_unknown, set_stopping
 from .records import ErrorInfo, Job, RemoteConfig, Runner, TaskEnvironment, TaskSpec
-from .store import Store, end_without_result, finalize_run, load_task, remove_tree
+from .store import Store, end_without_result, finalize_run, load_task
 
 
 def log(msg: str) -> None:
@@ -137,7 +137,12 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
     )
     store.write_runner(jobdir, runner)
 
-    workdir = prepare_workdir(jobdir)
+    # A job queued again after a "GPU busy" exit (its old run record was set aside as
+    # runner.prev-N.json) keeps its workdir: under the GPU contract that run did no work.
+    requeued = any(n.startswith("runner.prev-") for n in os.listdir(jobdir))
+    workdir = os.path.join(jobdir, "workdir")
+    if not (requeued and os.path.isdir(workdir)):
+        workdir = prepare_workdir(jobdir)
     env = build_env(cfg, task, job, workdir)
     path, errors = prestart_checks(task, job, env, workdir)
     if job.get("cancel_requested"):
@@ -169,9 +174,8 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
         return 0
 
     assert path is not None  # resolve_entry succeeded: no pre-start errors
-    # A job queued again after a "GPU busy" exit whose shim died already has logs.
     separator: str | None = None
-    if os.path.exists(os.path.join(jobdir, "stdout.log")):
+    if requeued:
         separator = "--- taskmgr: launch after requeue (GPU busy) ---"
     while True:
         pid = launch(store, jobdir, runner, task, path, env, workdir, separator)
@@ -179,9 +183,8 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
             return 0
         if not wait_for_gpu(store, jobid, jobdir, runner, cfg):
             return 0
-        # Each launch starts from a fresh copy of package/.
-        remove_tree(workdir)
-        workdir = prepare_workdir(jobdir)
+        # The workdir is reused: a 75 exit means the entry did no work (GPU contract), and
+        # copying the package again on every retry would cost I/O for nothing.
         separator = "--- taskmgr: relaunch #%d after GPU busy ---" % runner.get(
             "gpu_busy_retries", 0
         )
@@ -298,7 +301,7 @@ def wait_for_gpu(store: Store, jobid: str, jobdir: str, runner: Runner, cfg: Rem
     while honoring cancel, and return True to relaunch. False: the job was finalized
     (cancelled) or is no longer ours to run."""
     code = runner.get("return_code")
-    interval = float(cfg.get("gpu_retry_interval_seconds", 2))
+    interval = float(cfg.get("gpu_retry_interval_seconds", 1))
     poll = float(cfg.get("control_poll_seconds", 2))
     retries = runner.get("gpu_busy_retries", 0) + 1
     runner.update(
@@ -352,7 +355,7 @@ def supervise(
     timeout = task.get("timeout_seconds")
     poll = float(cfg.get("control_poll_seconds", 2))
     busy_code = store.gpu_busy_exit_code
-    retry_interval = float(cfg.get("gpu_retry_interval_seconds", 2))
+    retry_interval = float(cfg.get("gpu_retry_interval_seconds", 1))
     grace, confirm = cfg.get("stop_grace_seconds", 30), cfg.get("kill_confirm_seconds", 10)
     # cast: reap() (a closure) sets exit_status, so the checker must not narrow it to None.
     exit_status: int | None = cast("int | None", None)

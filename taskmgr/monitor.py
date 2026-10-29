@@ -13,7 +13,7 @@ from typing import Literal, TypedDict, cast
 from . import procutil
 from .common import TERMINAL_STATES, try_flock_fd, try_read_json, utcnow_iso
 from .records import Job, JsonDict, JsonValue, Runner
-from .store import Store, finalize_run, interrupt_run, load_task, remove_tree
+from .store import Store, finalize_run, interrupt_run, load_task
 
 STOP_OUTCOME = {"cancel": "cancelled", "timeout": "timed_out"}
 
@@ -192,9 +192,7 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
         if job.get("cancel_requested"):
             _ = set_stopping(store, jobid, "cancel")
             return finalize_run(store, jobid, status="cancelled")
-        workdir = os.path.join(jobdir, "workdir")
-        if os.path.lexists(workdir):
-            remove_tree(workdir)
+        # The workdir stays: the next dispatch of this same job reuses it (GPU contract).
         # job.json first: a crash before the rename leaves a queued job whose runner.json
         # shows the busy exit, which dispatch recognizes and sets aside as well.
         job["state"] = "queued"

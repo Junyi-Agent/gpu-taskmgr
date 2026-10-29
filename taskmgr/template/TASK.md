@@ -18,7 +18,8 @@ Filling instructions (for humans and AI agents):
   work"; taskmgr then starts the entry again after a short wait (the job shows as
   "pending (gpu busy)") instead of failing it. Call tt.claim_gpu() before any work
   (run.py does). If your own CUDA code later sees "device busy/unavailable", call
-  tt.gpu_busy("why") before producing side effects. Never exit 75 for any other reason:
+  tt.gpu_busy("why") before producing side effects. The relaunch reuses the workdir, so
+  files written before the exit 75 must be safe to reuse. Never exit 75 for any other reason:
   such a task would be started again forever (until cancelled). If the CUDA work runs in
   a subprocess, do not call claim_gpu() in the parent (on exclusive-process GPUs the
   parent's context would block the child); let the child exit 75 and forward it with

@@ -44,7 +44,7 @@ DEFAULT_REMOTE_CONFIG: RemoteConfig = {
     "control_poll_seconds": 2,
     "scheduler_poll_seconds": 1,
     "gpu_busy_exit_code": 75,
-    "gpu_retry_interval_seconds": 2,
+    "gpu_retry_interval_seconds": 1,
     "base_env": {},
 }
 

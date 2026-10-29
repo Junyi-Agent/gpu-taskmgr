@@ -139,7 +139,8 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
    身份记录），设置 `job.json` 的 `pending_reason`（如果作业因清理残留进程处于
    `stopping`/`leftover`，改回 `running`），然后等待 `gpu_retry_interval_seconds`，期间每隔
    `control_poll_seconds` 重新读取 `job.json`。等待期间收到取消请求时，作业 running → stopping →
-   cancelled（此时没有进程在运行）。等待结束后删除 `workdir/`，重新复制 `package/`，向
+   cancelled（此时没有进程在运行）。等待结束后保留 `workdir/` 原样（按 GPU 约定，GPU 忙的那次
+   启动没有做任何工作；每次重试都重新复制包只会白白消耗 I/O），向
    `stdout.log` 和 `stderr.log` 追加一行 `--- taskmgr: relaunch #N after GPU busy ---`，再按第 2 步
    重新启动入口命令（新的 pgid、组长、启动时间和身份记录）。等待时间不计入 `timeout_seconds`。
    某次重新启动持续运行满 `gpu_retry_interval_seconds` 后才删除 `pending_reason`（这样反复退出 75

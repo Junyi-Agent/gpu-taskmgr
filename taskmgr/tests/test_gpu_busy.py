@@ -36,7 +36,8 @@ class GpuBusyTest(Env):
             return 0
 
     def busy_script(self, busy: int | None = None, gate: str | None = None, then: str = "") -> str:
-        """Count the launch, report whether the workdir was fresh, then exit 75 for the first
+        """Count the launch, record whether the workdir was reused (the `stale` file left by
+        a previous launch is there: one line in `dirty` per reuse), then exit 75 for the first
         `busy` launches (or while `gate` does not exist), else run `then` and write a result.
         """
         script = (
@@ -88,7 +89,8 @@ class GpuBusyTest(Env):
         job = self.wait_state(j, "succeeded", timeout=30)
         self.assertNotIn("pending_reason", job)
         self.assertEqual(self.count(), 3)
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, "dirty")))  # fresh workdir
+        # The workdir is reused: launches 2 and 3 saw the file launch 1 left behind.
+        self.assertEqual(self.read(os.path.join(self.tmp, "dirty")), "dirty\ndirty\n")
         r = self.runner(j)
         self.assertEqual(self.get(r, "gpu_busy_retries"), 2)
         self.assertIsNotNone(self.get(r, "last_gpu_busy_at"))
@@ -184,7 +186,8 @@ class GpuBusyTest(Env):
             self.read(os.path.join(jd, "stdout.log")).splitlines(),
             ["launch 1", "--- taskmgr: launch after requeue (GPU busy) ---", "launch 2"],
         )
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, "dirty")))
+        # The requeued job keeps its workdir too: launch 2 saw launch 1's file.
+        self.assertEqual(self.read(os.path.join(self.tmp, "dirty")), "dirty\n")
 
     def test_shim_crash_right_after_a_busy_exit_requeues(self) -> None:
         # The shim dies after recording exit 75, before it writes the waiting state. The

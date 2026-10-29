@@ -90,13 +90,14 @@ for this. Instead the task reports it:
 
 - Exit code **75** (`EX_TEMPFAIL`, `taskmgr_task.GPU_BUSY_EXIT_CODE`) from the entry
   process means "I could not get the GPU and did no work; start me again later". The
-  shim then waits `gpu_retry_interval_seconds` (default 2) and starts the entry again
-  in a fresh copy of the package (logs are appended, with a separator line). The job
+  shim then waits `gpu_retry_interval_seconds` (default 1) and starts the entry again
+  in the same workdir (logs are appended, with a separator line). The job
   stays `running`, keeps its GPUs, and `task jobs` shows it as `pending (gpu busy)`.
   Waiting does not count toward `timeout_seconds`; each launch is timed from its own start.
   `task cancel` works while it waits.
-- Exit 75 before producing side effects (files outside the workdir, results); the workdir
-  of a busy launch is thrown away.
+- Exit 75 before producing side effects (files outside the workdir, results). The workdir
+  is kept: a relaunch sees the files the previous launch left there (e.g. a compiled
+  binary), so anything written before the exit 75 must be safe to reuse.
 - Never exit 75 for any other reason: such a task is started again forever, until it is
   cancelled. The server can turn the convention off (`gpu_busy_exit_code: null`), and
   then 75 is an ordinary failure.

@@ -87,11 +87,12 @@ GPU 服务器运行在 Exclusive_Process 计算模式下，taskmgr 之外的进�
 这块 GPU 上创建 CUDA context。taskmgr 不为此查询 nvidia-smi，而是由任务自己报告：
 
 - 入口进程以 **75**（`EX_TEMPFAIL`，即 `taskmgr_task.GPU_BUSY_EXIT_CODE`）退出，表示"拿不到
-  GPU，没有做任何工作，稍后再启动我"。shim 等待 `gpu_retry_interval_seconds`（默认 2 秒）后，在
-  一份全新的包副本中重新启动入口命令（日志追加写入，并加一行分隔）。作业保持 `running`，继续占用
+  GPU，没有做任何工作，稍后再启动我"。shim 等待 `gpu_retry_interval_seconds`（默认 1 秒）后，在
+  同一个 workdir 中重新启动入口命令（日志追加写入，并加一行分隔）。作业保持 `running`，继续占用
   它的 GPU，`task jobs` 显示为 `pending (gpu busy)`。等待时间不计入 `timeout_seconds`，每次启动
   都从自己的启动时刻计时。等待期间可以 `task cancel`。
-- 在产生任何副作用（workdir 之外的文件、结果）之前退出 75；GPU 忙的那次启动的 workdir 会被丢弃。
+- 在产生任何副作用（workdir 之外的文件、结果）之前退出 75。workdir 会保留：重新启动时能看到上一次
+  启动留下的文件（例如编译好的二进制），所以退出 75 之前写下的东西必须可以直接复用。
 - 不要因为其他原因退出 75：这样的任务会被一直重新启动，直到被取消。服务器可以关闭这个约定
   （`gpu_busy_exit_code: null`），此时 75 就是普通的失败。
 - `taskmgr_task.claim_gpu()`（模板的 `run.py` 第一步就调用它）：`CUDA_VISIBLE_DEVICES` 为空或未
