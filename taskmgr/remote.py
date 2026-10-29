@@ -309,7 +309,7 @@ def cmd_logs(store, args):
         runner, _ = store.read_runner(adir)
         ended = (isinstance(runner, dict) and runner.get("final")) \
             or job["state"] in TERMINAL_STATES or job["state"] == "unknown" \
-            or job.get("current_attempt") != n
+            or job.get("current_attempt") not in (None, n)
         if ended:
             if f is None:
                 try:

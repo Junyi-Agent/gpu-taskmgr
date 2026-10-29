@@ -171,6 +171,7 @@ def run(store, jobid, n, lock_fd):
     os.close(rfd)
     os.close(out_fd)
     os.close(err_fd)
+    _crash_point("before_identity")
     leader_start = procutil.start_time(pid)
     runner.update({
         "boot_id": procutil.boot_id(),

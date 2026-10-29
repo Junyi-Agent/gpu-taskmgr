@@ -27,6 +27,9 @@ class GroupStopper:
         self.alive = []
 
     def _kill(self, sig):
+        # TASKMGR_TEST_IGNORE_KILL: test-only, simulates processes that survive SIGKILL.
+        if os.environ.get("TASKMGR_TEST_IGNORE_KILL") == "1":
+            return
         try:
             os.killpg(self.pgid, sig)
         except (ProcessLookupError, PermissionError):
@@ -141,6 +144,8 @@ def assess(store, jobid, resolve=False):
     try:
         stop_reason = job.get("stop_reason") if state in ("stopping", "unknown") else None
         exited = bool(runner.get("exited"))
+        if stop_reason is None and job.get("cancel_requested") and not exited:
+            stop_reason = "cancel"  # a cancel request stays effective across restarts
         if not exited and not _has_identity(runner):
             if runner.get("pgid") is None and runner.get("boot_id") is None:
                 j = requeue_or_end_interrupted(store, jobid, n, "entry command never started")

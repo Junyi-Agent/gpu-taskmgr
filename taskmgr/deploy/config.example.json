@@ -1,0 +1,10 @@
+{
+  "max_package_bytes": 1073741824,
+  "max_cpu_jobs": null,
+  "max_auto_restarts": 2,
+  "stop_grace_seconds": 30,
+  "kill_confirm_seconds": 10,
+  "control_poll_seconds": 2,
+  "scheduler_poll_seconds": 1,
+  "base_env": {}
+}

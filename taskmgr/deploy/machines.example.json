@@ -1,0 +1,32 @@
+{
+  "servers": [
+    {
+      "name": "nebius-h200-1",
+      "enabled": true,
+      "transport": "ssh",
+      "ssh": {"host": "10.0.0.11", "user": "tuner", "port": 22,
+              "identity_file": "~/.ssh/id_ed25519",
+              "options": ["-o", "ServerAliveInterval=15", "-o", "ConnectTimeout=10"]},
+      "remote_root": "/data/taskmgr",
+      "remote_command": "/opt/taskmgr/bin/taskmgr-remote"
+    },
+    {
+      "name": "nebius-h200-2",
+      "enabled": true,
+      "transport": "ssh",
+      "ssh": {"host": "10.0.0.12", "user": "tuner", "port": 22,
+              "identity_file": "~/.ssh/id_ed25519",
+              "options": ["-o", "ServerAliveInterval=15"]},
+      "remote_root": "/data/taskmgr",
+      "remote_command": "/opt/taskmgr/bin/taskmgr-remote"
+    },
+    {
+      "name": "nebius-h200-3",
+      "enabled": false,
+      "transport": "ssh",
+      "ssh": {"host": "10.0.0.13", "user": "tuner"},
+      "remote_root": "/data/taskmgr",
+      "remote_command": "/opt/taskmgr/bin/taskmgr-remote"
+    }
+  ]
+}

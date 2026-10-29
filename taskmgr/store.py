@@ -216,7 +216,16 @@ def read_task_result(workdir, own=None):
     return obj, verrs, warnings
 
 
+def final_attempt_dir(adir, status):
+    """Where the attempt directory lives once the job is in `status` (done/ for terminal)."""
+    jobdir = os.path.dirname(os.path.dirname(adir))
+    root = os.path.dirname(os.path.dirname(jobdir))
+    return os.path.join(root, STATE_DIRS.get(status, "in-progress"), os.path.basename(jobdir),
+                        "attempts", os.path.basename(adir))
+
+
 def build_meta(job, runner, adir, status, validation_errors, error, warnings):
+    adir = final_attempt_dir(adir, status)
     workdir = os.path.join(adir, "workdir")
     return {
         "jobid": job["jobid"],

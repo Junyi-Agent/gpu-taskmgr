@@ -1,0 +1,24 @@
+# systemd unit for the taskmgr scheduler daemon.
+#
+# KillMode=process: `systemctl stop/restart` signals only the daemon's main process.
+# Shims (one per attempt) run in their own sessions and must keep running, and with
+# the default KillMode=control-group systemd would kill them and every task because
+# they are still in this unit's cgroup. The daemon handles SIGTERM by exiting without
+# touching shims or tasks; on start it recovers state (Section 12.2).
+[Unit]
+Description=taskmgr remote scheduler daemon
+After=network.target local-fs.target
+
+[Service]
+Type=simple
+User=tuner
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/taskmgr/bin/taskmgr-remote --root /data/taskmgr serve
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
