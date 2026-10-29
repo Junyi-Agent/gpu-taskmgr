@@ -172,8 +172,8 @@ stopping → unknown, so the shim never goes running → unknown.
 
 ## D13. Deployment (§17)
 
-- We may not have root on the GPU servers, so the default deployment is a **systemd user
-  service** (`deploy/taskmgr-remote.user.service`) under the account that owns the jobs,
+- We assume an unprivileged user on the GPU servers, so the only deployment is a **systemd
+  user service** (`deploy/taskmgr-remote.user.service`) under the account that owns the jobs,
   with code in `~/taskmgr` and `remote_root` in `~/taskmgr-root` (or local scratch disk if
   `$HOME` is on NFS). The machine list uses absolute paths, because `~` is not expanded.
 - Lingering is required: `loginctl enable-linger "$USER"`. Without it the user manager
@@ -181,11 +181,11 @@ stopping → unknown, so the shim never goes running → unknown.
   nothing starts at boot. Enabling it may need an admin once, depending on the host's
   polkit policy; that is the only step that may need root. logind must not have
   `KillUserProcesses=yes`.
-- Both units use `KillMode=process`; the alternative was `systemd-run --user --scope` per
+- The unit uses `KillMode=process`; the alternative was `systemd-run --user --scope` per
   shim. `KillMode=process` needs no D-Bus access from the daemon, and the daemon stays a
   plain process that also runs under tmux or nohup.
-- `deploy/taskmgr-remote.service` (system unit) remains for hosts where root is
-  available.
+- No system-level unit is shipped (an earlier `deploy/taskmgr-remote.service` was
+  removed): nothing in taskmgr needs root.
 - The daemon exits on SIGTERM without touching shims and logs to stderr (journald) and to
   `daemon/daemon.log`.
 

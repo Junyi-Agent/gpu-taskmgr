@@ -63,8 +63,8 @@ taskmgr/
   common.py       常量、原子 JSON 写入、flock 辅助函数
   template/       任务包模板（`task init`），含 taskmgr_task.py
   examples/       succeed/（EX-01，仅 CPU）和 multi-gpu/（MG-01，gpus [0, 1]）
-  deploy/         taskmgr-remote.user.service（默认）、taskmgr-remote.service（需 root）、
-                  machines.example.json、config.example.json
+  deploy/         taskmgr-remote.user.service（systemd 用户 unit）、machines.example.json、
+                  config.example.json
   tests/          unittest 测试套件：python -m unittest discover -s taskmgr/tests
 bin/task, bin/taskmgr-remote   从源码目录直接运行的包装脚本
 docs/            文档（英文 *.md，中文 *.zh-CN.md）

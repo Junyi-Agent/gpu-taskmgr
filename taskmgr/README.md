@@ -66,8 +66,8 @@ taskmgr/
   common.py       constants, atomic JSON writes, flock helpers
   template/       package template (`task init`) incl. taskmgr_task.py
   examples/       succeed/ (EX-01, CPU-only) and multi-gpu/ (MG-01, gpus [0, 1])
-  deploy/         taskmgr-remote.user.service (default), taskmgr-remote.service (root),
-                  machines.example.json, config.example.json
+  deploy/         taskmgr-remote.user.service (systemd user unit), machines.example.json,
+                  config.example.json
   tests/          unittest suite: python -m unittest discover -s taskmgr/tests
 bin/task, bin/taskmgr-remote   wrappers that run from a checkout
 docs/            documentation (English *.md, Chinese *.zh-CN.md)

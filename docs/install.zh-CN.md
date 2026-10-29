@@ -82,9 +82,6 @@ serve > /dev/null 2>&1 &`；停止时执行 `kill <pid>`（pid 记录在 `locks/
 
 在同一个 root 上再启动一个 `serve` 会以退出码 2 结束（它拿不到 `locks/daemon.lock`）。
 
-如果主机上有 root 权限，可以使用等价的系统级 unit `deploy/taskmgr-remote.service`（放到
-`/etc/systemd/system/`，`User=tuner`，执行 `sudo systemctl enable --now taskmgr-remote`）。
-
 ## 远程 `config.json`
 
 位于 `<remote_root>/config.json`，所有键都是可选的。

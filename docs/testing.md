@@ -34,7 +34,7 @@ orphaned task processes must be reaped.
 | `TASKMGR_TEST_IGNORE_KILL=1` | stop procedure sends no signals (unconfirmed stop) |
 | `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` sleeps while holding the upload lock |
 
-The systemd behaviour is tested by checking `KillMode=process` in both units and by stopping
+The systemd behaviour is tested by checking `KillMode=process` in the user unit and by stopping
 the daemon with SIGTERM to its whole process group: shim and task keep running and the
 real exit code is recorded.
 

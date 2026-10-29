@@ -86,10 +86,6 @@ also runs outside systemd (tmux, nohup): `nohup ~/taskmgr/bin/taskmgr-remote --r
 
 A second `serve` on the same root exits with code 2 (it cannot take `locks/daemon.lock`).
 
-On hosts where you do have root, `deploy/taskmgr-remote.service` is the equivalent system
-unit (`/etc/systemd/system/`, `User=tuner`, `sudo systemctl enable --now
-taskmgr-remote`).
-
 ## Remote `config.json`
 
 `<remote_root>/config.json`; every key is optional.

@@ -34,7 +34,7 @@ docker run --rm --init -v "$PWD":/src -w /src python:3.11-slim \
 | `TASKMGR_TEST_IGNORE_KILL=1` | 停止流程不发送任何信号（模拟停止无法确认） |
 | `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` 在持有上传锁时休眠 |
 
-systemd 相关行为的测试方式：检查两个 unit 中都有 `KillMode=process`，并向守护进程的整个进程组
+systemd 相关行为的测试方式：检查用户 unit 中有 `KillMode=process`，并向守护进程的整个进程组
 发送 SIGTERM 来停止它，验证 shim 和任务继续运行，且记录下真实退出码。
 
 ## 可选：使用真实 SSH 的冒烟测试
