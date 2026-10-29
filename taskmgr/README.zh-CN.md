@@ -10,26 +10,67 @@
 
 ## 快速开始
 
+下面用 `gpu1` 代表 GPU 服务器的 ssh 地址（例如 `tuner@10.0.0.12`），`tuner` 代表服务器上的用户名。
+整个过程不需要 root。
+
+**1. 本机：安装 CLI**
+
 ```sh
-# 本地
-uv tool install --editable /path/to/gpu-taskmgr
-mkdir -p ~/.taskmgr && cp taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
+uv tool install --editable /path/to/gpu-taskmgr     # 提供 task 命令
+```
 
-# 远程（无需 root，以自己的用户在 GPU 服务器上执行），详见 docs/install.zh-CN.md
-#   先从本机把代码传过去（仓库是私有的）：
-#   git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
+**2. 本机 → 服务器：把代码拷贝到服务器的 `~/taskmgr`**
+
+在本机的仓库根目录执行。`git archive` 只打包已提交的文件（不含 `.venv`、`.git`），通过 ssh 解压到
+服务器的 `~/taskmgr`。服务器上不需要 git 凭据。以后更新代码时重新执行这一条即可。
+
+```sh
+git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
+```
+
+**3. 服务器：安装并启动 systemd 用户服务**
+
+先 `ssh gpu1` 登录服务器，然后执行：
+
+```sh
 mkdir -p ~/taskmgr-root ~/.config/systemd/user
+cp ~/taskmgr/taskmgr/deploy/config.example.json ~/taskmgr-root/config.json        # 远程配置
 cp ~/taskmgr/taskmgr/deploy/taskmgr-remote.user.service \
-   ~/.config/systemd/user/taskmgr-remote.service
-systemctl --user daemon-reload
-systemctl --user enable --now taskmgr-remote && loginctl enable-linger "$USER"
+   ~/.config/systemd/user/taskmgr-remote.service                                 # 用户级 unit
+systemctl --user daemon-reload                     # 让 systemd 读到新 unit
+systemctl --user enable --now taskmgr-remote       # 立即启动，并随用户管理器自启
+loginctl enable-linger "$USER"                     # 开机启动、注销后不退出（被拒绝时需管理员执行一次）
+systemctl --user status taskmgr-remote             # 确认 active (running)
+```
 
-# 使用
-task init AA-01                      # 填写所有 <REQUIRED...> 标记
+unit 里写死了路径 `%h/taskmgr/bin/taskmgr-remote` 和 `--root %h/taskmgr-root`，所以第 2 步必须拷到
+`~/taskmgr`。`$HOME` 在 NFS 上时要改用本地磁盘，见 [[docs/install.zh-CN]]。
+
+**4. 本机：登记这台服务器**
+
+```sh
+mkdir -p ~/.taskmgr
+cp /path/to/gpu-taskmgr/taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
+```
+
+编辑 `~/.taskmgr/machines.json`，每台服务器一项。路径要写绝对路径（不能用 `~`）：
+
+```json
+{"servers": [{"name": "gpu1", "enabled": true, "transport": "ssh",
+              "ssh": {"host": "10.0.0.12", "user": "tuner"},
+              "remote_root": "/home/tuner/taskmgr-root",
+              "remote_command": "/home/tuner/taskmgr/bin/taskmgr-remote"}]}
+```
+
+**5. 使用**
+
+```sh
+task hosts                           # 确认机器列表
+task init AA-01                      # 生成模板；填写所有 <REQUIRED...> 标记
 task validate AA-01/
 task submit AA-01/                   # 输出 {"host", "jobid", ...}
 task status <jobid> --wait
-task fetch <jobid> --host <host> --output ./results/
+task fetch <jobid> --host gpu1 --output ./results/
 ```
 
 ## 文档

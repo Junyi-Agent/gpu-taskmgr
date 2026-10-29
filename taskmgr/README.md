@@ -11,26 +11,69 @@ Spec: [[agent/desc-1.md]]. Design decisions: [[agent/desc-2.md]].
 
 ## Quick start
 
+Below, `gpu1` stands for the GPU server's ssh address (e.g. `tuner@10.0.0.12`) and `tuner`
+for your user name on it. No step needs root.
+
+**1. Your machine: install the CLI**
+
 ```sh
-# local
-uv tool install --editable /path/to/gpu-taskmgr
-mkdir -p ~/.taskmgr && cp taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
+uv tool install --editable /path/to/gpu-taskmgr     # provides the `task` command
+```
 
-# remote (no root, run on the GPU server as your user), details in docs/install.md
-#   ship the code from your machine (the repo is private):
-#   git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
+**2. Your machine → server: copy the code to `~/taskmgr` on the server**
+
+Run this in the repository root on your machine. `git archive` packs only committed files
+(no `.venv`, no `.git`) and ssh unpacks them into `~/taskmgr` on the server, so the server
+needs no git credentials. Run it again to update the code.
+
+```sh
+git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
+```
+
+**3. Server: install and start the systemd user service**
+
+`ssh gpu1`, then:
+
+```sh
 mkdir -p ~/taskmgr-root ~/.config/systemd/user
+cp ~/taskmgr/taskmgr/deploy/config.example.json ~/taskmgr-root/config.json        # remote config
 cp ~/taskmgr/taskmgr/deploy/taskmgr-remote.user.service \
-   ~/.config/systemd/user/taskmgr-remote.service
-systemctl --user daemon-reload
-systemctl --user enable --now taskmgr-remote && loginctl enable-linger "$USER"
+   ~/.config/systemd/user/taskmgr-remote.service                                 # user unit
+systemctl --user daemon-reload                     # make systemd see the new unit
+systemctl --user enable --now taskmgr-remote       # start now and with the user manager
+loginctl enable-linger "$USER"                     # start at boot, survive logout (may need an admin once)
+systemctl --user status taskmgr-remote             # should be active (running)
+```
 
-# use
-task init AA-01                      # fill every <REQUIRED...> marker
+The unit hard-codes `%h/taskmgr/bin/taskmgr-remote` and `--root %h/taskmgr-root`, which is
+why step 2 copies to `~/taskmgr`. If `$HOME` is on NFS, use local disk instead; see
+[[docs/install]].
+
+**4. Your machine: register the server**
+
+```sh
+mkdir -p ~/.taskmgr
+cp /path/to/gpu-taskmgr/taskmgr/deploy/machines.example.json ~/.taskmgr/machines.json
+```
+
+Edit `~/.taskmgr/machines.json`, one entry per server, with absolute paths (no `~`):
+
+```json
+{"servers": [{"name": "gpu1", "enabled": true, "transport": "ssh",
+              "ssh": {"host": "10.0.0.12", "user": "tuner"},
+              "remote_root": "/home/tuner/taskmgr-root",
+              "remote_command": "/home/tuner/taskmgr/bin/taskmgr-remote"}]}
+```
+
+**5. Use it**
+
+```sh
+task hosts                           # check the machine list
+task init AA-01                      # template; fill every <REQUIRED...> marker
 task validate AA-01/
 task submit AA-01/                   # prints {"host", "jobid", ...}
 task status <jobid> --wait
-task fetch <jobid> --host <host> --output ./results/
+task fetch <jobid> --host gpu1 --output ./results/
 ```
 
 ## Documentation
