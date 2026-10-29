@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "{{TASK_ID}}",
+  "entry": {"argv": ["python3", "run.py"]},
+  "gpus": "<REQUIRED: JSON array of nvidia-smi GPU indices or full GPU UUIDs, e.g. [0, 1]; use [] for a CPU-only task>",
+  "environment": {
+    "venv": "<REQUIRED: absolute path of the remote venv, e.g. /opt/venvs/tune; delete the venv key if none>",
+    "required_paths": []
+  },
+  "env": {},
+  "timeout_seconds": 7200,
+  "result": {"required_outputs": ["<REQUIRED: keys run.py must put in outputs, e.g. best_config>"]}
+}

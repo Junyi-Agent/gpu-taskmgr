@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "task_id": "MG-01",
+  "entry": {"argv": ["python3", "run.py"]},
+  "gpus": [0, 1],
+  "env": {"NCCL_DEBUG": "WARN"},
+  "timeout_seconds": 600,
+  "result": {"required_outputs": ["devices", "device_count"]}
+}
