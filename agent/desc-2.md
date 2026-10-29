@@ -2,7 +2,7 @@
 title: taskmgr design decisions (supplement to desc-1)
 date: 2026-10-30
 supplements: "[[desc-1]]"
-implementation: "[[taskmgr/README.md]]"
+implementation: "[[taskmgr/README]]"
 tags: [taskmgr, design, decisions]
 ---
 
@@ -11,7 +11,8 @@ tags: [taskmgr, design, decisions]
 This document adds to [[desc-1]]. It records the decisions the first implementation made
 where desc-1 leaves room, and the reason for each. Section numbers in parentheses refer to
 desc-1. If this document and desc-1 conflict, desc-1 wins and the code should be fixed.
-User-facing details (commands, schemas, config defaults) are in [[taskmgr/README.md]].
+User-facing details (commands, schemas, config defaults) are in [[taskmgr/README]] and
+`docs/` ([[docs/usage]], [[docs/task-package]], [[docs/install]], ...).
 
 ## D1. Code layout (§1, §17)
 
@@ -212,4 +213,4 @@ stopping → unknown, so the shim never goes running → unknown.
 - No MIG support. Use of a GPU by processes outside taskmgr is not detected.
 - `remote_root` must be on a local filesystem.
 - An automatic re-run starts from the original package, with no checkpoint resume.
-- Not yet run against real SSH or real GPUs; see the smoke test in [[taskmgr/README.md]].
+- Not yet run against real SSH or real GPUs; see the smoke test in [[docs/testing]].
