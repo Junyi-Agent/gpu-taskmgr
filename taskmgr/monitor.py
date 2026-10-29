@@ -13,7 +13,7 @@ from typing import Literal, TypedDict, cast
 from . import procutil
 from .common import TERMINAL_STATES, try_flock_fd, try_read_json, utcnow_iso
 from .records import Job, JsonDict, JsonValue, Runner
-from .store import Store, finalize_attempt, load_task, requeue_or_end_interrupted
+from .store import Store, finalize_run, interrupt_run, load_task
 
 STOP_OUTCOME = {"cancel": "cancelled", "timeout": "timed_out"}
 
@@ -102,11 +102,11 @@ class GroupStopper:
         return None
 
 
-def set_stopping(store: Store, jobid: str, n: int, reason: str) -> bool:
+def set_stopping(store: Store, jobid: str, reason: str) -> bool:
     """Persist running -> stopping with the stop reason. Returns False if not applicable."""
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
-        if job.get("current_attempt") != n or job["state"] not in ("running", "stopping"):
+        if job["state"] not in ("running", "stopping"):
             return False
         if job["state"] == "running" or job.get("stop_reason") != reason:
             job["state"] = "stopping"
@@ -118,26 +118,23 @@ def set_stopping(store: Store, jobid: str, n: int, reason: str) -> bool:
 def mark_unknown(
     store: Store,
     jobid: str,
-    n: int | None,
     kind: str,
     message: str,
     details: object = None,
 ) -> Job:
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
-        if job.get("current_attempt") != n or job["state"] not in ("running", "stopping"):
+        if job["state"] not in ("running", "stopping"):
             return job
-        if n is not None:  # a job without a current attempt has no runner.json to annotate
-            adir = store.attempt_dir(jobdir, n)
-            runner, _ = store.read_runner(adir)
-            if runner is not None:
-                runner["unknown"] = {
-                    "kind": kind,
-                    "message": message,
-                    "details": cast(JsonValue, details),  # passed through to JSON
-                    "at": utcnow_iso(),
-                }
-                store.write_runner(adir, runner)
+        runner, _ = store.read_runner(jobdir)
+        if runner is not None:
+            runner["unknown"] = {
+                "kind": kind,
+                "message": message,
+                "details": cast(JsonValue, details),  # passed through to JSON
+                "at": utcnow_iso(),
+            }
+            store.write_runner(jobdir, runner)
         job["state"] = "unknown"
         job["error"] = {"kind": kind, "message": message}
         _ = store.save_job(jobdir, job)
@@ -168,25 +165,26 @@ def _has_identity(runner: Runner) -> bool:
     )
 
 
+def may_have_started(runner: Runner) -> bool:
+    """False only if the record proves the entry command never ran (Section 12.1)."""
+    return runner.get("pgid") is not None or runner.get("boot_id") is not None
+
+
 def finish_stopped(
     store: Store,
     jobid: str,
-    n: int,
     stop_reason: str | None,
     exited: bool,
     warnings: Iterable[str] = (),
 ) -> Job:
     """Finalize once the process group is confirmed gone."""
     if stop_reason in STOP_OUTCOME:
-        return finalize_attempt(
-            store, jobid, n, status=STOP_OUTCOME[stop_reason], warnings=warnings
-        )
+        return finalize_run(store, jobid, status=STOP_OUTCOME[stop_reason], warnings=warnings)
     if exited:
-        return finalize_attempt(store, jobid, n, warnings=warnings)
-    return finalize_attempt(
+        return finalize_run(store, jobid, warnings=warnings)
+    return finalize_run(
         store,
         jobid,
-        n,
         status="failed",
         warnings=warnings,
         error={
@@ -206,26 +204,22 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
     state = job["state"]
     if state == "queued" or state in TERMINAL_STATES:
         return {"decision": "none", "state": state}
-    n = job.get("current_attempt")
-    if n is None:
-        _ = mark_unknown(store, jobid, n, "record_incomplete", "job has no current attempt")
-        return {"decision": "unknown", "reason": "record_incomplete"}
-    adir = store.attempt_dir(jobdir, n)
-    runner, err = store.read_runner(adir)
+    runner, err = store.read_runner(jobdir)
     if runner is None:
         if not resolve:
-            _ = mark_unknown(store, jobid, n, "record_incomplete", "runner.json is %s" % err)
+            _ = mark_unknown(store, jobid, "record_incomplete", "runner.json is %s" % err)
         return {"decision": "unknown", "reason": "runner.json is %s" % err}
 
     if runner.get("final"):
         if runner.get("status") == "interrupted":
-            j = requeue_or_end_interrupted(store, jobid, n, runner.get("interrupted_reason", ""))
+            j = interrupt_run(store, jobid, runner.get("interrupted_reason", ""))
         else:
-            j = finalize_attempt(store, jobid, n)
+            j = finalize_run(store, jobid)
         return {"decision": "restored", "state": j["state"]}
 
-    lock_fd = try_flock_fd(os.path.join(adir, "shim.lock"))
-    if lock_fd is None and os.path.exists(os.path.join(adir, "shim.lock")):
+    lock_path = os.path.join(jobdir, "shim.lock")
+    lock_fd = try_flock_fd(lock_path)
+    if lock_fd is None and os.path.exists(lock_path):
         return {"decision": "shim_alive", "identity": identity_of(runner)}
     keep_fd = False
     try:
@@ -238,11 +232,11 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             # turns into cancelled once the stop is confirmed (Section 13.2).
             stop_reason = "cancel"
         if not exited and not _has_identity(runner):
-            if runner.get("pgid") is None and runner.get("boot_id") is None:
-                j = requeue_or_end_interrupted(store, jobid, n, "entry command never started")
+            if not may_have_started(runner):
+                j = interrupt_run(store, jobid, "entry command never started")
                 return {"decision": "interrupted", "state": j["state"]}
             if not resolve:
-                _ = mark_unknown(store, jobid, n, "record_incomplete", "identity record incomplete")
+                _ = mark_unknown(store, jobid, "record_incomplete", "identity record incomplete")
             return {
                 "decision": "unknown",
                 "reason": "identity record incomplete",
@@ -252,7 +246,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             current_boot = procutil.boot_id()
         except OSError as e:
             if not resolve:
-                _ = mark_unknown(store, jobid, n, "undeterminable", "cannot read boot_id: %s" % e)
+                _ = mark_unknown(store, jobid, "undeterminable", "cannot read boot_id: %s" % e)
             return {
                 "decision": "unknown",
                 "reason": "cannot read boot_id",
@@ -260,16 +254,16 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             }
         if runner.get("boot_id") != current_boot:
             if exited:
-                j = finish_stopped(store, jobid, n, stop_reason, True)
+                j = finish_stopped(store, jobid, stop_reason, True)
                 return {"decision": "finalized", "state": j["state"]}
-            j = requeue_or_end_interrupted(store, jobid, n, "machine rebooted")
+            j = interrupt_run(store, jobid, "machine rebooted")
             return {"decision": "interrupted", "state": j["state"]}
         pgid, leader_start = _group_identity(runner)
         try:
             members = procutil.group_members(pgid, leader_start)
         except procutil.ProcUnavailable as e:
             if not resolve:
-                _ = mark_unknown(store, jobid, n, "undeterminable", "cannot read /proc: %s" % e)
+                _ = mark_unknown(store, jobid, "undeterminable", "cannot read /proc: %s" % e)
             return {
                 "decision": "unknown",
                 "reason": "cannot read /proc",
@@ -279,7 +273,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             warnings: list[str] = []
             if "leftover" in (job.get("stop_reason"), runner.get("stop_unconfirmed_reason")):
                 warnings = ["leftover_processes"]
-            j = finish_stopped(store, jobid, n, stop_reason, exited, warnings)
+            j = finish_stopped(store, jobid, stop_reason, exited, warnings)
             return {"decision": "finalized", "state": j["state"]}
         if resolve:
             if runner.get("stop_unconfirmed_reason"):
@@ -290,7 +284,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
                     "identity": identity_of(runner),
                 }
             # The unknown came from an undeterminable check that can now be decided:
-            # hand the attempt back to the daemon, which takes over tracking (case 4.4).
+            # hand the run back to the daemon, which takes over tracking (case 4.4).
             with store.state_lock():
                 jobdir, job = store.load_job(jobid)
                 job["state"] = "stopping" if job.get("stop_reason") else "running"
@@ -302,7 +296,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
                 "identity": identity_of(runner),
             }
         keep_fd = True
-        tk = Takeover(store, jobid, n, runner, lock_fd, exited, job)
+        tk = Takeover(store, jobid, jobdir, runner, lock_fd, exited, job)
         return {"decision": "takeover", "takeover": tk, "alive_pids": members}
     finally:
         if lock_fd is not None and not keep_fd:
@@ -320,13 +314,13 @@ def _group_identity(runner: Runner) -> tuple[int, int]:
 
 
 class Takeover:
-    """Daemon-side tracking of an attempt whose shim died while the task lives on."""
+    """Daemon-side tracking of a run whose shim died while the task lives on."""
 
     def __init__(
         self,
         store: Store,
         jobid: str,
-        n: int,
+        jobdir: str,
         runner: Runner,
         lock_fd: int | None,
         exited: bool,
@@ -334,18 +328,13 @@ class Takeover:
     ) -> None:
         self.store: Store = store
         self.jobid: str = jobid
-        self.n: int = n
         self.lock_fd: int | None = lock_fd
         self.pgid: int
         self.min_start: int
         self.pgid, self.min_start = _group_identity(runner)
         self.exited: bool = exited
         self.started_epoch: float | None = runner.get("started_at_epoch")
-        self.timeout: float | None = load_task(
-            os.path.dirname(
-                os.path.dirname(store.attempt_dir(cast(str, store.find_job_dir(jobid)), n))
-            )
-        ).get("timeout_seconds")
+        self.timeout: float | None = load_task(jobdir).get("timeout_seconds")
         self.stop_reason: str | None = (
             job.get("stop_reason") if job["state"] == "stopping" else None
         )
@@ -365,17 +354,21 @@ class Takeover:
         elif self.stop_reason:
             self._begin_stop(self.stop_reason)
 
+    def _jobdir(self) -> str:
+        # The directory stays in in-progress/ while the job runs, but look it up anyway.
+        return cast(str, self.store.find_job_dir(self.jobid))
+
     def _note(self) -> None:
-        adir = self.store.attempt_dir(cast(str, self.store.find_job_dir(self.jobid)), self.n)
-        runner, _ = self.store.read_runner(adir)
+        jobdir = self._jobdir()
+        runner, _ = self.store.read_runner(jobdir)
         if runner is not None:
             runner.setdefault("takeovers", []).append({"at": utcnow_iso(), "by_pid": os.getpid()})
-            self.store.write_runner(adir, runner)
+            self.store.write_runner(jobdir, runner)
 
     def _begin_stop(self, reason: str) -> None:
         self.stop_reason = reason
         if reason in STOP_OUTCOME:
-            _ = set_stopping(self.store, self.jobid, self.n, reason)
+            _ = set_stopping(self.store, self.jobid, reason)
         self.stopper = GroupStopper(self.pgid, self.min_start, self.grace, self.confirm)
         self.stopper.start()
 
@@ -391,18 +384,13 @@ class Takeover:
         try:
             if self.stopper is None:
                 if not procutil.group_members(self.pgid, self.min_start):
-                    _ = finish_stopped(
-                        self.store, self.jobid, self.n, None, self.exited, self.warnings
-                    )
+                    _ = finish_stopped(self.store, self.jobid, None, self.exited, self.warnings)
                     return self.close()
                 now = time.monotonic()
                 if now - self.last_poll >= self.poll:
                     self.last_poll = now
                     _, job = self.store.load_job(self.jobid)
-                    if (
-                        job["state"] not in ("running", "stopping")
-                        or job.get("current_attempt") != self.n
-                    ):
+                    if job["state"] not in ("running", "stopping"):
                         return self.close()
                     if job.get("cancel_requested"):
                         self._begin_stop("cancel")
@@ -416,34 +404,31 @@ class Takeover:
             r = self.stopper.step()
             if r == "stopped":
                 _ = finish_stopped(
-                    self.store, self.jobid, self.n, self.stop_reason, self.exited, self.warnings
+                    self.store, self.jobid, self.stop_reason, self.exited, self.warnings
                 )
                 self.close()
             elif r == "unconfirmed":
                 self._record_unconfirmed()
                 self.close()
         except procutil.ProcUnavailable as e:
-            _ = mark_unknown(
-                self.store, self.jobid, self.n, "undeterminable", "cannot read /proc: %s" % e
-            )
+            _ = mark_unknown(self.store, self.jobid, "undeterminable", "cannot read /proc: %s" % e)
             self.close()
 
     def _record_unconfirmed(self) -> None:
-        adir = self.store.attempt_dir(cast(str, self.store.find_job_dir(self.jobid)), self.n)
-        runner, _ = self.store.read_runner(adir)
+        jobdir = self._jobdir()
+        runner, _ = self.store.read_runner(jobdir)
         if runner is not None:
             runner["stop_unconfirmed_reason"] = self.stop_reason
-            self.store.write_runner(adir, runner)
+            self.store.write_runner(jobdir, runner)
         _ = mark_unknown(
             self.store,
             self.jobid,
-            self.n,
             "stop_unconfirmed",
             "processes still alive after SIGKILL",
             {"alive_pids": self.stopper.alive if self.stopper else []},
         )
 
 
-def runner_status_snapshot(adir: str) -> JsonValue:
-    runner, _ = try_read_json(os.path.join(adir, "runner.json"))
+def runner_status_snapshot(jobdir: str) -> JsonValue:
+    runner, _ = try_read_json(os.path.join(jobdir, "runner.json"))
     return runner

@@ -34,7 +34,7 @@ Other language: [[docs/task-package.zh-CN]]
 
 - `task_id` matches `^[A-Z]{2}-[0-9]{2,4}$`.
 - `entry.argv[0]`: contains `/` → path (relative = package file, resolved against the
-  attempt workdir, must be executable); otherwise a command name looked up on the entry
+  job's workdir, must be executable); otherwise a command name looked up on the entry
   process PATH on the remote side. No shell is involved; use `["bash", "-c", "..."]`.
 - `gpus`: nvidia-smi indices (PCI bus order) or full `GPU-...` UUIDs; `[]` = no GPU. MIG
   UUIDs and duplicates (also an index and a UUID naming the same GPU) are rejected.
@@ -48,11 +48,11 @@ group has exited):
 
 ```json
 {"schema_version": 1, "outputs": {...}, "<other business keys>": "...",
- "_taskmgr": {"jobid", "task_id", "attempt", "host", "gpus": [{"declared", "uuid"}],
+ "_taskmgr": {"jobid", "task_id", "retry_of", "host", "gpus": [{"declared", "uuid"}],
               "status", "return_code", "signal", "started_at", "ended_at",
               "validation_errors": [], "error": {"kind", "message"} | null,
               "warnings": ["task_wrote_taskmgr" | "leftover_processes"],
-              "paths": {"attempt_dir", "workdir", "stdout", "stderr", "shim_log",
+              "paths": {"job_dir", "workdir", "stdout", "stderr", "shim_log",
                         "progress", "result", "artifacts"},
               "final": true}}
 ```
@@ -63,6 +63,7 @@ is kept as `result.json.corrupt` and reported in `validation_errors`; a task-wri
 `_taskmgr` is dropped with warning `task_wrote_taskmgr`.
 
 `error.kind` values: `setup`, `shim_start_failed`, `exit_code`, `signal`, `exit_code_lost`,
+`interrupted` (the run was cut off and an automatic re-run was created),
 `too_many_interruptions`, `operator_marked_stopped`, `stop_unconfirmed` (job in unknown),
 `record_incomplete` / `undeterminable` (unknown after recovery).
 
@@ -73,7 +74,10 @@ is kept as `result.json.corrupt` and reported in `validation_errors`; a task-wri
 2. With `environment.venv`: `VIRTUAL_ENV=<venv>`, `PATH=<venv>/bin:$PATH`.
 3. `env` from `task.json`.
 4. Runner: `CUDA_DEVICE_ORDER=PCI_BUS_ID`, `CUDA_VISIBLE_DEVICES=<uuids in declaration
-   order>` (empty string for `[]`), `TASKMGR_JOBID`, `TASKMGR_TASK_ID`, `TASKMGR_ATTEMPT`,
+   order>` (empty string for `[]`), `TASKMGR_JOBID`, `TASKMGR_TASK_ID`,
    `TASKMGR_WORKDIR`, `TASKMGR_PROGRESS_FILE`, `TASKMGR_RESULT_FILE`.
 
-stdin is `/dev/null`; stdout/stderr go to `stdout.log` / `stderr.log` of the attempt.
+stdin is `/dev/null`; stdout/stderr go to `stdout.log` / `stderr.log` in the job directory.
+
+A job runs once. `retry_of` is the jobid this job re-runs (`task retry` or an automatic
+re-run after an interruption), `null` for a submission.

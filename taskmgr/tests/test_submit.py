@@ -177,15 +177,24 @@ class SubmitTest(Env):
         self.assertEqual(
             self.get(cast(JsonValue, json.loads(p.stdout)), "error", "code"), "protocol_mismatch"
         )
-        self.assertEqual(self.get(cast(JsonValue, json.loads(p.stdout)), "protocol_version"), 1)
+        self.assertEqual(self.get(cast(JsonValue, json.loads(p.stdout)), "protocol_version"), 2)
+        # Protocol 1 (attempt-based) clients and remotes are rejected in both directions.
+        for verb in (["jobs"], ["retry", "0123456789abcdef"], ["logs", "0123456789abcdef"]):
+            rc, out, err = self.remote("--protocol-version", "1", *verb)
+            self.assertEqual(rc, 2, verb)
+            self.assertIn("protocol_mismatch", "%s %s" % (out, err))
         rc, out, _ = self.task(
-            "status", "0123456789abcdef", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "2"}
+            "status", "0123456789abcdef", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "1"}
         )
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "protocol_mismatch")
+        rc, out, _ = self.task(
+            "retry", "0123456789abcdef", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "1"}
+        )
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "protocol_mismatch"))
         pkg = self.make_pkg()
         rc, out, _ = self.task(
-            "submit", "--host", "s1", pkg, env={"TASKMGR_TEST_PROTOCOL_VERSION": "2"}
+            "submit", "--host", "s1", pkg, env={"TASKMGR_TEST_PROTOCOL_VERSION": "1"}
         )
         self.assertEqual(rc, 2)
         self.assertEqual(os.listdir(self.root()), ["config.json"])  # never reached receive

@@ -324,22 +324,29 @@ class Env(unittest.TestCase):
     def job(self, jobid: str, name: str = "s1") -> Job:
         return cast(Job, self._read_obj(os.path.join(self.job_dir(jobid, name), "job.json")))
 
-    def runner(self, jobid: str, n: int = 1, name: str = "s1") -> Runner:
-        return cast(
-            Runner,
-            self._read_obj(
-                os.path.join(self.job_dir(jobid, name), "attempts", "%04d" % n, "runner.json")
-            ),
+    def runner(self, jobid: str, name: str = "s1") -> Runner:
+        return cast(Runner, self._read_obj(os.path.join(self.job_dir(jobid, name), "runner.json")))
+
+    def result(self, jobid: str, name: str = "s1") -> JsonDict:
+        return self.obj(
+            self._read_obj(os.path.join(self.job_dir(jobid, name), "workdir", "result.json"))
         )
 
-    def result(self, jobid: str, n: int = 1, name: str = "s1") -> JsonDict:
-        return self.obj(
-            self._read_obj(
-                os.path.join(
-                    self.job_dir(jobid, name), "attempts", "%04d" % n, "workdir", "result.json"
-                )
-            )
-        )
+    def jobids(self, name: str = "s1") -> set[str]:
+        """Every jobid that has a directory on the server."""
+        return {
+            j
+            for d in ("queue", "in-progress", "done")
+            if os.path.isdir(os.path.join(self.root(name), d))
+            for j in os.listdir(os.path.join(self.root(name), d))
+        }
+
+    def chain(self, jobid: str, name: str = "s1") -> list[str]:
+        """jobid followed by its automatic / manual re-runs (the last of `retried_as`)."""
+        out = [jobid]
+        while self.job(out[-1], name)["retried_as"]:
+            out.append(self.job(out[-1], name)["retried_as"][-1])
+        return out
 
     def _read_obj(self, path: str) -> object:
         with open(path) as f:
@@ -379,17 +386,15 @@ class Env(unittest.TestCase):
         _ = self.wait_for(check, timeout, "job %s to reach %s" % (jobid, states))
         return self.job(jobid, name)
 
-    def wait_runner(
-        self, jobid: str, key: str, n: int = 1, name: str = "s1", timeout: float = 30
-    ) -> Runner:
+    def wait_runner(self, jobid: str, key: str, name: str = "s1", timeout: float = 30) -> Runner:
         def check() -> bool:
             try:
-                return self.obj(self.runner(jobid, n, name)).get(key) is not None
+                return self.obj(self.runner(jobid, name)).get(key) is not None
             except (OSError, ValueError, TypeError):
                 return False
 
         _ = self.wait_for(check, timeout, "runner.%s of %s" % (key, jobid))
-        return self.runner(jobid, n, name)
+        return self.runner(jobid, name)
 
     # -- typed access to parsed JSON ------------------------------------------
     def get(self, x: object, *path: str | int) -> JsonValue:

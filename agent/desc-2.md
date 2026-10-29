@@ -21,12 +21,12 @@ User-facing details (commands, schemas, config defaults) are in [[taskmgr/README
 | `taskmgr/taskmgr.py` | local CLI entry (`task`) |
 | `taskmgr/remote.py` | remote entry (`taskmgr-remote`): subcommands, `serve`, `shim` |
 | `taskmgr/daemon.py` | scheduler loop, shim spawn, startup recovery, dead-shim detection |
-| `taskmgr/shim.py` | per-attempt supervisor |
+| `taskmgr/shim.py` | per-run supervisor (one run per job, see D16) |
 | `taskmgr/monitor.py` | stop procedure, recovery check (§12.2), takeover tracker |
 | `taskmgr/store.py` | remote root, state lock, job/runner records, result merge, finalization |
 | `taskmgr/package.py` | validation, deterministic packing, content hash, safe extraction |
 
-The shim is the same program as the remote CLI (`taskmgr-remote shim <jobid> <n>`), so a
+The shim is the same program as the remote CLI (`taskmgr-remote shim <jobid> --lock-fd N`), so a
 server has one installation and one version of the code.
 
 ## D2. Shim start: double fork and lock handover (§1.1, §9.3, §12.2)
@@ -34,7 +34,7 @@ server has one installation and one version of the code.
 - The daemon forks, the child calls `setsid()` and forks again, and the grandchild execs the
   shim. The intermediate child exits at once, so the shim is reparented to init and is not
   the daemon's child.
-- Before forking, the daemon creates `attempts/NNNN/shim.lock` and takes the flock itself.
+- Before forking, the daemon creates `<jobid>/shim.lock` and takes the flock itself.
   The locked fd is inherited by the shim (`--lock-fd N`), and the daemon then closes its copy.
   *Reason:* if the shim had to take the lock itself, the daemon could see an unlocked
   `shim.lock` between spawn and lock and conclude that the shim was dead.
@@ -55,7 +55,7 @@ next daemon restart.
 Takeover is a non-blocking state machine (`monitor.Takeover`) that advances on each
 daemon tick through watch → SIGTERM sent → SIGKILL sent. A blocking stop procedure would
 stall scheduling for up to `stop_grace_seconds + kill_confirm_seconds`. While tracking, the
-daemon holds the attempt's `shim.lock`. The timeout during takeover is measured by wall
+daemon holds the job's `shim.lock`. The timeout during takeover is measured by wall
 clock from `runner.json.started_at_epoch`, because the shim's monotonic clock is gone.
 
 ## D5. Cancel only writes `cancel_requested` (§13.2, §8.2)
@@ -101,8 +101,8 @@ stopping → unknown, so the shim never goes running → unknown.
   original jobid even if the machine's GPUs or nvidia-smi changed in the meantime.
 - Under the state lock, the key mapping is written before the rename into `queue/`. A
   mapping whose job directory does not exist is treated as stale and overwritten.
-- Before the ACK, the extracted `package/` is synced to disk (`os.sync()`), because every
-  attempt starts from it.
+- Before the ACK, the extracted `package/` is synced to disk (`os.sync()`), because the run
+  starts from it.
 - The upload takes a blocking flock on its own incoming directory.
 - `package/` files and directories are made read-only.
 - The local CLI treats ssh exit status 255 as a connection error and runs ssh with
@@ -129,16 +129,16 @@ stopping → unknown, so the shim never goes running → unknown.
   recovery can regenerate `result.json` from it.
 - Warnings found in finalization steps 2–3 are written to `runner.json` before
   `result.json` is written, so a shim crash in between does not lose them.
-- On re-finalization, a `_taskmgr` block that was written for the same jobid and attempt is
+- On re-finalization, a `_taskmgr` block that was written for the same jobid is
   recognized as the runner's own and does not trigger `task_wrote_taskmgr`.
 - A corrupt `result.json` is renamed to `result.json.corrupt`, or to `.corrupt.N` if the
   task already created a file with that name.
-- `_taskmgr.paths` point to the attempt's final location (`done/...`). While the job runs,
+- `_taskmgr.paths` point to the job's final location (`done/...`). While the job runs,
   `TASKMGR_WORKDIR` and the other paths point to `in-progress/...`, because the directory
   moves when the job ends.
 - `_taskmgr.host` is the remote hostname.
 - `error.kind` values: `setup`, `shim_start_failed`, `exit_code`, `signal`,
-  `exit_code_lost`, `too_many_interruptions`, `operator_marked_stopped`,
+  `exit_code_lost`, `interrupted` (D16), `too_many_interruptions`, `operator_marked_stopped`,
   `stop_unconfirmed`, `record_incomplete`, `undeterminable`.
 
 ## D11. Scheduling (§7.2)
@@ -147,8 +147,6 @@ stopping → unknown, so the shim never goes running → unknown.
   stopping, and unknown states.
 - An extra config key, `scheduler_poll_seconds` (default 1), sets how often the scheduler
   runs a pass.
-- A new attempt's number is `max(len(attempts), existing attempt dirs) + 1`, so a crash
-  that leaves an orphan attempt directory never causes reuse of that number.
 
 ## D12. CLI output (§14, §16)
 
@@ -157,21 +155,20 @@ stopping → unknown, so the shim never goes running → unknown.
   This departs from §16 ("all commands except logs print one JSON object"); user decision
   2026-10-30. Exit codes are unchanged; in table mode errors go to stderr only.
 
-- `task status` on a finished job prints `result.json` with two top-level keys added:
-  `host` and `complete`. A job that ended without any attempt (cancelled while queued)
-  prints a synthesized `{"schema_version", "_taskmgr"}`.
+- `task status` on a finished job prints `result.json` with top-level keys added: `host`
+  and `complete` (and, since D16, `retry_of` and `retried_as`). A job that ended without
+  running (cancelled while queued) prints a synthesized `{"schema_version", "_taskmgr"}`.
 - If `--wait --timeout` expires, the CLI prints the current status with
   `error.code = "wait_timeout"` and exits 2. The deadline also applies while connection
   failures are being retried.
 - Ctrl-C prints an `interrupted` error and exits 2. Unexpected exceptions print
   `internal_error` and exit 2. For `logs`, errors go to stderr only.
 - Protocol compatibility means the integer `protocol_version` values are equal (currently
-  1).
-- `logs --follow` ends when the attempt is final, the job is terminal or unknown, or a
-  newer attempt has replaced it.
+  2, see D16).
+- `logs --follow` ends when the run is final or the job is terminal or unknown.
 - `fetch` skips unsafe entries that a task created (absolute or escaping symlinks, special
   files), warns about them, and lists them in `skipped`. Files that change or disappear
-  during the walk of a running attempt are skipped, and temporary `.tmp-*` files are
+  during the walk of a running job are skipped, and temporary `.tmp-*` files are
   excluded.
 - `jobs` deduplicates by jobid if a concurrent directory move shows a job twice.
 
@@ -218,4 +215,44 @@ stopping → unknown, so the shim never goes running → unknown.
 - No MIG support. Use of a GPU by processes outside taskmgr is not detected.
 - `remote_root` must be on a local filesystem.
 - An automatic re-run starts from the original package, with no checkpoint resume.
+- Job directories written by protocol 1 (`attempts/NNNN/`) are not migrated (D16).
 - Not yet run against real SSH or real GPUs; see the smoke test in [[docs/testing]].
+
+## D16. No attempts; retry is a new job (§3.2, §9.1, §9.2, §10.3, §12.2, §13.4, §14, §15)
+
+User decision 2026-10-30. A job runs at most once; every re-run is a separate job. This
+section overrides desc-1 where they conflict (the general rule above, "desc-1 wins", does
+not apply to it).
+
+| desc-1 | Now | Reason |
+| --- | --- | --- |
+| §9.1 job dir has `attempts/NNNN/` with `runner.json`, `shim.lock`, logs, `workdir/`; job.json keeps an attempt list | these files sit directly in `<jobid>/`; job.json drops `attempts`, `current_attempt`, `retries` and gains `dispatched_at`, `retry_of`, `retried_as`; runner.json drops `attempt` | user decision 2026-10-30 |
+| §9.2 each attempt gets a fresh workdir and keeps its own history | each job has one workdir; history is kept because a re-run is a new job with its own directory | user decision 2026-10-30 |
+| §10.3 `_taskmgr.attempt` | `_taskmgr.retry_of` (jobid or null); `paths.job_dir` replaces `paths.attempt_dir` | user decision 2026-10-30 |
+| §3.2 `TASKMGR_ATTEMPT` | removed | user decision 2026-10-30 |
+| §12.2 step 5: the job returns to queued (same `enqueue_seq`); a new attempt runs | the interrupted job ends `failed` with `error.kind = "interrupted"`; a new job (same package, GPUs, task_id, submission key, `enqueue_seq`; `auto_restarts` + 1; `retry_of` = old) is created and the old job's `retried_as` lists it. `cancel_requested` → cancelled and the `max_auto_restarts` limit (`too_many_interruptions`) are unchanged | user decision 2026-10-30 |
+| §13.4 `task retry` requeues the same job (new `enqueue_seq`, counters reset) | `task retry` creates a new job at the back of the queue (`auto_restarts` 0, `retry_of` = old) and prints its jobid; the old job keeps its terminal state; unknown → `resolve_required`, other non-terminal → `not_terminal` as before | user decision 2026-10-30 |
+| §6 the submission key maps to the job | unchanged: it keeps mapping to the original job, also after retries | user decision 2026-10-30 |
+| §14.1 job list items have `attempt` | items have `retry_of` and `retried_as`; the `task jobs` table has no attempt column | user decision 2026-10-30 |
+| §14.2 status shows the current attempt | non-terminal status has `run` (the run record summary) instead of `attempt`; both forms add `retry_of` and `retried_as` | user decision 2026-10-30 |
+| §14.3 `--wait` waits for the given job | `--wait` follows an automatic re-run (a job that ended with `error.kind = "interrupted"` and has `retried_as`) and reports the job it ends on, with a note on stderr; manual retries are not followed | user decision 2026-10-30 |
+| §15 `logs`/`fetch` take `--attempt N` / `--all-attempts`; fetch target `<output>/<host>/<jobid>/attempts/<NNNN>/` | no attempt options; fetch downloads `job.json`, `runner.json`, the logs and `workdir/` to `<output>/<host>/<jobid>/`; a job that never ran → `no_run` (exit 2) | user decision 2026-10-30 |
+| protocol version 1 | 2; protocol-1 clients and remotes are rejected with `protocol_mismatch` | user decision 2026-10-30 (arguments and outputs changed) |
+
+Implementation notes:
+
+- `store.clone_job` builds the new job under `incoming/retry-<jobid>/` (copies of
+  `package.tar.gz` and `package/`, synced) and renames it into `queue/` under the state
+  lock, then appends the new jobid to the old job's `retried_as`. Both `task retry` and
+  recovery use it.
+- Recovery idempotency: a crash after the re-run job was created but before the
+  interrupted job was saved is repaired on the next check, which finds the job whose
+  `retry_of` is the interrupted job and reuses it instead of creating a second one.
+- Checks that used `current_attempt == n` now check the job state; the run of a job is
+  unique.
+- Dispatch of a queued job that already has a `runner.json` (crash between the two dispatch
+  writes): without an execution identity it is overwritten and the job dispatched; with one
+  the job becomes `unknown` (`record_incomplete`) and keeps its GPUs.
+- A retry or re-run job gets its own `submitted_at` (creation time).
+- Protocol-1 job directories on a server are not migrated; drain the server and start the
+  upgraded daemon on an empty `remote_root`.

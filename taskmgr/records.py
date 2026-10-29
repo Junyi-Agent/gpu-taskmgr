@@ -19,7 +19,6 @@ else:  # runtime stays stdlib-only; typing.override only exists from Python 3.12
 
 
 __all__ = [
-    "AttemptEntry",
     "ErrorInfo",
     "GpuDecl",
     "Job",
@@ -62,18 +61,6 @@ class ErrorInfo(_ErrorBase, total=False):
     details: JsonValue
 
 
-class _AttemptEntryBase(TypedDict):
-    attempt: int
-    status: str
-
-
-class AttemptEntry(_AttemptEntryBase, total=False):
-    """An item of job.json `attempts`."""
-
-    dispatched_at: str
-    ended_at: str | None
-
-
 class _JobBase(TypedDict):
     schema_version: int
     jobid: str
@@ -87,15 +74,16 @@ class _JobBase(TypedDict):
     gpus: list[GpuDecl]
     cancel_requested: bool
     auto_restarts: int
-    attempts: list[AttemptEntry]
-    current_attempt: int | None
+    dispatched_at: str | None
+    retry_of: str | None
+    retried_as: list[str]
     stop_reason: str | None
     error: ErrorInfo | None
-    retries: int
 
 
 class Job(_JobBase, total=False):
-    """job.json."""
+    """job.json. A job runs at most once; `task retry` and automatic re-runs create a new
+    job linked through `retry_of` / `retried_as`."""
 
     ended_at: str | None
 
@@ -115,7 +103,7 @@ class UnknownNote(TypedDict):
 class _TaskmgrMetaBase(TypedDict):
     jobid: str
     task_id: str
-    attempt: int | None
+    retry_of: str | None
     gpus: list[GpuDecl]
     status: str
     return_code: int | None
@@ -137,14 +125,13 @@ class TaskmgrMeta(_TaskmgrMetaBase, total=False):
 
 
 class _RunnerBase(TypedDict):
-    attempt: int
+    jobid: str
 
 
 class Runner(_RunnerBase, total=False):
-    """runner.json: written step by step, so every key except `attempt` is optional."""
+    """runner.json: written step by step, so every key except `jobid` is optional."""
 
     schema_version: int
-    jobid: str
     status: str
     gpus: list[GpuDecl]
     dispatched_at: str

@@ -22,25 +22,26 @@ up: "[[taskmgr/README.zh-CN]]"
 5. 对 running 作业执行 `task cancel` 只设置 `cancel_requested`；shim（或接管期间的守护进程）在
    `control_poll_seconds` 内把它转为 `stopping`。入口进程退出之后才到达的取消请求不改变其结果。
    入口启动前就被发现的取消请求，按 running → stopping → cancelled 结束，入口命令不会执行。
-6. 对已结束的作业，`task status` 输出 `result.json`，并在顶层额外加两个键 `host` 和
-   `complete`。没有任何 attempt 就结束的作业（在 queued 时被取消）输出一个合成的
+6. 对已结束的作业，`task status` 输出 `result.json`，并在顶层额外加上 `host`、`complete`、
+   `retry_of` 和 `retried_as`。没有运行就结束的作业（在 queued 时被取消）输出一个合成的
    `{"schema_version", "_taskmgr": {...}}`。
 7. `--wait --timeout` 超时后输出当前状态对象，并附带 `error`（`wait_timeout`），退出码 2。
    Ctrl-C 输出 `interrupted` 错误，退出码 2。
-8. 协议兼容指 `protocol_version` 整数相等（当前为 1）。ssh 退出码 255 视为连接失败；ssh 以
-   `BatchMode=yes` 运行。
+8. 协议兼容指 `protocol_version` 整数相等（当前为 2；1 是基于 attempt 的旧协议）。ssh 退出码
+   255 视为连接失败；ssh 以 `BatchMode=yes` 运行。
 9. 入口退出后清理残留进程时，作业转为 `stopping`，`stop_reason: "leftover"`；停止得到确认后按
    真实退出码收尾，未得到确认则作业进入 `unknown`（与取消/超时相同）。
 10. `resolve` 时进程组仍有存活成员：如果 unknown 是因为检查无法判断（`/proc` 不可读、记录
     不完整）造成的，作业回到 running/stopping，由守护进程接管跟踪（情况 4.4）。如果 SIGKILL
     已经失败过（设置了 `stop_unconfirmed_reason`），作业保持 unknown，交给运维人员处理。对
     unknown 作业记录的取消请求，在停止得到确认后使作业变为 cancelled。
-11. `_taskmgr.paths` 指向 attempt 的最终位置（`done/...`）；运行期间 `TASKMGR_WORKDIR` 等变量
+11. `_taskmgr.paths` 指向作业的最终位置（`done/...`）；运行期间 `TASKMGR_WORKDIR` 等变量
     指向 `in-progress/...`（作业结束时目录会移动）。
-12. `logs --follow` 在以下情况结束：attempt 已 final、作业进入终态或 unknown、或被更新的
-    attempt 取代。
+12. `logs --follow` 在以下情况结束：运行记录已 final、作业进入终态或 unknown；对 queued 作业
+    先等待它被派发。
 13. `fetch` 会跳过不安全的条目（任务创建的绝对路径或越界符号链接、特殊文件），打印警告并在
-    `skipped` 中列出；下载内容包含 `shim.lock`。
+    `skipped` 中列出。下载 `job.json`、`runner.json`、三个日志和 `workdir/`，不含 `package/`、
+    `package.tar.gz` 和 `shim.lock`。
 14. `max_cpu_jobs` 统计处于 running、stopping 和 unknown 的仅 CPU 作业。
 15. jobid 唯一性针对该服务器上所有作业目录检查。`receive` 在解包和计算哈希后、解析 GPU 和校验
     之前，就对已知的 submission key 作出响应（去重或冲突），因此即使机器上的 GPU 发生了变化，
@@ -48,6 +49,9 @@ up: "[[taskmgr/README.zh-CN]]"
     用 `.corrupt.N`）。
 16. `_taskmgr.host` 是远程机器的主机名。
 17. 额外的配置键 `scheduler_poll_seconds`；额外的命令 `task hosts`。
+18. 重试或自动重跑的作业有自己的 `submitted_at`（创建时间），所以 `task jobs` 把它列为单独一行，
+    排在被重跑的作业之后。它沿用旧作业已解析的 GPU UUID，不重新校验。queued 作业如果已经有带执行身份的
+    `runner.json`（不应出现），它变为 `unknown`，`error.kind = "record_incomplete"`，不派发。
 
 ## 限制
 

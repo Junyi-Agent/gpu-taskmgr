@@ -63,10 +63,9 @@ class SchedTest(Env):
         # Fixture: put u into unknown holding GPU 0 (as after an unconfirmed stop).
         jd = self.job_dir(u)
         job = self.job(u)
-        job.update({"state": "unknown", "current_attempt": 1})
-        os.makedirs(os.path.join(jd, "attempts", "0001"))
-        with open(os.path.join(jd, "attempts", "0001", "runner.json"), "w") as f:
-            json.dump({"attempt": 1, "final": False, "exited": False}, f)
+        job.update({"state": "unknown", "dispatched_at": "2026-10-29T08:00:00Z"})
+        with open(os.path.join(jd, "runner.json"), "w") as f:
+            json.dump({"jobid": u, "final": False, "exited": False}, f)
         with open(os.path.join(jd, "job.json"), "w") as f:
             json.dump(job, f)
         os.rename(jd, os.path.join(self.root(), "in-progress", u))
@@ -134,5 +133,7 @@ class SchedTest(Env):
         for j in ids:
             _ = self.wait_state(j, "succeeded", timeout=60)
             job = self.job(j)
-            self.assertEqual(len(job["attempts"]), 1, job)
-            self.assertEqual(os.listdir(os.path.join(self.job_dir(j), "attempts")), ["0001"])
+            self.assertEqual(job["retried_as"], [], job)
+            self.assertIsNotNone(job["dispatched_at"], job)
+            self.assertEqual(self.get(self.runner(j), "jobid"), j)
+        self.assertEqual(self.jobids(), set(ids))  # each job ran once, nothing was cloned

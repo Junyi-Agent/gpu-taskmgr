@@ -60,10 +60,8 @@ class Args(argparse.Namespace):
     timeout: float | None = None
     as_: str | None = None
     confirm: str | None = None
-    attempt: int | None = None
     stream: str = "stdout"
     follow: bool = False
-    all_attempts: bool = False
     detail: bool = False
     color: str = "auto"
 
@@ -552,25 +550,38 @@ def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
 
 
 def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, object]:
+    j = _obj(st["job"])
     if st["terminal"]:
         out: dict[str, object] = dict(_obj(st["result"]))
         out["host"] = host
         out["complete"] = complete
+        out["retry_of"] = j.get("retry_of")
+        out["retried_as"] = j.get("retried_as", [])
         return out
-    j = _obj(st["job"])
     return {
         "host": host,
         "jobid": j["jobid"],
         "task_id": j["task_id"],
         "state": j["state"],
         "cancel_requested": j["cancel_requested"],
-        "attempt": st.get("attempt_info"),
+        "run": st.get("run"),
         "progress": st.get("progress"),
         "submitted_at": j["submitted_at"],
         "gpus": j["gpus"],
         "error": j.get("error"),
+        "retry_of": j.get("retry_of"),
+        "retried_as": j.get("retried_as", []),
         "complete": complete,
     }
+
+
+def automatic_rerun(job: JsonDict) -> str | None:
+    """The jobid of the automatic re-run of an interrupted job, if it has one."""
+    err, later = job.get("error"), job.get("retried_as")
+    if isinstance(err, dict) and err.get("kind") == "interrupted" and isinstance(later, list):
+        if later and isinstance(later[-1], str):
+            return later[-1]
+    return None
 
 
 def locate(args: Args, servers: list[Server]) -> tuple[Server, JsonDict, bool]:
@@ -620,6 +631,7 @@ def cmd_status(args: Args) -> CmdResult:
 
 
 def wait_status(args: Args, servers: list[Server]) -> CmdResult:
+    jobid: str = args.jobid  # changes when the wait follows an automatic re-run
     t_start = time.monotonic()
     deadline: float | None = t_start + args.timeout if args.timeout is not None else None
     fail_since: float | None = None
@@ -631,11 +643,11 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
             if server is None:
                 server, st, complete = locate(args, servers)
             else:
-                st = Remote(server).call(["status", args.jobid])
+                st = Remote(server).call(["status", jobid])
                 if not st.get("found"):
                     raise TaskmgrError(
                         "not_found",
-                        "job %s disappeared from %s" % (args.jobid, server["name"]),
+                        "job %s disappeared from %s" % (jobid, server["name"]),
                         2,
                         server["name"],
                     )
@@ -669,13 +681,20 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
                 else max(0.0, min(args.poll_interval, deadline - now))
             )
             continue
-        state = _obj(st["job"])["state"]
+        job = _obj(st["job"])
+        state = job["state"]
         if st["terminal"]:
+            rerun = automatic_rerun(job)
+            if rerun is not None:
+                # Section 12.2 step 5: the re-run is a new job; keep waiting on it.
+                eprint("job %s was interrupted; following automatic re-run %s" % (jobid, rerun))
+                jobid = rerun
+                continue
             out = render_status(server["name"], st, complete)
             return out, (0 if state == "succeeded" else 1)
         if state == "unknown":
             out = render_status(server["name"], st, complete)
-            eprint("job %s is in the unknown state; see `task resolve`" % args.jobid)
+            eprint("job %s is in the unknown state; see `task resolve`" % jobid)
             return out, 3
         if deadline is not None and time.monotonic() >= deadline:
             out = render_status(server["name"], st, complete)
@@ -732,8 +751,6 @@ def cmd_logs(args: Args) -> CmdResult:
     servers = load_machines(home_dir(args))
     server = find_server(servers, args.host)
     rargs: list[object] = ["logs", args.jobid, "--stream", args.stream]
-    if args.attempt is not None:
-        rargs += ["--attempt", args.attempt]
     if args.follow:
         rargs.append("--follow")
     _ = sys.stdout.flush()
@@ -742,72 +759,49 @@ def cmd_logs(args: Args) -> CmdResult:
 
 
 def cmd_fetch(args: Args) -> CmdResult:
-    if args.attempt is not None and args.all_attempts:
-        raise TaskmgrError("bad_args", "--attempt and --all-attempts are mutually exclusive")
     servers = load_machines(home_dir(args))
     server = find_server(servers, args.host)
     remote = Remote(server)
-    st = remote.call(["status", args.jobid])
-    if not st.get("found"):
-        raise TaskmgrError(
-            "not_found", "job %s not found on %s" % (args.jobid, args.host), 2, args.host
-        )
-    have = _arr(st.get("attempts", []))
-    nums: list[JsonValue]
-    if args.all_attempts:
-        nums = have
-    elif args.attempt is not None:
-        if args.attempt not in have:
-            raise TaskmgrError("no_such_attempt", "attempt %d does not exist" % args.attempt)
-        nums = [args.attempt]
-    else:
-        cur = _obj(st["job"]).get("attempt")
-        nums = [cur] if cur else have[-1:]
-    if not nums:
-        raise TaskmgrError("no_attempt", "job %s has no attempt to fetch" % args.jobid)
-    output = args.output
-    assert output is not None  # --output is required for fetch
     host: str = server["name"]
     jobid: str = args.jobid
-    base = os.path.join(os.path.abspath(output), host, jobid)
-    targets: dict[JsonValue, str] = {n: os.path.join(base, "attempts", "%04d" % n) for n in nums}
-    existing = [t for t in targets.values() if os.path.lexists(t)]
-    if existing:
-        raise TaskmgrError("exists", "target directory already exists: %s" % ", ".join(existing))
+    st = remote.call(["status", jobid])
+    if not st.get("found"):
+        raise TaskmgrError("not_found", "job %s not found on %s" % (jobid, host), 2, host)
+    state = _obj(st["job"])["state"]
+    if not st.get("has_run"):
+        raise TaskmgrError(
+            "no_run", "job %s has not run (%s); nothing to fetch" % (jobid, state), 2, host
+        )
+    output = args.output
+    assert output is not None  # --output is required for fetch
+    parent = os.path.join(os.path.abspath(output), host)
+    target = os.path.join(parent, jobid)
+    if os.path.lexists(target):
+        raise TaskmgrError("exists", "target directory already exists: %s" % target)
     partial = not st["terminal"]
     if partial:
-        eprint(
-            "warning: job %s is %s; fetched results may be incomplete"
-            % (args.jobid, _obj(st["job"])["state"])
-        )
-    os.makedirs(os.path.join(base, "attempts"), exist_ok=True)
-    staging = tempfile.mkdtemp(prefix=".fetch-", dir=base)
+        eprint("warning: job %s is %s; fetched results may be incomplete" % (jobid, state))
+    os.makedirs(parent, exist_ok=True)
+    staging = tempfile.mkdtemp(prefix=".fetch-", dir=parent)
     try:
         tar_path = os.path.join(staging, "stream.tar.gz")
-        rargs: list[object] = ["fetch", args.jobid]
-        rargs += ["--all-attempts"] if args.all_attempts else ["--attempt", nums[0]]
         with open(tar_path, "wb") as f:
-            _ = remote.stream(rargs, f)
-        skipped = package.safe_extract(tar_path, os.path.join(staging, "x"), skip_unsafe=True)
+            _ = remote.stream(["fetch", jobid], f)
+        extracted = os.path.join(staging, "x")
+        skipped = package.safe_extract(tar_path, extracted, skip_unsafe=True)
         for s in skipped:
             eprint("warning: skipped unsafe entry %s (%s)" % (s["path"], s["reason"]))
-        fetched: list[dict[str, object]] = []
-        for n, t in targets.items():
-            src = os.path.join(staging, "x", "attempts", "%04d" % n)
-            if not os.path.isdir(src):
-                continue
-            if os.path.lexists(t):
-                raise TaskmgrError("exists", "target directory already exists: %s" % t)
-            os.rename(src, t)
-            fetched.append({"attempt": n, "path": t})
+        if os.path.lexists(target):
+            raise TaskmgrError("exists", "target directory already exists: %s" % target)
+        os.rename(extracted, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return {
-        "host": server["name"],
-        "jobid": args.jobid,
-        "state": _obj(st["job"])["state"],
+        "host": host,
+        "jobid": jobid,
+        "state": state,
         "partial": partial,
-        "attempts": fetched,
+        "path": target,
         "skipped": skipped,
     }, 0
 
@@ -873,15 +867,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("logs")
     _ = s.add_argument("jobid")
     _ = s.add_argument("--host", required=True)
-    _ = s.add_argument("--attempt", type=int)
     _ = s.add_argument("--stream", choices=("stdout", "stderr", "shim"), default="stdout")
     _ = s.add_argument("--follow", action="store_true")
     s = sub.add_parser("fetch")
     _ = s.add_argument("jobid")
     _ = s.add_argument("--host", required=True)
     _ = s.add_argument("--output", required=True)
-    _ = s.add_argument("--attempt", type=int)
-    _ = s.add_argument("--all-attempts", action="store_true")
     _ = sub.add_parser("hosts", help="list configured servers")
     return p
 

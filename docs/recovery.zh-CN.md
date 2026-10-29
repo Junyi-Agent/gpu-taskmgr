@@ -28,9 +28,12 @@ up: "[[taskmgr/README.zh-CN]]"
    5. 同一次启动内，没有存活成员 → `failed` / `exit_code_lost`，保留 result.json 中的业务字段；
       如果作业原先处于 stopping（或已请求取消）→ cancelled / timed_out。
    6. 无法判断（`/proc` 不可读、记录损坏或不完整）→ `unknown`。
-5. 重跑：attempt 标记为 `interrupted`；若 `cancel_requested` → cancelled；自动重跑次数已达
-   `max_auto_restarts` → `failed` / `too_many_interruptions`；否则回到 queued 并保留原
-   `enqueue_seq`，下一个 attempt 从 `package/` 重新开始。
+5. 重跑：`runner.json` 标记为 `interrupted`；若 `cancel_requested` → cancelled；
+   `auto_restarts` 已达 `max_auto_restarts` → `failed` / `too_many_interruptions`；否则作业以
+   `failed` 结束，`error.kind = "interrupted"`，并用它的包的副本新建一个作业（自动重试）：新作业
+   保留原 `enqueue_seq`，`auto_restarts` 加 1，`retry_of` 指向被中断的作业，被中断作业的
+   `retried_as` 记下新 jobid。这一步中途崩溃时，会复用已经创建的重跑作业，不会再建第二个。
+   `task status --wait` 会跟随这个重跑作业。
 
 ## 手动处理 `unknown`
 
@@ -47,4 +50,4 @@ up: "[[taskmgr/README.zh-CN]]"
 4. 再执行一次 `task resolve <jobid> --host H`；或者在确认所有进程都已退出后执行
    `task resolve <jobid> --host H --as stopped --confirm <jobid>` → `failed`
    （`operator_marked_stopped`）或 `cancelled`；GPU 被释放，不会自动重跑。
-5. 如需再次运行，执行 `task retry <jobid> --host H`。
+5. 如需再次运行，执行 `task retry <jobid> --host H`（会创建一个新作业）。

@@ -11,7 +11,6 @@ import json
 import os
 import secrets
 import shutil
-import stat
 import sys
 import tarfile
 import time
@@ -34,7 +33,15 @@ from .common import (
 from .gpu import resolve_declarations
 from .monitor import assess, identity_of
 from .records import ErrorInfo, Job, JsonValue, KeyMapping, Runner
-from .store import Store, end_without_result, job_summary, remove_tree
+from .store import (
+    Store,
+    clone_job,
+    end_without_result,
+    has_run,
+    job_summary,
+    make_read_only,
+    remove_tree,
+)
 
 
 class Args(argparse.Namespace):
@@ -50,10 +57,8 @@ class Args(argparse.Namespace):
     jobid: str = ""
     as_: str | None = None
     confirm: str | None = None
-    attempt: int | None = None  # `logs` / `fetch`: optional; `shim`: a required positional
     stream: str = "stdout"
     follow: bool = False
-    all_attempts: bool = False
     lock_fd: int = -1
 
 
@@ -119,8 +124,8 @@ def cmd_receive(store: Store, args: Args) -> int:
         os.rename(root, pkg)
         if os.path.exists(ext):
             remove_tree(ext)
-        _make_read_only(pkg)
-        os.sync()  # package/ is the source of every attempt: durable before the ACK
+        make_read_only(pkg)
+        os.sync()  # package/ is the source of the run: durable before the ACK
         with store.state_lock():
             ack = _dedup_ack(store, key, chash)
             if ack:
@@ -141,11 +146,11 @@ def cmd_receive(store: Store, args: Args) -> int:
                 "gpus": gpus,
                 "cancel_requested": False,
                 "auto_restarts": 0,
-                "attempts": [],
-                "current_attempt": None,
+                "dispatched_at": None,
+                "retry_of": None,
+                "retried_as": [],
                 "stop_reason": None,
                 "error": None,
-                "retries": 0,
             }
             atomic_write_json(os.path.join(updir, "job.json"), job)
             # The key mapping is written first; a mapping whose job does not exist is stale.
@@ -196,15 +201,6 @@ def _dedup_ack(store: Store, key: str, chash: str) -> dict[str, object] | None:
     }
 
 
-def _make_read_only(root: str) -> None:
-    for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
-        for f in filenames:
-            p = os.path.join(dirpath, f)
-            if not os.path.islink(p):
-                os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) & ~0o222)
-        os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) & ~0o222)
-
-
 # ---------------------------------------------------------------------------
 # queries
 
@@ -229,7 +225,7 @@ def synthesized_result(job: Job) -> dict[str, object]:
         "_taskmgr": {
             "jobid": job["jobid"],
             "task_id": job.get("task_id"),
-            "attempt": None,
+            "retry_of": job.get("retry_of"),
             "status": job["state"],
             "return_code": None,
             "signal": None,
@@ -237,7 +233,7 @@ def synthesized_result(job: Job) -> dict[str, object]:
             "gpus": job.get("gpus", []),
             "validation_errors": [],
             "warnings": [],
-            "note": "the job ended without running an attempt",
+            "note": "the job ended without running",
             "final": True,
         },
     }
@@ -254,29 +250,27 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
             return job_status(store, jobid, False)
         raise
     terminal = job["state"] in TERMINAL_STATES
+    ran = has_run(job)
     out: dict[str, object] = {
         "found": True,
         "job": job_summary(job),
-        "attempts": store.existing_attempts(jd),
+        "has_run": ran,
         "terminal": terminal,
     }
-    n = job.get("current_attempt")
-    adir = store.attempt_dir(jd, n) if n else None
     if terminal:
         res: JsonValue = None
-        if adir:
-            res, _ = try_read_json(os.path.join(adir, "workdir", "result.json"))
+        if ran:
+            res, _ = try_read_json(os.path.join(jd, "workdir", "result.json"))
             if not isinstance(res, dict) and _retry:
                 return job_status(store, jobid, False)
         out["result"] = res if isinstance(res, dict) else synthesized_result(job)
         return out
-    if adir:
-        found, _ = store.read_runner(adir)
+    if ran:
+        found, _ = store.read_runner(jd)
         runner: Mapping[str, object] = found or {}
         info: dict[str, object] = {
             k: runner.get(k)
             for k in (
-                "attempt",
                 "status",
                 "dispatched_at",
                 "started_at",
@@ -287,8 +281,8 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
             )
         }
         info["identity"] = identity_of(runner)
-        out["attempt_info"] = info
-        prog, err = try_read_json(os.path.join(adir, "workdir", "progress.json"))
+        out["run"] = info
+        prog, err = try_read_json(os.path.join(jd, "workdir", "progress.json"))
         out["progress"] = (
             prog if prog is not None else (None if err == "missing" else {"error": err})
         )
@@ -311,7 +305,7 @@ def cmd_cancel(store: Store, args: Args) -> int:
             pass
         elif job["state"] == "queued":
             job["cancel_requested"] = True
-            _ = end_without_result(store, jd, job, None, "cancelled", None, None)
+            _ = end_without_result(store, jd, job, "cancelled", None, None)
             changed = True
         elif not job.get("cancel_requested"):
             job["cancel_requested"] = True  # shim / daemon picks it up within control_poll
@@ -339,26 +333,14 @@ def cmd_retry(store: Store, args: Args) -> int:
                 "not_terminal",
                 "job %s is %s; only terminal jobs can be retried" % (args.jobid, job["state"]),
             )
-        job.update(
-            {
-                "state": "queued",
-                "enqueue_seq": store.next_seq(),
-                "cancel_requested": False,
-                "auto_restarts": 0,
-                "error": None,
-                "stop_reason": None,
-                "current_attempt": None,
-                "retries": job.get("retries", 0) + 1,
-                "ended_at": None,
-            }
-        )
-        _ = store.save_job(jd, job)
+        new = clone_job(store, jd, job, automatic=False)
     return emit(
         {
-            "jobid": job["jobid"],
-            "state": "queued",
+            "jobid": new["jobid"],
+            "retry_of": job["jobid"],
+            "state": new["state"],
             "changed": True,
-            "enqueue_seq": job["enqueue_seq"],
+            "enqueue_seq": new["enqueue_seq"],
         }
     )
 
@@ -375,12 +357,10 @@ def cmd_resolve(store: Store, args: Args) -> int:
                 raise TaskmgrError(
                     "not_unknown", "job %s is %s, not unknown" % (args.jobid, job["state"])
                 )
-            n = job.get("current_attempt")
             runner: Runner | None = None
-            if n:
-                adir = store.attempt_dir(jd, n)
-                runner, _ = store.read_runner(adir)
-                runner = runner if runner is not None else {"attempt": n}
+            if has_run(job):
+                runner, _ = store.read_runner(jd)
+                runner = runner if runner is not None else {"jobid": job["jobid"]}
                 runner.update(
                     {
                         "final": True,
@@ -389,19 +369,15 @@ def cmd_resolve(store: Store, args: Args) -> int:
                         "ended_at": runner.get("ended_at") or utcnow_iso(),
                     }
                 )
-                if os.path.isdir(adir):
-                    store.write_runner(adir, runner)
-                for a in job.get("attempts", []):
-                    if a.get("attempt") == n:
-                        a["status"] = "interrupted"
+                store.write_runner(jd, runner)
             if job.get("cancel_requested"):
-                _ = end_without_result(store, jd, job, n, "cancelled", None, runner)
+                _ = end_without_result(store, jd, job, "cancelled", None, runner)
             else:
                 error: ErrorInfo = {
                     "kind": "operator_marked_stopped",
                     "message": "operator confirmed all processes are gone",
                 }
-                _ = end_without_result(store, jd, job, n, "failed", error, runner)
+                _ = end_without_result(store, jd, job, "failed", error, runner)
         return emit({"jobid": args.jobid, "state": job["state"], "changed": True})
     with store.state_lock():
         _, job = store.load_job(args.jobid)
@@ -423,10 +399,7 @@ def cmd_resolve(store: Store, args: Args) -> int:
         out["reason"] = res["reason"]
     if job["state"] == "unknown":
         jd = store.find_job_dir(args.jobid)
-        cur = job.get("current_attempt")
-        runner, _ = (
-            store.read_runner(store.attempt_dir(cast(str, jd), cur)) if cur else (None, None)
-        )
+        runner, _ = store.read_runner(jd) if jd else (None, None)
         out["identity"] = identity_of(runner)
         out["hint"] = (
             "still undecided; check `ps -o pid,pgid,lstart,cmd -g <pgid>` and nvidia-smi, "
@@ -439,36 +412,26 @@ def cmd_resolve(store: Store, args: Args) -> int:
 # logs and fetch (Section 15)
 
 
-def _pick_attempt(store: Store, jd: str, job: Job, attempt: int | None) -> int | None:
-    have = store.existing_attempts(jd)
-    if attempt is not None:
-        if attempt not in have:
-            raise TaskmgrError("no_such_attempt", "attempt %d does not exist" % attempt)
-        return attempt
-    if job.get("current_attempt"):
-        return job["current_attempt"]
-    return have[-1] if have else None
+def _no_run(jobid: str) -> TaskmgrError:
+    return TaskmgrError("no_run", "job %s has not run (nothing to show)" % jobid)
 
 
 def cmd_logs(store: Store, args: Args) -> int:
     jd, job = store.load_job(args.jobid)
-    n = _pick_attempt(store, jd, job, args.attempt)
-    while n is None:
-        if not args.follow or job["state"] in TERMINAL_STATES:
-            raise TaskmgrError("no_attempt", "job %s has no attempt yet" % args.jobid)
-        time.sleep(0.5)
+    while not has_run(job):
+        if not args.follow or job["state"] != "queued":
+            raise _no_run(args.jobid)
+        time.sleep(0.5)  # --follow on a queued job waits until it starts
         jd, job = store.load_job(args.jobid)
-        n = _pick_attempt(store, jd, job, None)
     name = {"stdout": "stdout.log", "stderr": "stderr.log", "shim": "shim.log"}[args.stream]
     out = sys.stdout.buffer
     f: IO[bytes] | None = None
     runner: Runner | None
     while True:
         jd, job = store.load_job(args.jobid)
-        adir = store.attempt_dir(jd, n)
         if f is None:
             try:
-                f = open(os.path.join(adir, name), "rb")
+                f = open(os.path.join(jd, name), "rb")
             except FileNotFoundError:
                 f = None
         if f is not None:
@@ -480,17 +443,16 @@ def cmd_logs(store: Store, args: Args) -> int:
             _ = out.flush()
         if not args.follow:
             return 0
-        runner, _ = store.read_runner(adir)
+        runner, _ = store.read_runner(jd)
         ended = (
             (isinstance(runner, dict) and runner.get("final"))
             or job["state"] in TERMINAL_STATES
             or job["state"] == "unknown"
-            or job.get("current_attempt") not in (None, n)
         )
         if ended:
             if f is None:
                 try:
-                    f = open(os.path.join(adir, name), "rb")
+                    f = open(os.path.join(store.find_job_dir(args.jobid) or jd, name), "rb")
                 except FileNotFoundError:
                     return 0
             _ = out.write(f.read())
@@ -499,20 +461,17 @@ def cmd_logs(store: Store, args: Args) -> int:
         time.sleep(0.5)
 
 
+# What `fetch` downloads from a job directory (not package/, package.tar.gz, shim.lock).
+FETCH_FILES = ("job.json", "runner.json", "stdout.log", "stderr.log", "shim.log", "workdir")
+
+
 def cmd_fetch(store: Store, args: Args) -> int:
     jd, job = store.load_job(args.jobid)
-    have = store.existing_attempts(jd)
-    nums: list[int]
-    if args.all_attempts:
-        nums = have
-    else:
-        n = _pick_attempt(store, jd, job, args.attempt)
-        nums = [n] if n else []
-    if not nums:
-        raise TaskmgrError("no_attempt", "job %s has no attempt to fetch" % args.jobid)
+    if not has_run(job):
+        raise _no_run(args.jobid)
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|gz") as tar:
-        for n in nums:
-            package.add_tree_to_tar(tar, store.attempt_dir(jd, n), "attempts/%04d" % n)
+        for name in FETCH_FILES:
+            package.add_tree_to_tar(tar, os.path.join(jd, name), name)
     _ = sys.stdout.buffer.flush()
     return 0
 
@@ -539,17 +498,13 @@ def build_parser() -> argparse.ArgumentParser:
     _ = s.add_argument("--confirm")
     lg = sub.add_parser("logs")
     _ = lg.add_argument("jobid")
-    _ = lg.add_argument("--attempt", type=int)
     _ = lg.add_argument("--stream", choices=("stdout", "stderr", "shim"), default="stdout")
     _ = lg.add_argument("--follow", action="store_true")
     fe = sub.add_parser("fetch")
     _ = fe.add_argument("jobid")
-    _ = fe.add_argument("--attempt", type=int)
-    _ = fe.add_argument("--all-attempts", action="store_true")
     _ = sub.add_parser("serve")
     sh = sub.add_parser("shim")
     _ = sh.add_argument("jobid")
-    _ = sh.add_argument("attempt", type=int)
     _ = sh.add_argument("--lock-fd", type=int, required=True)
     return p
 
@@ -574,7 +529,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "shim":
             from . import shim
 
-            return shim.main(store, args.jobid, cast(int, args.attempt), args.lock_fd)
+            return shim.main(store, args.jobid, args.lock_fd)
         if args.cmd == "serve":
             from .daemon import Daemon
 

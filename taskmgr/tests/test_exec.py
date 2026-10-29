@@ -51,7 +51,7 @@ class ExecTest(Env):
         for k in (
             "jobid",
             "task_id",
-            "attempt",
+            "retry_of",
             "host",
             "gpus",
             "started_at",
@@ -62,6 +62,8 @@ class ExecTest(Env):
             "paths",
         ):
             self.assertIn(k, m)
+        self.assertNotIn("attempt", m)
+        self.assertIsNone(m["retry_of"])
         self.assertEqual(m["gpus"], [{"declared": 1, "uuid": GPUS[1][1]}])
         with open(out) as f:
             env = self.obj(cast(JsonValue, json.load(f)))
@@ -75,12 +77,14 @@ class ExecTest(Env):
         self.assertEqual(env["CUDA_DEVICE_ORDER"], "PCI_BUS_ID")
         self.assertEqual(env["TASKMGR_JOBID"], j)
         self.assertEqual(env["TASKMGR_TASK_ID"], "AA-01")
-        self.assertEqual(env["TASKMGR_ATTEMPT"], "1")
+        self.assertNotIn("TASKMGR_ATTEMPT", env)
         # While running, the job lives in in-progress/; afterwards in done/.
-        wd = os.path.join(self.root(), "in-progress", j, "attempts", "0001", "workdir")
+        wd = os.path.join(self.root(), "in-progress", j, "workdir")
         self.assertEqual(env["TASKMGR_WORKDIR"], wd)
-        final_wd = os.path.join(self.root(), "done", j, "attempts", "0001", "workdir")
+        final_wd = os.path.join(self.root(), "done", j, "workdir")
         self.assertEqual(self.get(m, "paths", "workdir"), final_wd)
+        self.assertEqual(self.get(m, "paths", "job_dir"), os.path.join(self.root(), "done", j))
+        self.assertFalse(os.path.exists(os.path.join(self.job_dir(j), "attempts")))
         self.assertEqual(self.get(m, "paths", "artifacts"), os.path.join(final_wd, "artifacts"))
         self.assertEqual(env["TASKMGR_PROGRESS_FILE"], os.path.join(wd, "progress.json"))
         self.assertEqual(env["TASKMGR_RESULT_FILE"], os.path.join(wd, "result.json"))
@@ -167,11 +171,11 @@ class ExecTest(Env):
         self.assertTrue(
             any("corrupt" in e for e in self.strs(res, "_taskmgr", "validation_errors"))
         )
-        wd = os.path.join(self.job_dir(corrupt), "attempts", "0001", "workdir")
+        wd = os.path.join(self.job_dir(corrupt), "workdir")
         with open(os.path.join(wd, "result.json.corrupt")) as f:
             self.assertEqual(f.read(), "{not json\n")
         _ = self.wait_state(clash, "invalid_result")
-        wd = os.path.join(self.job_dir(clash), "attempts", "0001", "workdir")
+        wd = os.path.join(self.job_dir(clash), "workdir")
         with open(os.path.join(wd, "result.json.corrupt")) as f:
             self.assertEqual(f.read(), "task\n")  # the task's own file is untouched
         with open(os.path.join(wd, "result.json.corrupt.1")) as f:
@@ -193,7 +197,10 @@ class ExecTest(Env):
         _ = self.wait_for(progress_half, 15, "progress")
         st = self.ok("status", j, "--host", "s1")
         self.assertEqual(self.get(st, "state"), "running")
-        self.assertEqual(self.get(st, "attempt", "attempt"), 1)
+        self.assertEqual(self.get(st, "run", "status"), "running")
+        self.assertNotIn("attempt", self.obj(st, "run"))
+        self.assertNotIn("attempt", self.obj(st))
+        self.assertEqual((self.get(st, "retry_of"), self.get(st, "retried_as")), (None, []))
         self.assertEqual(self.get(st, "progress", "percent"), 50)
         _ = self.wait_state(j, "invalid_result")
 
@@ -211,9 +218,7 @@ class ExecTest(Env):
             m = self.obj(self.result(j), "_taskmgr")
             self.assertIsNone(m["return_code"])
             self.assertEqual(self.get(m, "error", "kind"), "setup")
-            self.assertFalse(
-                os.path.exists(os.path.join(self.job_dir(j), "attempts", "0001", "stdout.log"))
-            )
+            self.assertFalse(os.path.exists(os.path.join(self.job_dir(j), "stdout.log")))
 
     def test_prestart_gpu_disappeared(self) -> None:
         self.stop_daemon()
@@ -275,7 +280,8 @@ class ExecTest(Env):
         self.assertEqual((out["state"], out["changed"]), ("cancelled", False))
         time.sleep(1)
         self.assertEqual(self.job(q)["state"], "cancelled")
-        self.assertEqual(self.job(q)["attempts"], [])  # never ran
+        self.assertIsNone(self.job(q)["dispatched_at"])  # never ran
+        self.assertFalse(os.path.exists(os.path.join(self.job_dir(q), "runner.json")))
         st = self.ok("status", q, "--host", "s1")
         self.assertEqual(self.get(st, "_taskmgr", "status"), "cancelled")
 
@@ -289,23 +295,55 @@ class ExecTest(Env):
         self.assertIn("leftover_processes", self.arr(self.result(j), "_taskmgr", "warnings"))
         self.assertEqual(self.get(self.result(j), "_taskmgr", "return_code"), 0)
 
-    def test_retry_creates_new_attempt_and_keeps_history(self) -> None:
+    def test_retry_creates_new_job_and_keeps_the_old_one(self) -> None:
         counter = os.path.join(self.tmp, "count")
-        j = self.submit(self.make_pkg(script="echo x >> %s; exit 1" % counter))
+        pkg = self.make_pkg(script="echo x >> %s; exit 1" % counter)
+        j = self.submit(pkg, key="k-retry")
         first = self.wait_state(j, "failed")
-        rc, out, _ = self.task("retry", j, "--host", "s1")
-        self.assertEqual(rc, 0)
-        self.assertGreater(self.num(out, "enqueue_seq"), first["enqueue_seq"])
-        _ = self.wait_for(
-            lambda: len(self.job(j)["attempts"]) == 2 and self.job(j)["state"] == "failed",
-            20,
-            "second attempt",
+        first_result = self.result(j)
+        out = self.obj(self.ok("retry", j, "--host", "s1"))
+        new = self.text(out, "jobid")
+        self.assertNotEqual(new, j)
+        self.assertRegex(new, "^[0-9a-f]{16}$")
+        self.assertEqual(
+            (out["retry_of"], out["state"], out["changed"], out["host"]), (j, "queued", True, "s1")
         )
+        self.assertGreater(self.num(out, "enqueue_seq"), first["enqueue_seq"])
+        job = self.wait_state(new, "failed")
         with open(counter) as f:
             self.assertEqual(f.read(), "x\nx\n")
-        self.assertEqual(self.get(self.result(j, 1), "_taskmgr", "attempt"), 1)
-        self.assertEqual(self.get(self.result(j, 2), "_taskmgr", "attempt"), 2)
-        # Retry of a non-terminal job is an error.
+        # The new job: same task, package and GPUs, linked back to the old one.
+        self.assertEqual(job["retry_of"], j)
+        self.assertEqual(job["retried_as"], [])
+        self.assertEqual(job["auto_restarts"], 0)
+        self.assertEqual(job["enqueue_seq"], out["enqueue_seq"])
+        for k in ("task_id", "content_hash", "submission_key", "gpus"):
+            self.assertEqual(job[k], first[k], k)
+        self.assertEqual(self.get(self.result(new), "_taskmgr", "retry_of"), j)
+        self.assertEqual(self.get(self.result(new), "_taskmgr", "jobid"), new)
+        # The old job keeps its state, record and result; only retried_as is added.
+        old = self.job(j)
+        self.assertEqual(old["retried_as"], [new])
+        for k in ("state", "error", "enqueue_seq", "ended_at", "dispatched_at"):
+            self.assertEqual(old.get(k), first.get(k), k)
+        self.assertEqual(self.result(j), first_result)
+        self.assertEqual(os.path.basename(os.path.dirname(self.job_dir(j))), "done")
+        # Statuses show the links in both directions.
+        st = self.obj(self.ok("status", j, "--host", "s1"))
+        self.assertEqual((st["retry_of"], st["retried_as"]), (None, [new]))
+        st = self.obj(self.ok("status", new, "--host", "s1"))
+        self.assertEqual((st["retry_of"], st["retried_as"]), (j, []))
+        # Retrying again (either job) adds another link; the key still maps to the original.
+        out2 = self.obj(self.ok("retry", j, "--host", "s1"))
+        self.assertEqual(self.job(j)["retried_as"], [new, out2["jobid"]])
+        _ = self.wait_state(self.text(out2, "jobid"), "failed")
+        dup = self.obj(self.ok("submit", "--host", "s1", "--submission-key", "k-retry", pkg))
+        self.assertEqual((dup["jobid"], dup["deduplicated"]), (j, True))
+        # Retry of a non-terminal job is an error and creates nothing.
         r = self.submit(self.make_pkg(script="sleep 30"))
         _ = self.wait_state(r, "running")
-        self.assertEqual(self.task("retry", r, "--host", "s1")[0], 2)
+        before = self.jobids()
+        rc, out, _ = self.task("retry", r, "--host", "s1")
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "not_terminal"))
+        self.assertEqual(self.jobids(), before)
+        self.assertEqual(self.job(r)["retried_as"], [])

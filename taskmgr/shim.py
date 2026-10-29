@@ -1,4 +1,4 @@
-"""Attempt supervisor (shim): one detached process per attempt (Sections 1.1, 3, 10.4, 12.1)."""
+"""Run supervisor (shim): one detached process per job run (Sections 1.1, 3, 10.4, 12.1)."""
 
 import hashlib
 import json
@@ -15,7 +15,7 @@ from . import gpu, procutil
 from .common import TaskmgrError, utcnow_iso
 from .monitor import STOP_OUTCOME, GroupStopper, mark_unknown, set_stopping
 from .records import ErrorInfo, Job, RemoteConfig, Runner, TaskEnvironment, TaskSpec
-from .store import Store, end_without_result, finalize_attempt, load_task
+from .store import Store, end_without_result, finalize_run, load_task
 
 
 def log(msg: str) -> None:
@@ -30,7 +30,7 @@ def _crash_point(name: str) -> None:
         os._exit(99)
 
 
-def build_env(cfg: RemoteConfig, task: TaskSpec, job: Job, n: int, workdir: str) -> dict[str, str]:
+def build_env(cfg: RemoteConfig, task: TaskSpec, job: Job, workdir: str) -> dict[str, str]:
     """Entry-process environment, built in the order of Section 3.2."""
     try:
         pw = pwd.getpwuid(os.getuid())
@@ -53,7 +53,6 @@ def build_env(cfg: RemoteConfig, task: TaskSpec, job: Job, n: int, workdir: str)
             "CUDA_VISIBLE_DEVICES": ",".join(g["uuid"] for g in job.get("gpus", [])),
             "TASKMGR_JOBID": job["jobid"],
             "TASKMGR_TASK_ID": job["task_id"],
-            "TASKMGR_ATTEMPT": str(n),
             "TASKMGR_WORKDIR": workdir,
             "TASKMGR_PROGRESS_FILE": os.path.join(workdir, "progress.json"),
             "TASKMGR_RESULT_FILE": os.path.join(workdir, "result.json"),
@@ -102,8 +101,8 @@ def prestart_checks(
     return path, errors
 
 
-def prepare_workdir(jobdir: str, adir: str) -> str:
-    workdir = os.path.join(adir, "workdir")
+def prepare_workdir(jobdir: str) -> str:
+    workdir = os.path.join(jobdir, "workdir")
     if os.path.exists(workdir):
         raise RuntimeError("workdir already exists: %s" % workdir)
     _ = shutil.copytree(os.path.join(jobdir, "package"), workdir, symlinks=True)
@@ -116,18 +115,16 @@ def prepare_workdir(jobdir: str, adir: str) -> str:
     return workdir
 
 
-def run(store: Store, jobid: str, n: int, lock_fd: int) -> int:
+def run(store: Store, jobid: str, lock_fd: int) -> int:
     os.set_inheritable(lock_fd, False)  # the task must never inherit shim.lock
     jobdir, job = store.load_job(jobid)
-    adir = store.attempt_dir(jobdir, n)
-    runner, _ = store.read_runner(adir)
+    runner, _ = store.read_runner(jobdir)
     if (
-        job.get("current_attempt") != n
-        or job["state"] not in ("running", "stopping")
+        job["state"] not in ("running", "stopping")
         or not isinstance(runner, dict)
         or runner.get("pgid") is not None
     ):
-        log("job %s attempt %d is not startable (state=%s); exiting" % (jobid, n, job["state"]))
+        log("job %s is not startable (state=%s); exiting" % (jobid, job["state"]))
         return 0
     cfg = store.config
     task = load_task(jobdir)
@@ -138,10 +135,10 @@ def run(store: Store, jobid: str, n: int, lock_fd: int) -> int:
             "status": "starting",
         }
     )
-    store.write_runner(adir, runner)
+    store.write_runner(jobdir, runner)
 
-    workdir = prepare_workdir(jobdir, adir)
-    env = build_env(cfg, task, job, n, workdir)
+    workdir = prepare_workdir(jobdir)
+    env = build_env(cfg, task, job, workdir)
     path, errors = prestart_checks(task, job, env, workdir)
     if job.get("cancel_requested"):
         errors = []  # cancelled before start: do not run, end as cancelled below
@@ -154,10 +151,10 @@ def run(store: Store, jobid: str, n: int, lock_fd: int) -> int:
             if job.get("cancel_requested"):
                 # running -> stopping -> cancelled; nothing was started, so the stop is
                 # confirmed immediately.
-                _ = set_stopping(store, jobid, n, "cancel")
+                _ = set_stopping(store, jobid, "cancel")
                 jobdir, job = store.load_job(jobid)
                 runner["status"] = "cancelled"
-                _ = end_without_result(store, jobdir, job, n, "cancelled", None, runner)
+                jobdir = end_without_result(store, jobdir, job, "cancelled", None, runner)
             else:
                 err: ErrorInfo = {
                     "kind": "setup",
@@ -166,18 +163,18 @@ def run(store: Store, jobid: str, n: int, lock_fd: int) -> int:
                 }
                 runner["status"] = "failed"
                 runner["error"] = err
-                _ = end_without_result(store, jobdir, job, n, "failed", err, runner)
-            store.write_runner(store.attempt_dir(cast(str, store.find_job_dir(jobid)), n), runner)
+                jobdir = end_without_result(store, jobdir, job, "failed", err, runner)
+            store.write_runner(jobdir, runner)
         log("pre-start check failed: %s" % errors)
         return 0
 
     argv = task["entry"]["argv"]
     assert path is not None  # resolve_entry succeeded: no pre-start errors
     out_fd = os.open(
-        os.path.join(adir, "stdout.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+        os.path.join(jobdir, "stdout.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
     )
     err_fd = os.open(
-        os.path.join(adir, "stderr.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+        os.path.join(jobdir, "stderr.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
     )
     rfd, wfd = os.pipe()
     pid = os.fork()
@@ -217,19 +214,18 @@ def run(store: Store, jobid: str, n: int, lock_fd: int) -> int:
             "status": "running",
         }
     )
-    store.write_runner(adir, runner)  # fsynced before the child may exec (Section 12.1)
+    store.write_runner(jobdir, runner)  # fsynced before the child may exec (Section 12.1)
     _crash_point("before_exec")
     _ = os.write(wfd, b"x")
     os.close(wfd)
     log("started pid=%d argv=%s" % (pid, argv))
-    return supervise(store, jobid, n, adir, runner, pid, task, cfg)
+    return supervise(store, jobid, jobdir, runner, pid, task, cfg)
 
 
 def supervise(
     store: Store,
     jobid: str,
-    n: int,
-    adir: str,
+    jobdir: str,
     runner: Runner,
     pid: int,
     task: TaskSpec,
@@ -270,7 +266,7 @@ def supervise(
                 "signal": -rc if rc < 0 else None,
             }
         )
-        store.write_runner(adir, runner)
+        store.write_runner(jobdir, runner)
         log("entry exited rc=%s signal=%s" % (runner.get("return_code"), runner.get("signal")))
         _crash_point("after_exit_recorded")
 
@@ -291,7 +287,7 @@ def supervise(
                 stop_reason = "timeout"
             if stop_reason:
                 log("stopping process group %d: %s" % (pid, stop_reason))
-                _ = set_stopping(store, jobid, n, stop_reason)
+                _ = set_stopping(store, jobid, stop_reason)
                 stopper = GroupStopper(pid, min_start, grace, confirm, reap)
                 stopper.start()
         else:
@@ -299,7 +295,7 @@ def supervise(
             if r == "stopped":
                 break
             if r == "unconfirmed":
-                return unconfirmed(store, jobid, n, adir, runner, stop_reason, stopper.alive)
+                return unconfirmed(store, jobid, jobdir, runner, stop_reason, stopper.alive)
         time.sleep(0.1)
 
     if stop_reason is None:
@@ -309,8 +305,8 @@ def supervise(
             log("leftover processes %s; running stop procedure" % members)
             warnings.append("leftover_processes")
             runner["warnings"] = warnings
-            store.write_runner(adir, runner)  # survives a shim crash during cleanup
-            _ = set_stopping(store, jobid, n, "leftover")
+            store.write_runner(jobdir, runner)  # survives a shim crash during cleanup
+            _ = set_stopping(store, jobid, "leftover")
             stopper = GroupStopper(pid, min_start, grace, confirm)
             stopper.start()
             while True:
@@ -319,7 +315,7 @@ def supervise(
                     break
                 if r == "unconfirmed":
                     runner["warnings"] = warnings
-                    return unconfirmed(store, jobid, n, adir, runner, "leftover", stopper.alive)
+                    return unconfirmed(store, jobid, jobdir, runner, "leftover", stopper.alive)
                 time.sleep(0.1)
     if exit_status is None:
         _, st = os.waitpid(pid, 0)
@@ -327,7 +323,7 @@ def supervise(
         record_exit(st)
     _crash_point("before_finalize")
     status = STOP_OUTCOME.get(stop_reason) if stop_reason else None
-    job = finalize_attempt(store, jobid, n, status=status)
+    job = finalize_run(store, jobid, status=status)
     log("finalized: %s" % job["state"])
     return 0
 
@@ -335,18 +331,16 @@ def supervise(
 def unconfirmed(
     store: Store,
     jobid: str,
-    n: int,
-    adir: str,
+    jobdir: str,
     runner: Runner,
     reason: str | None,
     alive: list[int],
 ) -> int:
     runner["stop_unconfirmed_reason"] = reason
-    store.write_runner(adir, runner)
+    store.write_runner(jobdir, runner)
     _ = mark_unknown(
         store,
         jobid,
-        n,
         "stop_unconfirmed",
         "processes still alive after SIGKILL",
         {"alive_pids": alive},
@@ -355,10 +349,10 @@ def unconfirmed(
     return 0
 
 
-def main(store: Store, jobid: str, n: int, lock_fd: int) -> int:
+def main(store: Store, jobid: str, lock_fd: int) -> int:
     _ = signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
-        return run(store, jobid, n, lock_fd)
+        return run(store, jobid, lock_fd)
     except Exception as e:  # noqa: BLE001
         import traceback
 

@@ -33,7 +33,7 @@ up: "[[taskmgr/README.zh-CN]]"
 ```
 
 - `task_id` 须匹配 `^[A-Z]{2}-[0-9]{2,4}$`。
-- `entry.argv[0]`：包含 `/` 时视为路径（相对路径指包内文件，相对 attempt 工作目录解析，必须
+- `entry.argv[0]`：包含 `/` 时视为路径（相对路径指包内文件，相对作业的工作目录解析，必须
   可执行）；否则视为命令名，在远程入口进程的 PATH 上查找。执行时不经过 shell；需要 shell 语法时
   使用 `["bash", "-c", "..."]`。
 - `gpus`：nvidia-smi 索引（PCI 总线顺序）或完整的 `GPU-...` UUID；`[]` 表示不用 GPU。MIG
@@ -47,11 +47,11 @@ up: "[[taskmgr/README.zh-CN]]"
 
 ```json
 {"schema_version": 1, "outputs": {...}, "<其他业务字段>": "...",
- "_taskmgr": {"jobid", "task_id", "attempt", "host", "gpus": [{"declared", "uuid"}],
+ "_taskmgr": {"jobid", "task_id", "retry_of", "host", "gpus": [{"declared", "uuid"}],
               "status", "return_code", "signal", "started_at", "ended_at",
               "validation_errors": [], "error": {"kind", "message"} | null,
               "warnings": ["task_wrote_taskmgr" | "leftover_processes"],
-              "paths": {"attempt_dir", "workdir", "stdout", "stderr", "shim_log",
+              "paths": {"job_dir", "workdir", "stdout", "stderr", "shim_log",
                         "progress", "result", "artifacts"},
               "final": true}}
 ```
@@ -62,6 +62,7 @@ up: "[[taskmgr/README.zh-CN]]"
 警告 `task_wrote_taskmgr`。
 
 `error.kind` 的取值：`setup`、`shim_start_failed`、`exit_code`、`signal`、`exit_code_lost`、
+`interrupted`（运行被中断，已创建自动重跑作业）、
 `too_many_interruptions`、`operator_marked_stopped`、`stop_unconfirmed`（作业处于 unknown）、
 `record_incomplete` / `undeterminable`（恢复后处于 unknown）。
 
@@ -72,7 +73,10 @@ up: "[[taskmgr/README.zh-CN]]"
 2. 声明了 `environment.venv` 时：`VIRTUAL_ENV=<venv>`，`PATH=<venv>/bin:$PATH`。
 3. `task.json` 中的 `env`。
 4. runner 设置：`CUDA_DEVICE_ORDER=PCI_BUS_ID`、`CUDA_VISIBLE_DEVICES=<按声明顺序的 UUID>`
-   （`[]` 时为空字符串）、`TASKMGR_JOBID`、`TASKMGR_TASK_ID`、`TASKMGR_ATTEMPT`、
+   （`[]` 时为空字符串）、`TASKMGR_JOBID`、`TASKMGR_TASK_ID`、
    `TASKMGR_WORKDIR`、`TASKMGR_PROGRESS_FILE`、`TASKMGR_RESULT_FILE`。
 
-stdin 接到 `/dev/null`；stdout/stderr 分别写入该 attempt 的 `stdout.log` / `stderr.log`。
+stdin 接到 `/dev/null`；stdout/stderr 分别写入作业目录下的 `stdout.log` / `stderr.log`。
+
+一个作业只运行一次。`retry_of` 是本作业重跑的 jobid（`task retry` 或中断后的自动重跑），直接提交的
+作业为 `null`。

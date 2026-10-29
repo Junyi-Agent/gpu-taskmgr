@@ -8,10 +8,17 @@ import time
 from types import FrameType
 from typing import TextIO
 
-from .common import TERMINAL_STATES, try_flock_fd, utcnow_iso
-from .monitor import Takeover, assess
+from .common import STATE_DIRS, TERMINAL_STATES, try_flock_fd, utcnow_iso
+from .monitor import Takeover, assess, may_have_started
 from .records import ErrorInfo, Job, Runner
-from .store import Store, end_without_result, remove_tree
+from .store import (
+    Store,
+    end_without_result,
+    finalize_run,
+    has_run,
+    remove_tree,
+    result_complete,
+)
 
 INCOMING_MAX_AGE = 3600
 
@@ -74,35 +81,27 @@ class Daemon:
             for jobdir, job in list(st.iter_jobs()):
                 jid = job["jobid"]
                 # Directory follows state; job.json wins.
-                from .common import STATE_DIRS
-
                 want = st.path(STATE_DIRS.get(job["state"], "in-progress"), jid)
                 if os.path.abspath(jobdir) != want:
                     log("repairing location of %s -> %s" % (jid, want))
                     _ = st.save_job(jobdir, job)
                 if job["state"] in ("running", "stopping"):
-                    self.check_attempt(jid)
-                elif job["state"] in TERMINAL_STATES and job.get("current_attempt"):
+                    self.check_run(jid)
+                elif job["state"] in TERMINAL_STATES and has_run(job):
                     self.repair_terminal(jid)
 
     def repair_terminal(self, jobid: str) -> None:
-        from .store import finalize_attempt, result_complete
-
-        jobdir, job = self.store.load_job(jobid)
-        n = job["current_attempt"]
-        if n is None:  # recover() only calls this when current_attempt is set
-            return
-        adir = self.store.attempt_dir(jobdir, n)
-        runner, _ = self.store.read_runner(adir)
+        jobdir, _ = self.store.load_job(jobid)
+        runner, _ = self.store.read_runner(jobdir)
         if (
             isinstance(runner, dict)
             and runner.get("final")
             and runner.get("taskmgr")
-            and not result_complete(adir)
+            and not result_complete(jobdir)
         ):
-            _ = finalize_attempt(self.store, jobid, n)
+            _ = finalize_run(self.store, jobid)
 
-    def check_attempt(self, jobid: str) -> None:
+    def check_run(self, jobid: str) -> None:
         if jobid in self.takeovers:
             return
         res = assess(self.store, jobid)
@@ -140,30 +139,46 @@ class Daemon:
                 uuids = [g["uuid"] for g in job.get("gpus", [])]
                 if not uuids:
                     if max_cpu is None or cpu_active < int(max_cpu):
-                        if self.dispatch(jobdir, job):
+                        if self.dispatch(jobdir, job) in ("running", "unknown"):
                             cpu_active += 1
                     continue
                 if any(held.get(u) == "unknown" for u in uuids):
                     continue  # do not let an unknown job lock other GPUs via reservation
                 if all(u not in held and u not in reserved for u in uuids):
-                    if self.dispatch(jobdir, job):
+                    now_state = self.dispatch(jobdir, job)
+                    if now_state in ("running", "unknown"):
                         for u in uuids:
-                            held[u] = "running"
+                            held[u] = now_state
                 else:
                     reserved.update(uuids)
 
-    def dispatch(self, jobdir: str, job: Job) -> bool:
-        """Record the dispatch, then start a detached shim. Needs the state lock."""
+    def dispatch(self, jobdir: str, job: Job) -> str | None:
+        """Record the dispatch, then start a detached shim. Needs the state lock.
+
+        Returns the job's new state ("running", or "unknown" / "failed" when it could not
+        be started), or None if the job was no longer queued.
+        """
         st = self.store
         jobdir, job = st.load_job(job["jobid"])  # re-read under the lock
         if job["state"] != "queued":
-            return False
-        n = max([len(job.get("attempts", []))] + st.existing_attempts(jobdir)) + 1
-        adir = st.attempt_dir(jobdir, n)
-        os.makedirs(adir)
+            return None
+        old, _ = st.read_runner(jobdir)
+        if old is not None:
+            # A crash between writing runner.json and job.json leaves a queued job with a
+            # run record. Without an identity nothing was started: dispatch again. With
+            # one (not expected) a task may have run: an operator has to decide.
+            if may_have_started(old):
+                log("queued job %s already has a started run; marking unknown" % job["jobid"])
+                job["state"] = "unknown"
+                job["dispatched_at"] = old.get("dispatched_at") or utcnow_iso()
+                job["error"] = {
+                    "kind": "record_incomplete",
+                    "message": "queued job already has a run record with an execution identity",
+                }
+                _ = st.save_job(jobdir, job)
+                return job["state"]
         runner: Runner = {
             "schema_version": 1,
-            "attempt": n,
             "jobid": job["jobid"],
             "status": "dispatched",
             "gpus": job.get("gpus", []),
@@ -171,17 +186,13 @@ class Daemon:
             "final": False,
             "exited": False,
         }
-        st.write_runner(adir, runner)
+        st.write_runner(jobdir, runner)
         job["state"] = "running"
-        job["current_attempt"] = n
+        job["dispatched_at"] = runner["dispatched_at"]
         job["stop_reason"] = None
         job["error"] = None
-        job.setdefault("attempts", []).append(
-            {"attempt": n, "status": "running", "dispatched_at": runner["dispatched_at"]}
-        )
         jobdir = st.save_job(jobdir, job)
-        adir = st.attempt_dir(jobdir, n)
-        err = self.spawn_shim(job["jobid"], n, adir)
+        err = self.spawn_shim(job["jobid"], jobdir)
         if err:
             log("shim start failed for %s: %s" % (job["jobid"], err))
             runner.update(
@@ -194,22 +205,16 @@ class Daemon:
                     "error": {"kind": "shim_start_failed", "message": err},
                 }
             )
-            st.write_runner(adir, runner)
-            for a in job["attempts"]:
-                if a["attempt"] == n:
-                    a["status"] = "failed"
+            st.write_runner(jobdir, runner)
             failure: ErrorInfo = {"kind": "shim_start_failed", "message": err}
-            _ = end_without_result(st, jobdir, job, n, "failed", failure, runner)
-            return False
-        log(
-            "dispatched %s attempt %d gpus=%s"
-            % (job["jobid"], n, [g["uuid"] for g in job.get("gpus", [])])
-        )
-        return True
+            _ = end_without_result(st, jobdir, job, "failed", failure, runner)
+            return job["state"]
+        log("dispatched %s gpus=%s" % (job["jobid"], [g["uuid"] for g in job.get("gpus", [])]))
+        return job["state"]
 
-    def spawn_shim(self, jobid: str, n: int, adir: str) -> str | None:
+    def spawn_shim(self, jobid: str, jobdir: str) -> str | None:
         """Double-fork a shim into its own session, handing it the locked shim.lock."""
-        lock_fd = os.open(os.path.join(adir, "shim.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+        lock_fd = os.open(os.path.join(jobdir, "shim.lock"), os.O_RDWR | os.O_CREAT, 0o644)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # TASKMGR_SHIM_EXECUTABLE: test-only override to simulate a shim that cannot start.
@@ -222,7 +227,6 @@ class Daemon:
             self.store.root,
             "shim",
             jobid,
-            str(n),
             "--lock-fd",
             str(lock_fd),
         ]
@@ -242,7 +246,7 @@ class Daemon:
                 if os.fork() > 0:
                     os._exit(0)
                 log_fd = os.open(
-                    os.path.join(adir, "shim.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+                    os.path.join(jobdir, "shim.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
                 )
                 devnull = os.open(os.devnull, os.O_RDONLY)
                 _ = os.dup2(devnull, 0)
@@ -278,7 +282,7 @@ class Daemon:
         with self.store.state_lock():
             for _, job in list(self.store.iter_jobs()):
                 if job["state"] in ("running", "stopping") and job["jobid"] not in self.takeovers:
-                    self.check_attempt(job["jobid"])
+                    self.check_run(job["jobid"])
 
     def tick_takeovers(self) -> None:
         for jid, tk in list(self.takeovers.items()):

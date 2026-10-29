@@ -19,10 +19,10 @@ task jobs [--host H] [--state running] [--detail] [--color auto|always|never]
 task status <jobid> [--host H]
 task status <jobid> [--host H] --wait [--poll-interval 5] [--retry-timeout 300] [--timeout S]
 task cancel  <jobid> --host H
-task retry   <jobid> --host H
+task retry   <jobid> --host H          # 创建一个新作业，输出新的 jobid
 task resolve <jobid> --host H [--as stopped --confirm <jobid>]
-task logs  <jobid> --host H [--attempt N] [--stream stdout|stderr|shim] [--follow]
-task fetch <jobid> --host H --output ./results/ [--attempt N | --all-attempts]
+task logs  <jobid> --host H [--stream stdout|stderr|shim] [--follow]
+task fetch <jobid> --host H --output ./results/
 task hosts                             # 列出已配置的服务器（额外命令）
 ```
 
@@ -56,7 +56,33 @@ submission key，并打印重试命令 `task submit --host H --submission-key K 
 改投其他服务器。
 
 对未结束的作业，`task status` 输出
-`{"host", "jobid", "task_id", "state", "cancel_requested", "attempt": {attempt, status,
-dispatched_at, started_at, exited, return_code, signal, takeovers, identity}, "progress":
-<progress.json 或 null>, "submitted_at", "gpus", "error", "complete"}`。对已结束的作业，输出最终
-的 `result.json`。
+`{"host", "jobid", "task_id", "state", "cancel_requested", "run": {status, dispatched_at,
+started_at, exited, return_code, signal, takeovers, identity} 或 null, "progress":
+<progress.json 或 null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",
+"complete"}`。对已结束的作业，输出最终的 `result.json`，并在顶层加上 `host`、`complete`、
+`retry_of` 和 `retried_as`。
+
+## 重试与重跑
+
+一个作业最多运行一次。`task retry <jobid> --host H`（只用于终态作业；`unknown` →
+`resolve_required`，queued/running/stopping → `not_terminal`，退出码都是 2）用同一个包创建一个
+**新作业**，排到队尾，输出 `{"jobid": <新>, "retry_of": <旧>, "state": "queued", "changed": true,
+"enqueue_seq", "host"}`。旧作业的状态、日志和结果保持不变；它的 `retried_as` 列出新作业的
+jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key 重新提交，仍然返回原作业的 jobid。
+
+运行被中断（重启，或入口命令从未启动）时，作业以 `failed` 结束，`error.kind = "interrupted"`，
+并按同样方式创建一个自动重跑作业，保留原来的队列位置（见 [[docs/recovery.zh-CN]]）。
+`task status --wait` 会跟随这种自动重跑：在 stderr 打印
+`job X was interrupted; following automatic re-run Y`，然后继续等待 Y；输出和退出码以最后一个
+作业为准。手动重试不会被跟随。
+
+## 日志与下载
+
+- `task logs` 输出作业的日志（`--stream`，默认 stdout）。`--follow` 持续输出，直到运行记录变为
+  final 或作业进入终态或 unknown；对 queued 作业会先等它开始运行。从未运行的作业 → 错误
+  `no_run`（退出码 2）。
+- `task fetch` 把作业的运行文件（`job.json`、`runner.json`、`stdout.log`、`stderr.log`、
+  `shim.log`、`workdir/`；不含 `package/`、`package.tar.gz`、`shim.lock`）下载到
+  `<output>/<host>/<jobid>/`。目标已存在 → `exists`（退出码 2），不写任何文件。从未运行的作业 →
+  `no_run`（退出码 2）。作业未结束时 stderr 给出警告，回执中 `partial: true`。回执：
+  `{"host", "jobid", "state", "partial", "path", "skipped"}`。

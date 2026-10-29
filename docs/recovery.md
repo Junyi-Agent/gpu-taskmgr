@@ -29,9 +29,13 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
    5. same boot, no member → `failed` / `exit_code_lost`, business fields kept; if the job
       was stopping (or cancel was requested) → cancelled / timed_out.
    6. undeterminable (`/proc` unreadable, record corrupt/incomplete) → `unknown`.
-5. Re-run: attempt → `interrupted`; `cancel_requested` → cancelled; auto-restart count at
-   `max_auto_restarts` → `failed` / `too_many_interruptions`; else back to queued with the
-   original `enqueue_seq`; the next attempt starts from `package/`.
+5. Re-run: `runner.json` → `interrupted`; `cancel_requested` → cancelled;
+   `auto_restarts` at `max_auto_restarts` → `failed` / `too_many_interruptions`; else the
+   job ends `failed` with `error.kind = "interrupted"` and a new job is created from copies
+   of its package (an automatic retry): it keeps the original `enqueue_seq`, has
+   `auto_restarts` + 1 and `retry_of` = the interrupted job, whose `retried_as` gets the new
+   jobid. A crash in the middle of this step reuses the re-run job already created instead
+   of creating a second one. `task status --wait` follows the re-run.
 
 ## Resolving `unknown` manually
 
@@ -49,4 +53,4 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
 4. Run `task resolve <jobid> --host H` again, or, once you have confirmed everything is
    gone, `task resolve <jobid> --host H --as stopped --confirm <jobid>` → `failed`
    (`operator_marked_stopped`) or `cancelled`; GPUs are released; nothing re-runs.
-5. Re-run with `task retry <jobid> --host H` if wanted.
+5. Re-run with `task retry <jobid> --host H` if wanted (this creates a new job).

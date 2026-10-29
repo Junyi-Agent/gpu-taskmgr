@@ -38,7 +38,9 @@ class QueryTest(Env):
         self.assertEqual(got, {("s1", a, "AA-01", "queued"), ("s3", b, "BB-02", "queued")})
         for j in self.objs(out, "jobs"):
             self.assertIn("submitted_at", j)
-            self.assertIn("attempt", j)
+            self.assertEqual((j["retry_of"], j["retried_as"]), (None, []))
+            self.assertNotIn("attempt", j)
+            self.assertNotIn("attempt_count", j)
         out = self.ok("jobs", "--detail", "--host", "s3")
         self.assertEqual([j["jobid"] for j in self.objs(out, "jobs")], [b])
         _ = self.ok("cancel", a, "--host", "s1")
@@ -238,8 +240,32 @@ class QueryTest(Env):
         self.assertEqual((rc, out), (0, "err\n"))
         rc, out, _ = self.task("logs", j, "--host", "s1", "--stream", "shim")
         self.assertIn("finalized", self.text(out))
-        rc, out, _ = self.task("logs", j, "--host", "s1", "--attempt", "9")
+        rc, out, _ = self.task("logs", j, "--host", "s1", "--attempt", "1")
+        self.assertEqual(rc, 2)  # there are no attempts any more
+
+    def test_logs_of_a_queued_job(self) -> None:
+        q = self.submit(self.make_pkg(script="echo hello"), host="s2")  # s2: no daemon yet
+        rc, out, err = self.task("logs", q, "--host", "s2")
+        self.assertEqual((rc, out), (2, None))
+        self.assertIn("no_run", err)
+        # --follow on a queued job waits until it runs, then prints its output.
+        p = subprocess.Popen(
+            [sys.executable, TASK, "logs", q, "--host", "s2", "--follow"],
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(1)
+        self.assertIsNone(p.poll())
+        _ = self.start_daemon("s2")
+        out, err = p.communicate(timeout=30)
+        self.assertEqual((p.returncode, out.decode()), (0, "hello\n"), err)
+        # A job cancelled while queued never ran: --follow ends with no_run.
+        c = self.submit(self.make_pkg(), host="s1")
+        _ = self.ok("cancel", c, "--host", "s1")
+        rc, _, err = self.task("logs", c, "--host", "s1", "--follow")
         self.assertEqual(rc, 2)
+        self.assertIn("no_run", err)
 
     def test_fetch(self) -> None:
         _ = self.start_daemon("s1")
@@ -253,8 +279,11 @@ class QueryTest(Env):
         outdir = os.path.join(self.tmp, "results")
         out = self.ok("fetch", j, "--host", "s1", "--output", outdir)
         self.assertFalse(self.get(out, "partial"))
-        base = os.path.join(outdir, "s1", j, "attempts", "0001")
+        base = os.path.join(outdir, "s1", j)
+        self.assertEqual(self.get(out, "path"), base)
+        self.assertNotIn("attempts", self.obj(out))
         for rel in (
+            "job.json",
             "runner.json",
             "stdout.log",
             "stderr.log",
@@ -265,34 +294,47 @@ class QueryTest(Env):
             "workdir/task.json",
         ):
             self.assertTrue(os.path.exists(os.path.join(base, rel)), rel)
+        self.assertEqual(
+            sorted(os.listdir(base)),
+            ["job.json", "runner.json", "shim.log", "stderr.log", "stdout.log", "workdir"],
+        )  # not package/, package.tar.gz or shim.lock
         with open(os.path.join(base, "stdout.log")) as f:
             self.assertEqual(f.read(), "hi\n")
         self.assertTrue(
-            os.path.exists(
-                os.path.join(self.job_dir(j), "attempts", "0001", "workdir", "artifacts", "x.csv")
-            )
+            os.path.exists(os.path.join(self.job_dir(j), "workdir", "artifacts", "x.csv"))
         )
         rc, out, _ = self.task("fetch", j, "--host", "s1", "--output", outdir)
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "exists"))
-        # --all-attempts after a retry.
-        _ = self.ok("retry", j, "--host", "s1")
-        _ = self.wait_for(
-            lambda: len(self.job(j)["attempts"]) == 2 and self.job(j)["state"] == "succeeded",
-            20,
-            "retry",
-        )
-        out2 = os.path.join(self.tmp, "results2")
-        out = self.ok("fetch", j, "--host", "s1", "--output", out2, "--all-attempts")
-        self.assertEqual([a["attempt"] for a in self.objs(out, "attempts")], [1, 2])
-        rc, out, _ = self.task("fetch", j, "--host", "s1", "--output", out2, "--attempt", "2")
+        rc, out, _ = self.task("fetch", j, "--host", "s1", "--output", outdir, "--all-attempts")
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "bad_args"))
+        # A retry is a new job with its own directory.
+        new = self.text(self.ok("retry", j, "--host", "s1"), "jobid")
+        _ = self.wait_state(new, "succeeded")
+        out = self.ok("fetch", new, "--host", "s1", "--output", outdir)
+        self.assertEqual(self.get(out, "path"), os.path.join(outdir, "s1", new))
+        with open(os.path.join(outdir, "s1", new, "job.json")) as f:
+            self.assertIn(j, f.read())  # retry_of
+
+    def test_fetch_of_a_job_that_never_ran(self) -> None:
+        outdir = os.path.join(self.tmp, "results")
+        q = self.submit(self.make_pkg(), host="s1")  # no daemon: stays queued
+        rc, out, _ = self.task("fetch", q, "--host", "s1", "--output", outdir)
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "no_run"))
+        _ = self.ok("cancel", q, "--host", "s1")
+        rc, out, _ = self.task("fetch", q, "--host", "s1", "--output", outdir)
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "no_run"))
+        self.assertFalse(os.path.exists(os.path.join(outdir, "s1", q)))
+        # The remote side refuses on its own, too.
+        rc, _, err = self.remote("fetch", q)
         self.assertEqual(rc, 2)
+        self.assertIn("no_run", err)
 
     def test_fetch_running_is_partial(self) -> None:
         _ = self.start_daemon("s1")
         j = self.submit(self.make_pkg(script="echo started; sleep 30"))
         _ = self.wait_for(
             lambda: any(
-                os.path.exists(os.path.join(self.root(), d, j, "attempts", "0001", "stdout.log"))
+                os.path.exists(os.path.join(self.root(), d, j, "stdout.log"))
                 for d in ("in-progress", "done")
             ),
             10,

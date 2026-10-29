@@ -14,7 +14,7 @@ from .records import JsonDict as JsonDict
 from .records import JsonValue as JsonValue
 from .records import RemoteConfig
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 SCHEMA_VERSION = 1
 
 TASK_ID_RE = re.compile(r"^[A-Z]{2}-[0-9]{2,4}\Z")

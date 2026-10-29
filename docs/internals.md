@@ -18,6 +18,7 @@ Other language: [[docs/internals.zh-CN]]
   locks/daemon.lock         daemon instance lock (holds the daemon pid)
   locks/counters.json       next enqueue_seq (assumption: location not in the spec)
   incoming/up-*/            uploads in flight (flock held on the directory); never scheduled
+  incoming/retry-<jobid>/   a retry or re-run being built (same rules)
   submission-keys/<key>.json  {"submission_key", "jobid", "content_hash", "created_at"}
   queue/<jobid>/            queued
   in-progress/<jobid>/      running / stopping / unknown
@@ -29,13 +30,16 @@ Other language: [[docs/internals.zh-CN]]
 <jobid>/
   job.json          state record (below)
   package.tar.gz    original upload, immutable
-  package/          read-only extracted copy; every attempt starts from it
-  attempts/0001/
-    runner.json     authoritative attempt record, written only by the runner
-    shim.lock       flock held by the shim for its whole life
-    stdout.log  stderr.log  shim.log
-    workdir/        fresh copy of package/ + progress.json, result.json, artifacts/
+  package/          read-only extracted copy; the run starts from it
+  runner.json       authoritative run record, written only by the runner
+  shim.lock         flock held by the shim for its whole life
+  stdout.log  stderr.log  shim.log
+  workdir/          fresh copy of package/ + progress.json, result.json, artifacts/
 ```
+
+A job runs at most once. A retry (`task retry`) or an automatic re-run after an interruption
+is a new job with its own jobid and directory, built from copies of `package.tar.gz` and
+`package/` under `incoming/retry-<jobid>/` and renamed into `queue/`.
 
 `job.json`:
 
@@ -45,15 +49,19 @@ Other language: [[docs/internals.zh-CN]]
  "content_hash": "<sha256>", "submission_key": "cli-...",
  "gpus": [{"declared": 0, "uuid": "GPU-..."}],
  "cancel_requested": false, "stop_reason": null | "cancel" | "timeout" | "leftover",
- "auto_restarts": 0, "retries": 0, "current_attempt": 1,
- "attempts": [{"attempt": 1, "status": "running", "dispatched_at": "...", "ended_at": "..."}],
+ "auto_restarts": 0, "dispatched_at": null | "...",
+ "retry_of": null | "<jobid this job re-runs>", "retried_as": ["<jobids of its re-runs>"],
  "error": null}
 ```
+
+`auto_restarts` counts the automatic re-runs in a chain (0 for a submission or a manual
+retry, the predecessor's count + 1 for an automatic re-run). `dispatched_at` is set when the
+job is dispatched; a job without it never ran and has no run files.
 
 `runner.json`:
 
 ```json
-{"schema_version": 1, "attempt": 1, "jobid": "...", "status": "dispatched|starting|running|
+{"schema_version": 1, "jobid": "...", "status": "dispatched|starting|running|
   <terminal>|interrupted", "gpus": [...], "dispatched_at": "...",
  "boot_id": "...", "shim_pid": 1234, "shim_start_time": 98765, "pgid": 1240,
  "leader_pid": 1240, "leader_start_time": 98770, "argv_hash": "<sha256 of argv JSON>",
@@ -86,12 +94,12 @@ stopping --still alive after SIGKILL--> unknown
 running/stopping --restart recovery--> see below
 unknown --resolve (check concludes)--> see below
 unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
-terminal --retry--> queued
+terminal --retry--> (unchanged; a new queued job with retry_of = this job)
 ```
 
 Transitions happen under `locks/state.lock`: `job.json` is written first, then the
 directory is renamed; if they disagree, `job.json` wins and daemon startup moves the
-directory. Attempt status (`runner.json`) is a terminal state or `interrupted`.
+directory. Run status (`runner.json`) is a terminal state or `interrupted`.
 
 ### Scheduling
 
@@ -101,7 +109,9 @@ the reserved set; a job touching a GPU held by an `unknown` job neither starts n
 Jobs with `gpus: []` only obey `max_cpu_jobs`. Dispatch writes `runner.json`, then
 `job.json` (running) and the rename, and only then double-forks the shim (new session,
 reparented to init) and hands it the already-locked `shim.lock`. A failed fork/exec ends
-the job as `failed` (`shim_start_failed`).
+the job as `failed` (`shim_start_failed`). A queued job that already has a `runner.json`
+(a crash between the two writes) is dispatched again if the record has no execution
+identity; if it has one, the job becomes `unknown` and keeps its GPUs.
 
 ### Shim
 

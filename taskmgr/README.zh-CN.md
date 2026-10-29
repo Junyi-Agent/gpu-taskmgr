@@ -28,6 +28,11 @@ uv tool install --editable /path/to/gpu-taskmgr     # 提供 task 命令
 git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
 ```
 
+CLI 和每台服务器的 `protocol_version` 必须相同，不同时命令以 `protocol_mismatch` 失败（退出码 2）。
+协议 2 去掉了 attempt（一个作业只运行一次，重试是一个新作业）。协议 1 写下的作业目录
+（`attempts/NNNN/`）不做迁移：升级服务器前先等它的作业全部结束，然后让守护进程使用一个新的空
+`remote_root`（或把旧目录移走）。
+
 **3. 服务器：安装并启动 systemd 用户服务**
 
 先 `ssh gpu1` 登录服务器，然后执行：
@@ -94,7 +99,7 @@ taskmgr/
   taskmgr.py      本地 CLI 入口（`task`）
   remote.py       远程入口（`taskmgr-remote`）：子命令、`serve`、`shim`
   daemon.py       调度守护进程：扫描队列、GPU 预留、启动 shim、恢复循环
-  shim.py         每个 attempt 一个的监管进程：启动前检查、exec、wait、停止、收尾
+  shim.py         每次运行一个的监管进程：启动前检查、exec、wait、停止、收尾
   monitor.py      停止流程、重启恢复检查、守护进程接管跟踪
   store.py        远程存储根目录、状态锁、job/runner 记录、结果合并
   package.py      校验、确定性打包、内容哈希、安全解包

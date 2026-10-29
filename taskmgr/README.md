@@ -30,6 +30,12 @@ needs no git credentials. Run it again to update the code.
 git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'
 ```
 
+The CLI and every server must speak the same `protocol_version`; a mismatch fails with
+`protocol_mismatch` (exit 2). Protocol 2 removed attempts (a job runs once; a retry is a new
+job). Job directories written by protocol 1 (`attempts/NNNN/`) are not migrated: before
+upgrading a server, let its jobs finish, then restart the daemon on a new, empty
+`remote_root` (or move the old one aside).
+
 **3. Server: install and start the systemd user service**
 
 `ssh gpu1`, then:
@@ -106,7 +112,7 @@ taskmgr/
   taskmgr.py      local CLI entry (`task`)
   remote.py       remote entry (`taskmgr-remote`): subcommands, `serve`, `shim`
   daemon.py       scheduler daemon: queue scan, GPU reservation, shim spawn, recovery loop
-  shim.py         per-attempt supervisor: pre-start checks, exec, wait, stop, finalize
+  shim.py         per-run supervisor: pre-start checks, exec, wait, stop, finalize
   monitor.py      stop procedure, restart-recovery checks, daemon takeover tracking
   store.py        remote storage root, state lock, job/runner records, result merge
   package.py      validation, deterministic packing, content hash, safe extraction

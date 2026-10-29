@@ -1,4 +1,4 @@
-"""Remote storage root: layout, config, state lock, job records, and attempt finalization."""
+"""Remote storage root: layout, config, state lock, job records, finalization, retry clones."""
 
 import contextlib
 import fcntl
@@ -151,24 +151,11 @@ class Store:
         atomic_write_json(p, c)
         return seq
 
-    # -- attempts -----------------------------------------------------------
+    # -- the run record (one run per job) -------------------------------------
     @staticmethod
-    def attempt_dir(jobdir: str, n: int) -> str:
-        return os.path.join(jobdir, "attempts", "%04d" % n)
-
-    @staticmethod
-    def existing_attempts(jobdir: str) -> list[int]:
-        try:
-            return sorted(
-                int(n) for n in os.listdir(os.path.join(jobdir, "attempts")) if n.isdigit()
-            )
-        except FileNotFoundError:
-            return []
-
-    @staticmethod
-    def read_runner(adir: str) -> tuple[Runner | None, str | None]:
+    def read_runner(jobdir: str) -> tuple[Runner | None, str | None]:
         """(runner, None) or (None, error string from try_read_json / "not a JSON object")."""
-        obj, err = try_read_json(os.path.join(adir, "runner.json"))
+        obj, err = try_read_json(os.path.join(jobdir, "runner.json"))
         if obj is None:
             return None, err
         if not isinstance(obj, dict):
@@ -176,8 +163,13 @@ class Store:
         return cast(Runner, cast(object, obj)), None
 
     @staticmethod
-    def write_runner(adir: str, runner: Runner) -> None:
-        atomic_write_json(os.path.join(adir, "runner.json"), runner)
+    def write_runner(jobdir: str, runner: Runner) -> None:
+        atomic_write_json(os.path.join(jobdir, "runner.json"), runner)
+
+
+def has_run(job: Job) -> bool:
+    """Whether the job was ever dispatched (and so has a run record and run files)."""
+    return job.get("dispatched_at") is not None
 
 
 def job_summary(job: Job) -> dict[str, object]:
@@ -185,12 +177,14 @@ def job_summary(job: Job) -> dict[str, object]:
         "jobid": job["jobid"],
         "task_id": job.get("task_id"),
         "state": job.get("state"),
-        "attempt": job.get("current_attempt"),
         "submitted_at": job.get("submitted_at"),
+        "dispatched_at": job.get("dispatched_at"),
         "enqueue_seq": job.get("enqueue_seq"),
         "cancel_requested": job.get("cancel_requested", False),
         "gpus": job.get("gpus", []),
         "error": job.get("error"),
+        "retry_of": job.get("retry_of"),
+        "retried_as": job.get("retried_as", []),
     }
 
 
@@ -223,14 +217,12 @@ def validate_outputs(result: object, task: TaskSpec) -> list[str]:
     return errs
 
 
-def read_task_result(
-    workdir: str, own: tuple[str, int] | None = None
-) -> tuple[JsonDict, list[str], list[str]]:
+def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, list[str], list[str]]:
     """Read the task-written result.json per Section 10.3.
 
-    Returns (business_fields, validation_errors, warnings). own=(jobid, attempt)
-    recognizes a `_taskmgr` block written by an earlier, interrupted finalization
-    so that re-finalizing does not report it as written by the task.
+    Returns (business_fields, validation_errors, warnings). own=jobid recognizes a
+    `_taskmgr` block written by an earlier, interrupted finalization so that
+    re-finalizing does not report it as written by the task.
     """
     p = os.path.join(workdir, "result.json")
     warnings: list[str] = []
@@ -264,7 +256,7 @@ def read_task_result(
             own is not None
             and meta is not None
             and meta.get("final") is True
-            and (meta.get("jobid"), meta.get("attempt")) == tuple(own)
+            and meta.get("jobid") == own
         )
         if not ours:
             warnings.append("task_wrote_taskmgr")
@@ -272,34 +264,27 @@ def read_task_result(
     return obj, verrs, warnings
 
 
-def final_attempt_dir(adir: str, status: str) -> str:
-    """Where the attempt directory lives once the job is in `status` (done/ for terminal)."""
-    jobdir = os.path.dirname(os.path.dirname(adir))
-    root = os.path.dirname(os.path.dirname(jobdir))
-    return os.path.join(
-        root,
-        STATE_DIRS.get(status, "in-progress"),
-        os.path.basename(jobdir),
-        "attempts",
-        os.path.basename(adir),
-    )
+def final_job_dir(jobdir: str, status: str) -> str:
+    """Where the job directory lives once the job is in `status` (done/ for terminal)."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(jobdir)))
+    return os.path.join(root, STATE_DIRS.get(status, "in-progress"), os.path.basename(jobdir))
 
 
 def build_meta(
     job: Job,
     runner: Runner,
-    adir: str,
+    jobdir: str,
     status: str,
     validation_errors: Iterable[str],
     error: ErrorInfo | None,
     warnings: Iterable[str],
 ) -> TaskmgrMeta:
-    adir = final_attempt_dir(adir, status)
-    workdir = os.path.join(adir, "workdir")
+    jobdir = final_job_dir(jobdir, status)
+    workdir = os.path.join(jobdir, "workdir")
     return {
         "jobid": job["jobid"],
         "task_id": job.get("task_id"),
-        "attempt": runner.get("attempt"),
+        "retry_of": job.get("retry_of"),
         "host": socket.gethostname(),
         "gpus": job.get("gpus", []),
         "status": status,
@@ -311,11 +296,11 @@ def build_meta(
         "error": error,
         "warnings": list(warnings),
         "paths": {
-            "attempt_dir": adir,
+            "job_dir": jobdir,
             "workdir": workdir,
-            "stdout": os.path.join(adir, "stdout.log"),
-            "stderr": os.path.join(adir, "stderr.log"),
-            "shim_log": os.path.join(adir, "shim.log"),
+            "stdout": os.path.join(jobdir, "stdout.log"),
+            "stderr": os.path.join(jobdir, "stderr.log"),
+            "shim_log": os.path.join(jobdir, "shim.log"),
             "progress": os.path.join(workdir, "progress.json"),
             "result": os.path.join(workdir, "result.json"),
             "artifacts": os.path.join(workdir, "artifacts"),
@@ -324,8 +309,8 @@ def build_meta(
     }
 
 
-def write_result(adir: str, business: JsonDict, meta: TaskmgrMeta) -> None:
-    workdir = os.path.join(adir, "workdir")
+def write_result(jobdir: str, business: JsonDict, meta: TaskmgrMeta) -> None:
+    workdir = os.path.join(jobdir, "workdir")
     if not os.path.isdir(workdir):
         os.makedirs(workdir, exist_ok=True)
     res: dict[str, object] = dict(business)
@@ -335,38 +320,36 @@ def write_result(adir: str, business: JsonDict, meta: TaskmgrMeta) -> None:
     atomic_write_json(os.path.join(workdir, "result.json"), res)
 
 
-def finalize_attempt(
+def finalize_run(
     store: Store,
     jobid: str,
-    n: int,
     *,
     status: str | None = None,
     error: ErrorInfo | None = None,
     warnings: Iterable[str] = (),
-    attempt_status: str | None = None,
+    run_status: str | None = None,
     job_extra: Mapping[str, JsonValue] | None = None,
 ) -> Job:
-    """Finish an attempt whose process group is confirmed gone (Section 10.4 steps 3-5).
+    """Finish a run whose process group is confirmed gone (Section 10.4 steps 3-5).
 
     status None derives the state from return code, signal and the result
-    (Section 11). Idempotent: a job no longer on attempt n or already terminal
-    is left untouched apart from repairing result.json.
+    (Section 11). Idempotent: a job that is already terminal (or queued) is left
+    untouched apart from repairing result.json.
     """
     jobdir, job = store.load_job(jobid)
-    adir = store.attempt_dir(jobdir, n)
-    raw_runner, _ = store.read_runner(adir)
-    runner: Runner = raw_runner or {"attempt": n}
+    raw_runner, _ = store.read_runner(jobdir)
+    runner: Runner = raw_runner or {"jobid": jobid}
     task = load_task(jobdir)
     warns = list(runner.get("warnings", [])) + list(warnings)
     tm: object = runner.get("taskmgr")
     if runner.get("final") and isinstance(tm, dict):
         meta = tm
-        if not result_complete(adir):
-            business, _, _ = read_task_result(os.path.join(adir, "workdir"), own=(jobid, n))
-            write_result(adir, business, meta)
+        if not result_complete(jobdir):
+            business, _, _ = read_task_result(os.path.join(jobdir, "workdir"), own=jobid)
+            write_result(jobdir, business, meta)
         status = meta["status"]
     else:
-        business, verrs, w2 = read_task_result(os.path.join(adir, "workdir"), own=(jobid, n))
+        business, verrs, w2 = read_task_result(os.path.join(jobdir, "workdir"), own=jobid)
         warns += w2
         verrs = verrs or validate_outputs(business, task)
         if status is None:
@@ -387,132 +370,187 @@ def finalize_attempt(
         warns = list(dict.fromkeys(warns))
         # Persist the step 2-3 findings first so a crash here does not lose them.
         runner["warnings"] = warns
-        store.write_runner(adir, runner)
-        meta = build_meta(job, runner, adir, status, verrs, error, warns)
-        write_result(adir, business, meta)
+        store.write_runner(jobdir, runner)
+        meta = build_meta(job, runner, jobdir, status, verrs, error, warns)
+        write_result(jobdir, business, meta)
         runner.update(
             {
                 "final": True,
-                "status": attempt_status or status,
+                "status": run_status or status,
                 "taskmgr": meta,
                 "finalized_at": utcnow_iso(),
             }
         )
-        store.write_runner(adir, runner)
+        store.write_runner(jobdir, runner)
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
-        if (
-            job.get("current_attempt") != n
-            or job["state"] in TERMINAL_STATES
-            or job["state"] == "queued"
-        ):
+        if job["state"] in TERMINAL_STATES or job["state"] == "queued":
             return job
         job["state"] = status
         job["error"] = meta.get("error")
-        ended_at = runner.get("ended_at") or utcnow_iso()
-        job["ended_at"] = ended_at
+        job["ended_at"] = runner.get("ended_at") or utcnow_iso()
         if job_extra:
             cast(dict[str, object], cast(object, job)).update(job_extra)
-        for a in job.get("attempts", []):
-            if a.get("attempt") == n:
-                a["status"] = runner.get("status", status)
-                a["ended_at"] = ended_at
         _ = store.save_job(jobdir, job)
     return job
 
 
-def result_complete(adir: str) -> bool:
-    obj, _ = try_read_json(os.path.join(adir, "workdir", "result.json"))
+def result_complete(jobdir: str) -> bool:
+    obj, _ = try_read_json(os.path.join(jobdir, "workdir", "result.json"))
     res = _as_dict(obj)
     meta = _as_dict(res.get("_taskmgr")) if res is not None else None
     return meta is not None and meta.get("final") is True and "status" in meta
 
 
-def requeue_or_end_interrupted(store: Store, jobid: str, n: int, reason: str) -> Job:
-    """Section 12.2 step 5: mark attempt interrupted, then cancel / fail / requeue."""
+def interrupt_run(store: Store, jobid: str, reason: str) -> Job:
+    """Section 12.2 step 5: mark the run interrupted, then cancel / fail / re-run.
+
+    A re-run is a new job (an automatic retry, see `clone_job`); the interrupted job
+    itself ends as failed with error.kind "interrupted" and points to it via
+    `retried_as`. Returns the interrupted job.
+    """
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
-        if (
-            job["state"] in TERMINAL_STATES
-            or job["state"] == "queued"
-            or job.get("current_attempt") != n
-        ):
+        if job["state"] in TERMINAL_STATES or job["state"] == "queued":
             return job
-        adir = store.attempt_dir(jobdir, n)
-        raw_runner, _ = store.read_runner(adir)
-        runner: Runner = raw_runner or {"attempt": n}
-        ended_at = runner.get("ended_at") or utcnow_iso()
+        raw_runner, _ = store.read_runner(jobdir)
+        runner: Runner = raw_runner or {"jobid": jobid}
         runner.update(
             {
                 "final": True,
                 "status": "interrupted",
                 "interrupted_reason": reason,
-                "ended_at": ended_at,
+                "ended_at": runner.get("ended_at") or utcnow_iso(),
             }
         )
-        if os.path.isdir(adir):
-            store.write_runner(adir, runner)
-        for a in job.get("attempts", []):
-            if a.get("attempt") == n:
-                a["status"] = "interrupted"
-                a["ended_at"] = ended_at
+        store.write_runner(jobdir, runner)
         maxr = int(store.config.get("max_auto_restarts", 2))
+        restarts = job.get("auto_restarts", 0)
         if job.get("cancel_requested"):
-            _ = end_without_result(store, jobdir, job, n, "cancelled", None, runner)
-        elif job.get("auto_restarts", 0) >= maxr:
+            _ = end_without_result(store, jobdir, job, "cancelled", None, runner)
+        elif restarts >= maxr:
             _ = end_without_result(
                 store,
                 jobdir,
                 job,
-                n,
                 "failed",
                 {
                     "kind": "too_many_interruptions",
                     "message": "interrupted %d times (max_auto_restarts=%d); last: %s"
-                    % (job.get("auto_restarts", 0) + 1, maxr, reason),
+                    % (restarts + 1, maxr, reason),
                 },
                 runner,
             )
         else:
-            job["auto_restarts"] = job.get("auto_restarts", 0) + 1
-            job["state"] = "queued"
-            job["current_attempt"] = None
-            job["stop_reason"] = None
-            _ = store.save_job(jobdir, job)
+            # A crash after the clone was renamed into queue/ but before this job was
+            # saved leaves the clone behind; reuse it instead of cloning twice. Only this
+            # step creates a job with retry_of == jobid while jobid is not terminal.
+            rerun = next(
+                (j for _, j in store.iter_jobs() if j.get("retry_of") == jobid),
+                None,
+            )
+            if rerun is None:
+                rerun = clone_job(store, jobdir, job, automatic=True)
+            elif rerun["jobid"] not in job.get("retried_as", []):
+                job["retried_as"] = job.get("retried_as", []) + [rerun["jobid"]]
+            jobdir = cast(str, store.find_job_dir(jobid))
+            _ = end_without_result(
+                store, jobdir, job, "failed", {"kind": "interrupted", "message": reason}, runner
+            )
         return job
+
+
+def clone_job(store: Store, old_jobdir: str, old: Job, *, automatic: bool) -> Job:
+    """Create a new queued job that runs the same package again. Needs the state lock.
+
+    `task retry` (automatic=False) puts the new job at the back of the queue; an
+    automatic re-run after an interruption keeps the original queue position and counts
+    the restart. The new job is built under incoming/ and renamed into queue/, like a
+    submission; then the old job records the new jobid in `retried_as` and is saved.
+    """
+    store.ensure_layout()
+    jobid = store.new_jobid()  # asserts the state lock
+    updir = store.path("incoming", "retry-%s" % jobid)
+    os.mkdir(updir)
+    lock_fd = os.open(updir, os.O_RDONLY)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)  # keeps clean_incoming away while copying
+    try:
+        _ = shutil.copy2(
+            os.path.join(old_jobdir, "package.tar.gz"), os.path.join(updir, "package.tar.gz")
+        )
+        _ = shutil.copytree(
+            os.path.join(old_jobdir, "package"), os.path.join(updir, "package"), symlinks=True
+        )
+        make_read_only(os.path.join(updir, "package"))
+        os.sync()  # package/ is the source of the run: durable before the job is visible
+        now = utcnow_iso()
+        job: Job = {
+            "schema_version": SCHEMA_VERSION,
+            "jobid": jobid,
+            "task_id": old["task_id"],
+            "state": "queued",
+            "submitted_at": now,
+            "updated_at": now,
+            "enqueue_seq": old["enqueue_seq"] if automatic else store.next_seq(),
+            "content_hash": old["content_hash"],
+            "submission_key": old["submission_key"],
+            "gpus": old["gpus"],
+            "cancel_requested": False,
+            "auto_restarts": old.get("auto_restarts", 0) + 1 if automatic else 0,
+            "dispatched_at": None,
+            "retry_of": old["jobid"],
+            "retried_as": [],
+            "stop_reason": None,
+            "error": None,
+        }
+        atomic_write_json(os.path.join(updir, "job.json"), job)
+        os.rename(updir, store.path("queue", jobid))
+        fsync_dir(store.path("incoming"))
+        fsync_dir(store.path("queue"))
+    finally:
+        os.close(lock_fd)
+        if os.path.exists(updir):
+            remove_tree(updir)
+    old["retried_as"] = old.get("retried_as", []) + [jobid]
+    _ = store.save_job(old_jobdir, old)
+    return job
 
 
 def end_without_result(
     store: Store,
     jobdir: str,
     job: Job,
-    n: int | None,
     state: str,
     error: ErrorInfo | None,
     runner: Runner | None,
 ) -> str:
-    """Move a job to a terminal state for an attempt without a normal exit. Needs the lock."""
-    if n is not None:
-        adir = store.attempt_dir(jobdir, n)
-        if os.path.isdir(adir):
-            business, _, w = read_task_result(os.path.join(adir, "workdir"))
-            meta = build_meta(
-                job,
-                runner or {"attempt": n},
-                adir,
-                state,
-                [],
-                error,
-                list(runner.get("warnings", []) if runner else []) + w,
-            )
-            write_result(adir, business, meta)
-            if runner is not None and not runner.get("taskmgr"):
-                runner["taskmgr"] = meta
-                store.write_runner(adir, runner)
+    """Move a job to a terminal state without a normal exit of its run. Needs the lock.
+
+    With a runner (the job was dispatched), result.json gets a `_taskmgr` block; a job
+    that never ran (runner None) has no run files and gets none.
+    """
+    if runner is not None:
+        business, _, w = read_task_result(os.path.join(jobdir, "workdir"))
+        meta = build_meta(
+            job, runner, jobdir, state, [], error, list(runner.get("warnings", [])) + w
+        )
+        write_result(jobdir, business, meta)
+        if not runner.get("taskmgr"):
+            runner["taskmgr"] = meta
+            store.write_runner(jobdir, runner)
     job["state"] = state
     job["error"] = error
     job["ended_at"] = utcnow_iso()
     return store.save_job(jobdir, job)
+
+
+def make_read_only(root: str) -> None:
+    for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
+        for f in filenames:
+            p = os.path.join(dirpath, f)
+            if not os.path.islink(p):
+                os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) & ~0o222)
+        os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) & ~0o222)
 
 
 def remove_tree(path: str) -> None:

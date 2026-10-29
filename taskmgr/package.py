@@ -464,7 +464,10 @@ def package_root(extracted: str) -> str:
 
 
 def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> None:
-    """Add a directory tree to an open tar without following symlinks; skip special files."""
+    """Add a file or directory tree to an open tar without following symlinks.
+
+    Special files are skipped, and so is a root that does not exist.
+    """
     try:
         entries = [("", root)] + _sorted_entries(root)
     except OSError:
@@ -488,5 +491,5 @@ def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> None:
                 ti.linkname = ""
                 ti.size = len(data)
         except OSError:
-            continue  # vanished while walking a running attempt
+            continue  # vanished while walking a running job
         tar.addfile(ti, io.BytesIO(data) if data is not None else None)
