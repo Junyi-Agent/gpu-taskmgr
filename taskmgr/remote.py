@@ -15,6 +15,7 @@ import stat
 import sys
 import tarfile
 import time
+from typing import IO, Any, Callable, Mapping, cast
 
 from . import package
 from .common import (
@@ -22,6 +23,7 @@ from .common import (
     SCHEMA_VERSION,
     SUBMISSION_KEY_RE,
     TERMINAL_STATES,
+    JsonDict,
     TaskmgrError,
     atomic_write_json,
     fsync_dir,
@@ -34,13 +36,13 @@ from .monitor import assess, identity_of
 from .store import Store, end_without_result, job_summary, remove_tree
 
 
-def remote_protocol_version():
+def remote_protocol_version() -> int:
     # TASKMGR_TEST_PROTOCOL_VERSION: test-only override to simulate a mismatched remote.
     v = os.environ.get("TASKMGR_TEST_PROTOCOL_VERSION")
     return int(v) if v else PROTOCOL_VERSION
 
 
-def emit(obj, code=0):
+def emit(obj: Mapping[str, Any], code: int = 0) -> int:
     obj = dict(obj)
     obj["protocol_version"] = remote_protocol_version()
     sys.stdout.write(json.dumps(obj, sort_keys=True) + "\n")
@@ -52,7 +54,7 @@ def emit(obj, code=0):
 # receive (Section 5.2)
 
 
-def cmd_receive(store, args):
+def cmd_receive(store: Store, args: argparse.Namespace) -> int:
     store.ensure_layout()
     key = args.submission_key or ("auto-" + secrets.token_hex(12))
     if not SUBMISSION_KEY_RE.match(key):
@@ -105,7 +107,7 @@ def cmd_receive(store, args):
             kpath = store.path("submission-keys", key + ".json")
             jobid = store.new_jobid()
             now = utcnow_iso()
-            job = {
+            job: JsonDict = {
                 "schema_version": SCHEMA_VERSION,
                 "jobid": jobid,
                 "task_id": task["task_id"],
@@ -145,13 +147,12 @@ def cmd_receive(store, args):
             }
         )
     finally:
-        if lock_fd is not None:
-            os.close(lock_fd)
+        os.close(lock_fd)
         if os.path.exists(updir):
             remove_tree(updir)
 
 
-def _dedup_ack(store, key, chash):
+def _dedup_ack(store: Store, key: str, chash: str) -> JsonDict | None:
     """Section 6.2 lookup; needs the state lock. Returns an ACK, None, or raises."""
     mapping = read_json(store.path("submission-keys", key + ".json"))
     if not mapping or not store.find_job_dir(mapping.get("jobid")):
@@ -174,8 +175,8 @@ def _dedup_ack(store, key, chash):
     }
 
 
-def _make_read_only(root):
-    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+def _make_read_only(root: str) -> None:
+    for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
         for f in filenames:
             p = os.path.join(dirpath, f)
             if not os.path.islink(p):
@@ -187,9 +188,9 @@ def _make_read_only(root):
 # queries
 
 
-def cmd_jobs(store, args):
+def cmd_jobs(store: Store, args: argparse.Namespace) -> int:
     # A directory rename during the scan can show a job twice; keep its newest record.
-    latest = {}
+    latest: dict[str, JsonDict] = {}
     for _, j in store.iter_jobs():
         old = latest.get(j["jobid"])
         if old is None or (j.get("updated_at") or "") >= (old.get("updated_at") or ""):
@@ -201,7 +202,7 @@ def cmd_jobs(store, args):
     return emit({"jobs": jobs})
 
 
-def synthesized_result(job):
+def synthesized_result(job: JsonDict) -> JsonDict:
     return {
         "schema_version": SCHEMA_VERSION,
         "_taskmgr": {
@@ -221,7 +222,7 @@ def synthesized_result(job):
     }
 
 
-def job_status(store, jobid, _retry=True):
+def job_status(store: Store, jobid: str, _retry: bool = True) -> JsonDict:
     jd = store.find_job_dir(jobid)
     if jd is None:
         return {"found": False, "jobid": jobid}
@@ -231,7 +232,7 @@ def job_status(store, jobid, _retry=True):
         if _retry:  # the directory moved between lookup and read
             return job_status(store, jobid, False)
         raise
-    out = {
+    out: JsonDict = {
         "found": True,
         "job": job_summary(job),
         "attempts": store.existing_attempts(jd),
@@ -240,14 +241,15 @@ def job_status(store, jobid, _retry=True):
     n = job.get("current_attempt")
     adir = store.attempt_dir(jd, n) if n else None
     if out["terminal"]:
-        res = None
+        res: Any = None
         if adir:
             res, _ = try_read_json(os.path.join(adir, "workdir", "result.json"))
             if not isinstance(res, dict) and _retry:
                 return job_status(store, jobid, False)
-        out["result"] = res if isinstance(res, dict) else synthesized_result(job)
+        out["result"] = cast(JsonDict, res) if isinstance(res, dict) else synthesized_result(job)
         return out
     if adir:
+        runner: JsonDict | None
         runner, _ = store.read_runner(adir)
         runner = runner or {}
         info = {
@@ -272,7 +274,7 @@ def job_status(store, jobid, _retry=True):
     return out
 
 
-def cmd_status(store, args):
+def cmd_status(store: Store, args: argparse.Namespace) -> int:
     return emit(job_status(store, args.jobid))
 
 
@@ -280,7 +282,7 @@ def cmd_status(store, args):
 # control (Section 13)
 
 
-def cmd_cancel(store, args):
+def cmd_cancel(store: Store, args: argparse.Namespace) -> int:
     with store.state_lock():
         jd, job = store.load_job(args.jobid)
         changed = False
@@ -304,7 +306,7 @@ def cmd_cancel(store, args):
     )
 
 
-def cmd_retry(store, args):
+def cmd_retry(store: Store, args: argparse.Namespace) -> int:
     with store.state_lock():
         jd, job = store.load_job(args.jobid)
         if job["state"] == "unknown":
@@ -340,7 +342,7 @@ def cmd_retry(store, args):
     )
 
 
-def cmd_resolve(store, args):
+def cmd_resolve(store: Store, args: argparse.Namespace) -> int:
     if args.as_ is not None:
         if args.as_ != "stopped":
             raise TaskmgrError("bad_args", "--as only accepts 'stopped'")
@@ -353,7 +355,7 @@ def cmd_resolve(store, args):
                     "not_unknown", "job %s is %s, not unknown" % (args.jobid, job["state"])
                 )
             n = job.get("current_attempt")
-            runner = None
+            runner: JsonDict | None = None
             if n:
                 adir = store.attempt_dir(jd, n)
                 runner, _ = store.read_runner(adir)
@@ -393,7 +395,7 @@ def cmd_resolve(store, args):
             return emit({"jobid": args.jobid, "state": job["state"], "changed": False})
         res = assess(store, args.jobid, resolve=True)
         _, job = store.load_job(args.jobid)
-    out = {
+    out: JsonDict = {
         "jobid": args.jobid,
         "state": job["state"],
         "changed": job["state"] != "unknown",
@@ -405,7 +407,7 @@ def cmd_resolve(store, args):
     if job["state"] == "unknown":
         jd = store.find_job_dir(args.jobid)
         runner, _ = (
-            store.read_runner(store.attempt_dir(jd, job["current_attempt"]))
+            store.read_runner(store.attempt_dir(cast(str, jd), job["current_attempt"]))
             if job.get("current_attempt")
             else (None, None)
         )
@@ -422,7 +424,7 @@ def cmd_resolve(store, args):
 # logs and fetch (Section 15)
 
 
-def _pick_attempt(store, jd, job, attempt):
+def _pick_attempt(store: Store, jd: str, job: JsonDict, attempt: int | None) -> int | None:
     have = store.existing_attempts(jd)
     if attempt is not None:
         if attempt not in have:
@@ -433,7 +435,7 @@ def _pick_attempt(store, jd, job, attempt):
     return have[-1] if have else None
 
 
-def cmd_logs(store, args):
+def cmd_logs(store: Store, args: argparse.Namespace) -> int:
     jd, job = store.load_job(args.jobid)
     n = _pick_attempt(store, jd, job, args.attempt)
     while n is None:
@@ -444,7 +446,8 @@ def cmd_logs(store, args):
         n = _pick_attempt(store, jd, job, None)
     name = {"stdout": "stdout.log", "stderr": "stderr.log", "shim": "shim.log"}[args.stream]
     out = sys.stdout.buffer
-    f = None
+    f: IO[bytes] | None = None
+    runner: JsonDict | None
     while True:
         jd, job = store.load_job(args.jobid)
         adir = store.attempt_dir(jd, n)
@@ -481,9 +484,10 @@ def cmd_logs(store, args):
         time.sleep(0.5)
 
 
-def cmd_fetch(store, args):
+def cmd_fetch(store: Store, args: argparse.Namespace) -> int:
     jd, job = store.load_job(args.jobid)
     have = store.existing_attempts(jd)
+    nums: list[int]
     if args.all_attempts:
         nums = have
     else:
@@ -501,7 +505,7 @@ def cmd_fetch(store, args):
 # ---------------------------------------------------------------------------
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="taskmgr-remote")
     p.add_argument("--root", required=True, help="remote storage root (from the machine list)")
     p.add_argument("--protocol-version", type=int, default=None)
@@ -535,7 +539,7 @@ def build_parser():
     return p
 
 
-COMMANDS = {
+COMMANDS: dict[str, Callable[[Store, argparse.Namespace], int]] = {
     "receive": cmd_receive,
     "jobs": cmd_jobs,
     "status": cmd_status,
@@ -547,7 +551,7 @@ COMMANDS = {
 }
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     stream_cmd = args.cmd in ("logs", "fetch")
     try:

@@ -8,6 +8,8 @@ import secrets
 import shutil
 import socket
 import stat
+from collections.abc import Callable, Generator, Iterable, Iterator
+from typing import Any, cast
 
 from .common import (
     DEFAULT_REMOTE_CONFIG,
@@ -16,6 +18,7 @@ from .common import (
     SCHEMA_VERSION,
     STATE_DIRS,
     TERMINAL_STATES,
+    JsonDict,
     TaskmgrError,
     atomic_write_json,
     fsync_dir,
@@ -26,26 +29,26 @@ from .common import (
 
 
 class Store:
-    def __init__(self, root):
+    def __init__(self, root: str) -> None:
         if not root or not os.path.isabs(root):
             raise TaskmgrError("bad_root", "--root must be an absolute path: %r" % (root,))
-        self.root = root
-        self._lock_fd = None
-        self._lock_depth = 0
-        self._config = None
+        self.root: str = root
+        self._lock_fd: int | None = None
+        self._lock_depth: int = 0
+        self._config: JsonDict | None = None
 
     # -- layout -------------------------------------------------------------
-    def path(self, *parts):
+    def path(self, *parts: str) -> str:
         return os.path.join(self.root, *parts)
 
-    def ensure_layout(self):
+    def ensure_layout(self) -> None:
         for d in ("locks", "incoming", "submission-keys", "daemon") + JOB_DIRS:
             os.makedirs(self.path(d), exist_ok=True)
 
     @property
-    def config(self):
+    def config(self) -> JsonDict:
         if self._config is None:
-            cfg = dict(DEFAULT_REMOTE_CONFIG)
+            cfg: JsonDict = dict(DEFAULT_REMOTE_CONFIG)
             obj, err = try_read_json(self.path("config.json"))
             if err and err != "missing":
                 raise TaskmgrError("bad_config", "config.json is %s" % err)
@@ -56,7 +59,7 @@ class Store:
 
     # -- state lock (re-entrant within one process) --------------------------
     @contextlib.contextmanager
-    def state_lock(self):
+    def state_lock(self) -> Generator[None, None, None]:
         if self._lock_depth:
             self._lock_depth += 1
             try:
@@ -75,7 +78,7 @@ class Store:
             os.close(fd)
 
     # -- jobs ---------------------------------------------------------------
-    def find_job_dir(self, jobid):
+    def find_job_dir(self, jobid: object) -> str | None:
         if not isinstance(jobid, str) or not JOBID_RE.match(jobid):
             return None
         for d in JOB_DIRS:
@@ -84,16 +87,16 @@ class Store:
                 return p
         return None
 
-    def load_job(self, jobid):
+    def load_job(self, jobid: str) -> tuple[str, JsonDict]:
         jd = self.find_job_dir(jobid)
         if jd is None:
             raise TaskmgrError("not_found", "job %s not found" % jobid)
         job, err = try_read_json(os.path.join(jd, "job.json"))
         if job is None:
             raise TaskmgrError("corrupt_job", "job.json of %s is %s" % (jobid, err))
-        return jd, job
+        return jd, cast(JsonDict, job)
 
-    def iter_jobs(self):
+    def iter_jobs(self) -> Iterator[tuple[str, JsonDict]]:
         """Yield (dir, job) for every job; skips unreadable records."""
         for d in JOB_DIRS:
             base = self.path(d)
@@ -106,9 +109,9 @@ class Store:
                     continue
                 job, _ = try_read_json(os.path.join(base, name, "job.json"))
                 if isinstance(job, dict):
-                    yield os.path.join(base, name), job
+                    yield os.path.join(base, name), cast(JsonDict, job)
 
-    def save_job(self, jobdir, job):
+    def save_job(self, jobdir: str, job: JsonDict) -> str:
         """Write job.json then move the directory to match its state. Needs the state lock."""
         assert self._lock_depth, "state lock required"
         job["updated_at"] = utcnow_iso()
@@ -120,17 +123,17 @@ class Store:
             fsync_dir(os.path.dirname(want))
         return want
 
-    def new_jobid(self):
+    def new_jobid(self) -> str:
         assert self._lock_depth
         while True:
             jid = secrets.token_hex(8)
             if self.find_job_dir(jid) is None:
                 return jid
 
-    def next_seq(self):
+    def next_seq(self) -> int:
         assert self._lock_depth
         p = self.path("locks", "counters.json")
-        c = read_json(p, {}) or {}
+        c: JsonDict = read_json(p, {}) or {}
         seq = int(c.get("next_enqueue_seq", 1))
         c["next_enqueue_seq"] = seq + 1
         atomic_write_json(p, c)
@@ -138,11 +141,11 @@ class Store:
 
     # -- attempts -----------------------------------------------------------
     @staticmethod
-    def attempt_dir(jobdir, n):
+    def attempt_dir(jobdir: str, n: int) -> str:
         return os.path.join(jobdir, "attempts", "%04d" % n)
 
     @staticmethod
-    def existing_attempts(jobdir):
+    def existing_attempts(jobdir: str) -> list[int]:
         try:
             return sorted(
                 int(n) for n in os.listdir(os.path.join(jobdir, "attempts")) if n.isdigit()
@@ -151,15 +154,15 @@ class Store:
             return []
 
     @staticmethod
-    def read_runner(adir):
+    def read_runner(adir: str) -> tuple[Any, str | None]:
         return try_read_json(os.path.join(adir, "runner.json"))
 
     @staticmethod
-    def write_runner(adir, runner):
+    def write_runner(adir: str, runner: JsonDict) -> None:
         atomic_write_json(os.path.join(adir, "runner.json"), runner)
 
 
-def job_summary(job):
+def job_summary(job: JsonDict) -> JsonDict:
     return {
         "jobid": job["jobid"],
         "task_id": job.get("task_id"),
@@ -173,7 +176,7 @@ def job_summary(job):
     }
 
 
-def load_task(jobdir):
+def load_task(jobdir: str) -> JsonDict:
     return read_json(os.path.join(jobdir, "package", "task.json"), {}) or {}
 
 
@@ -181,20 +184,28 @@ def load_task(jobdir):
 # Results and finalization (Sections 10 and 11)
 
 
-def validate_outputs(result, task):
-    errs = []
-    outputs = result.get("outputs") if isinstance(result, dict) else None
+def _as_dict(value: object) -> JsonDict | None:
+    return cast(JsonDict, value) if isinstance(value, dict) else None
+
+
+def validate_outputs(result: object, task: JsonDict) -> list[str]:
+    errs: list[str] = []
+    res = _as_dict(result)
+    outputs = res.get("outputs") if res is not None else None
     if not isinstance(outputs, dict):
         errs.append("result.json has no 'outputs' object")
         return errs
-    req = (task.get("result") or {}).get("required_outputs") or []
+    result_spec: JsonDict = task.get("result") or {}
+    req: list[Any] = result_spec.get("required_outputs") or []
     for k in req:
         if k not in outputs:
             errs.append("required output %r is missing" % k)
     return errs
 
 
-def read_task_result(workdir, own=None):
+def read_task_result(
+    workdir: str, own: tuple[str, int] | None = None
+) -> tuple[JsonDict, list[str], list[str]]:
     """Read the task-written result.json per Section 10.3.
 
     Returns (business_fields, validation_errors, warnings). own=(jobid, attempt)
@@ -202,7 +213,8 @@ def read_task_result(workdir, own=None):
     so that re-finalizing does not report it as written by the task.
     """
     p = os.path.join(workdir, "result.json")
-    warnings, verrs = [], []
+    warnings: list[str] = []
+    verrs: list[str] = []
     try:
         with open(p, "rb") as f:
             raw = f.read()
@@ -211,8 +223,8 @@ def read_task_result(workdir, own=None):
     except OSError as e:
         return {"schema_version": SCHEMA_VERSION}, ["result.json unreadable: %s" % e], warnings
     try:
-        obj = json.loads(raw.decode("utf-8"))
-        if not isinstance(obj, dict):
+        parsed: Any = json.loads(raw.decode("utf-8"))
+        if not isinstance(parsed, dict):
             raise ValueError("top level is not a JSON object")
     except (ValueError, UnicodeDecodeError) as e:
         keep, i = p + ".corrupt", 0
@@ -225,11 +237,12 @@ def read_task_result(workdir, own=None):
             ["result.json is corrupt (kept as %s): %s" % (os.path.basename(keep), e)],
             warnings,
         )
+    obj = cast(JsonDict, parsed)
     if "_taskmgr" in obj:
-        meta = obj.pop("_taskmgr")
+        meta = _as_dict(obj.pop("_taskmgr"))
         ours = (
             own is not None
-            and isinstance(meta, dict)
+            and meta is not None
             and meta.get("final") is True
             and (meta.get("jobid"), meta.get("attempt")) == tuple(own)
         )
@@ -239,7 +252,7 @@ def read_task_result(workdir, own=None):
     return obj, verrs, warnings
 
 
-def final_attempt_dir(adir, status):
+def final_attempt_dir(adir: str, status: str) -> str:
     """Where the attempt directory lives once the job is in `status` (done/ for terminal)."""
     jobdir = os.path.dirname(os.path.dirname(adir))
     root = os.path.dirname(os.path.dirname(jobdir))
@@ -252,7 +265,15 @@ def final_attempt_dir(adir, status):
     )
 
 
-def build_meta(job, runner, adir, status, validation_errors, error, warnings):
+def build_meta(
+    job: JsonDict,
+    runner: JsonDict,
+    adir: str,
+    status: str,
+    validation_errors: Iterable[str],
+    error: JsonDict | None,
+    warnings: Iterable[str],
+) -> JsonDict:
     adir = final_attempt_dir(adir, status)
     workdir = os.path.join(adir, "workdir")
     return {
@@ -283,7 +304,7 @@ def build_meta(job, runner, adir, status, validation_errors, error, warnings):
     }
 
 
-def write_result(adir, business, meta):
+def write_result(adir: str, business: JsonDict, meta: JsonDict) -> None:
     workdir = os.path.join(adir, "workdir")
     if not os.path.isdir(workdir):
         os.makedirs(workdir, exist_ok=True)
@@ -295,8 +316,16 @@ def write_result(adir, business, meta):
 
 
 def finalize_attempt(
-    store, jobid, n, *, status=None, error=None, warnings=(), attempt_status=None, job_extra=None
-):
+    store: Store,
+    jobid: str,
+    n: int,
+    *,
+    status: str | None = None,
+    error: JsonDict | None = None,
+    warnings: Iterable[str] = (),
+    attempt_status: str | None = None,
+    job_extra: JsonDict | None = None,
+) -> JsonDict:
     """Finish an attempt whose process group is confirmed gone (Section 10.4 steps 3-5).
 
     status None derives the state from return code, signal and the result
@@ -305,13 +334,13 @@ def finalize_attempt(
     """
     jobdir, job = store.load_job(jobid)
     adir = store.attempt_dir(jobdir, n)
-    runner, _ = store.read_runner(adir)
-    runner = runner or {"attempt": n}
+    raw_runner, _ = store.read_runner(adir)
+    runner: JsonDict = raw_runner or {"attempt": n}
     task = load_task(jobdir)
     warnings = list(runner.get("warnings", [])) + list(warnings)
     if runner.get("final") and isinstance(runner.get("taskmgr"), dict):
         meta = runner["taskmgr"]
-        if not _result_complete(adir):
+        if not result_complete(adir):
             business, _, _ = read_task_result(os.path.join(adir, "workdir"), own=(jobid, n))
             write_result(adir, business, meta)
         status = meta["status"]
@@ -370,13 +399,14 @@ def finalize_attempt(
     return job
 
 
-def _result_complete(adir):
+def result_complete(adir: str) -> bool:
     obj, _ = try_read_json(os.path.join(adir, "workdir", "result.json"))
-    meta = obj.get("_taskmgr") if isinstance(obj, dict) else None
-    return isinstance(meta, dict) and meta.get("final") is True and "status" in meta
+    res = _as_dict(obj)
+    meta = _as_dict(res.get("_taskmgr")) if res is not None else None
+    return meta is not None and meta.get("final") is True and "status" in meta
 
 
-def requeue_or_end_interrupted(store, jobid, n, reason):
+def requeue_or_end_interrupted(store: Store, jobid: str, n: int, reason: str) -> JsonDict:
     """Section 12.2 step 5: mark attempt interrupted, then cancel / fail / requeue."""
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
@@ -387,8 +417,8 @@ def requeue_or_end_interrupted(store, jobid, n, reason):
         ):
             return job
         adir = store.attempt_dir(jobdir, n)
-        runner, _ = store.read_runner(adir)
-        runner = runner or {"attempt": n}
+        raw_runner, _ = store.read_runner(adir)
+        runner: JsonDict = raw_runner or {"attempt": n}
         runner.update(
             {
                 "final": True,
@@ -429,7 +459,15 @@ def requeue_or_end_interrupted(store, jobid, n, reason):
         return job
 
 
-def end_without_result(store, jobdir, job, n, state, error, runner):
+def end_without_result(
+    store: Store,
+    jobdir: str,
+    job: JsonDict,
+    n: int | None,
+    state: str,
+    error: JsonDict | None,
+    runner: JsonDict | None,
+) -> str:
     """Move a job to a terminal state for an attempt without a normal exit. Needs the lock."""
     if n is not None:
         adir = store.attempt_dir(jobdir, n)
@@ -454,10 +492,10 @@ def end_without_result(store, jobdir, job, n, state, error, runner):
     return store.save_job(jobdir, job)
 
 
-def remove_tree(path):
+def remove_tree(path: str) -> None:
     """rmtree that also handles read-only package copies."""
 
-    def onerror(func, p, _exc):
+    def onerror(func: Callable[[str], object], p: str, _exc: object) -> None:
         try:
             os.chmod(os.path.dirname(p), 0o700)
             os.chmod(p, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)

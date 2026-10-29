@@ -7,12 +7,12 @@ import time
 import taskmgr_task as tt
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--size", type=int, default=64)
     args = ap.parse_args()
     blocks = [32, 64, 128, 256]
-    lat = {}
+    lat: dict[int, float] = {}
     os.makedirs("artifacts", exist_ok=True)
     for i, b in enumerate(blocks):
         lat[b] = abs(b - 128) / 64.0 + 1.0 + args.size / 1000.0

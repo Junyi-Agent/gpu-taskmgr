@@ -10,17 +10,17 @@ from helpers import GPUS, OK_RESULT, REMOTE, Env
 
 
 class SchedTest(Env):
-    def gate(self, name):
+    def gate(self, name: str) -> str:
         """Script that blocks until `release(name)` is called."""
         return "while [ ! -f %s ]; do sleep 0.05; done; %s" % (
             os.path.join(self.tmp, "rel-" + name),
             OK_RESULT,
         )
 
-    def release(self, name):
+    def release(self, name: str) -> None:
         open(os.path.join(self.tmp, "rel-" + name), "w").close()
 
-    def test_conflict_queues_and_disjoint_runs_concurrently(self):
+    def test_conflict_queues_and_disjoint_runs_concurrently(self) -> None:
         a = self.submit(self.make_pkg(script=self.gate("a"), gpus=[0]))
         b = self.submit(self.make_pkg(script=self.gate("b"), gpus=[0]))
         c = self.submit(self.make_pkg(script=self.gate("c"), gpus=[1]))
@@ -37,7 +37,7 @@ class SchedTest(Env):
         self.wait_state(b, "succeeded")
         self.wait_state(c, "succeeded")
 
-    def test_multi_gpu_job_not_starved(self):
+    def test_multi_gpu_job_not_starved(self) -> None:
         a = self.submit(self.make_pkg(script=self.gate("a"), gpus=[0]))
         self.start_daemon()
         self.wait_state(a, "running")
@@ -58,7 +58,7 @@ class SchedTest(Env):
             self.release(n)
         self.wait_state(small, "succeeded")
 
-    def test_unknown_job_does_not_lock_other_gpus(self):
+    def test_unknown_job_does_not_lock_other_gpus(self) -> None:
         u = self.submit(self.make_pkg(gpus=[0]))
         # Fixture: put u into unknown holding GPU 0 (as after an unconfirmed stop).
         jd = self.job_dir(u)
@@ -78,7 +78,7 @@ class SchedTest(Env):
         self.assertEqual(self.job(big)["state"], "queued")
         self.assertEqual(self.job(u)["state"], "unknown")
 
-    def test_index_mapping_and_cuda_visible_devices_order(self):
+    def test_index_mapping_and_cuda_visible_devices_order(self) -> None:
         out = os.path.join(self.tmp, "env.txt")
         pkg = self.make_pkg(
             script='echo "$CUDA_VISIBLE_DEVICES|$CUDA_DEVICE_ORDER" > %s; %s' % (out, OK_RESULT),
@@ -95,7 +95,7 @@ class SchedTest(Env):
         with open(out) as f:
             self.assertEqual(f.read().strip(), "%s,%s|PCI_BUS_ID" % (GPUS[2][1], GPUS[0][1]))
 
-    def test_cpu_jobs_and_max_cpu_jobs(self):
+    def test_cpu_jobs_and_max_cpu_jobs(self) -> None:
         self.set_config(max_cpu_jobs=1)
         a = self.submit(self.make_pkg(script=self.gate("a")))
         b = self.submit(self.make_pkg(script=self.gate("b")))
@@ -111,7 +111,7 @@ class SchedTest(Env):
         self.release("g")
         self.wait_state(b, "succeeded")
 
-    def test_second_daemon_refuses_and_lockless_daemons_never_double_dispatch(self):
+    def test_second_daemon_refuses_and_lockless_daemons_never_double_dispatch(self) -> None:
         self.start_daemon()
         time.sleep(0.5)
         p = subprocess.run(

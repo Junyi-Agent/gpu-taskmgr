@@ -9,26 +9,27 @@ import signal
 import stat
 import sys
 import time
+from typing import cast
 
 from . import gpu, procutil
-from .common import TaskmgrError, utcnow_iso
+from .common import JsonDict, TaskmgrError, utcnow_iso
 from .monitor import STOP_OUTCOME, GroupStopper, mark_unknown, set_stopping
-from .store import end_without_result, finalize_attempt, load_task
+from .store import Store, end_without_result, finalize_attempt, load_task
 
 
-def log(msg):
+def log(msg: str) -> None:
     sys.stderr.write("%s shim[%d] %s\n" % (utcnow_iso(), os.getpid(), msg))
     sys.stderr.flush()
 
 
-def _crash_point(name):
+def _crash_point(name: str) -> None:
     # TASKMGR_TEST_SHIM_CRASH: test-only hook that kills the shim at a named point.
     if os.environ.get("TASKMGR_TEST_SHIM_CRASH") == name:
         log("test crash at %s" % name)
         os._exit(99)
 
 
-def build_env(cfg, task, job, n, workdir):
+def build_env(cfg: JsonDict, task: JsonDict, job: JsonDict, n: int, workdir: str) -> dict[str, str]:
     """Entry-process environment, built in the order of Section 3.2."""
     try:
         pw = pwd.getpwuid(os.getuid())
@@ -36,12 +37,12 @@ def build_env(cfg, task, job, n, workdir):
     except KeyError:
         home, user = os.environ.get("HOME", "/"), os.environ.get("USER", "")
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "USER": user, "LANG": "C.UTF-8"}
-    env.update({str(k): str(v) for k, v in (cfg.get("base_env") or {}).items()})
-    venv = (task.get("environment") or {}).get("venv")
+    env.update({str(k): str(v) for k, v in cast(JsonDict, cfg.get("base_env") or {}).items()})
+    venv = cast(JsonDict, task.get("environment") or {}).get("venv")
     if venv:
         env["VIRTUAL_ENV"] = venv
         env["PATH"] = os.path.join(venv, "bin") + (":" + env["PATH"] if env.get("PATH") else "")
-    env.update(task.get("env") or {})
+    env.update(cast("dict[str, str]", task.get("env") or {}))
     env.update(
         {
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
@@ -57,7 +58,7 @@ def build_env(cfg, task, job, n, workdir):
     return env
 
 
-def resolve_entry(argv0, workdir, path_env):
+def resolve_entry(argv0: str, workdir: str, path_env: str) -> tuple[str | None, str | None]:
     """Resolve argv[0] per Section 2.2. Returns (path, error)."""
     if "/" in argv0:
         p = argv0 if argv0.startswith("/") else os.path.join(workdir, argv0)
@@ -72,10 +73,14 @@ def resolve_entry(argv0, workdir, path_env):
     return found, None
 
 
-def prestart_checks(task, job, env, workdir):
-    errors = []
-    envi = task.get("environment") or {}
-    for p in ([envi["venv"]] if envi.get("venv") else []) + list(envi.get("required_paths") or []):
+def prestart_checks(
+    task: JsonDict, job: JsonDict, env: dict[str, str], workdir: str
+) -> tuple[str | None, list[str]]:
+    errors: list[str] = []
+    envi = cast(JsonDict, task.get("environment") or {})
+    for p in ([envi["venv"]] if envi.get("venv") else []) + list(
+        cast("list[str]", envi.get("required_paths") or [])
+    ):
         if not os.path.exists(p):
             errors.append("required path does not exist: %s" % p)
     path, err = resolve_entry(task["entry"]["argv"][0], workdir, env.get("PATH", ""))
@@ -93,12 +98,12 @@ def prestart_checks(task, job, env, workdir):
     return path, errors
 
 
-def prepare_workdir(jobdir, adir):
+def prepare_workdir(jobdir: str, adir: str) -> str:
     workdir = os.path.join(adir, "workdir")
     if os.path.exists(workdir):
         raise RuntimeError("workdir already exists: %s" % workdir)
     shutil.copytree(os.path.join(jobdir, "package"), workdir, symlinks=True)
-    for dirpath, dirnames, filenames in os.walk(workdir):
+    for dirpath, _dirnames, filenames in os.walk(workdir):
         os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) | 0o700)
         for f in filenames:
             p = os.path.join(dirpath, f)
@@ -107,7 +112,7 @@ def prepare_workdir(jobdir, adir):
     return workdir
 
 
-def run(store, jobid, n, lock_fd):
+def run(store: Store, jobid: str, n: int, lock_fd: int) -> int:
     os.set_inheritable(lock_fd, False)  # the task must never inherit shim.lock
     jobdir, job = store.load_job(jobid)
     adir = store.attempt_dir(jobdir, n)
@@ -116,10 +121,11 @@ def run(store, jobid, n, lock_fd):
         job.get("current_attempt") != n
         or job["state"] not in ("running", "stopping")
         or not isinstance(runner, dict)
-        or runner.get("pgid") is not None
+        or cast(JsonDict, runner).get("pgid") is not None
     ):
         log("job %s attempt %d is not startable (state=%s); exiting" % (jobid, n, job["state"]))
         return 0
+    runner = cast(JsonDict, runner)
     cfg = store.config
     task = load_task(jobdir)
     runner.update(
@@ -154,7 +160,7 @@ def run(store, jobid, n, lock_fd):
                 runner["status"] = "failed"
                 runner["error"] = err
                 end_without_result(store, jobdir, job, n, "failed", err, runner)
-            store.write_runner(store.attempt_dir(store.find_job_dir(jobid), n), runner)
+            store.write_runner(store.attempt_dir(cast(str, store.find_job_dir(jobid)), n), runner)
         log("pre-start check failed: %s" % errors)
         return 0
 
@@ -212,18 +218,27 @@ def run(store, jobid, n, lock_fd):
     return supervise(store, jobid, n, adir, runner, pid, task, cfg)
 
 
-def supervise(store, jobid, n, adir, runner, pid, task, cfg):
+def supervise(
+    store: Store,
+    jobid: str,
+    n: int,
+    adir: str,
+    runner: JsonDict,
+    pid: int,
+    task: JsonDict,
+    cfg: JsonDict,
+) -> int:
     t0 = time.monotonic()
     timeout = task.get("timeout_seconds")
     poll = float(cfg.get("control_poll_seconds", 2))
     grace, confirm = cfg.get("stop_grace_seconds", 30), cfg.get("kill_confirm_seconds", 10)
-    exit_status = None
-    stopper = None
-    stop_reason = None
+    exit_status: int | None = None
+    stopper: GroupStopper | None = None
+    stop_reason: str | None = None
     last_poll = 0.0
-    warnings = []
+    warnings: list[str] = []
 
-    def reap():
+    def reap() -> None:
         nonlocal exit_status
         if exit_status is not None:
             return
@@ -235,7 +250,7 @@ def supervise(store, jobid, n, adir, runner, pid, task, cfg):
             exit_status = st
             record_exit(st)
 
-    def record_exit(st):
+    def record_exit(st: int) -> None:
         rc = os.waitstatus_to_exitcode(st)
         runner.update(
             {
@@ -307,7 +322,15 @@ def supervise(store, jobid, n, adir, runner, pid, task, cfg):
     return 0
 
 
-def unconfirmed(store, jobid, n, adir, runner, reason, alive):
+def unconfirmed(
+    store: Store,
+    jobid: str,
+    n: int,
+    adir: str,
+    runner: JsonDict,
+    reason: str | None,
+    alive: list[int],
+) -> int:
     runner["stop_unconfirmed_reason"] = reason
     store.write_runner(adir, runner)
     mark_unknown(
@@ -322,7 +345,7 @@ def unconfirmed(store, jobid, n, adir, runner, reason, alive):
     return 0
 
 
-def main(store, jobid, n, lock_fd):
+def main(store: Store, jobid: str, n: int, lock_fd: int) -> int:
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
         return run(store, jobid, n, lock_fd)

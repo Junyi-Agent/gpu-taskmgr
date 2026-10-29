@@ -5,7 +5,6 @@ Everything runs on one Linux machine without GPUs or network (Section 18.1).
 
 import json
 import os
-from typing import Any
 import shutil
 import signal
 import subprocess
@@ -13,6 +12,8 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Callable, Iterable
+from typing import IO, Any, TypeVar
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TASK = os.path.join(REPO, "bin", "task")
@@ -20,7 +21,11 @@ REMOTE = os.path.join(REPO, "bin", "taskmgr-remote")
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-FAST_CONFIG = {
+from taskmgr.common import JsonDict  # noqa: E402
+
+T = TypeVar("T")
+
+FAST_CONFIG: JsonDict = {
     "stop_grace_seconds": 1,
     "kill_confirm_seconds": 1,
     "control_poll_seconds": 0.3,
@@ -39,10 +44,10 @@ GPUS = [
 class Env(unittest.TestCase):
     """Base class: builds a sandbox with N local-transport servers."""
 
-    servers = ("s1",)
-    remote_config = {}
+    servers: tuple[str, ...] = ("s1",)
+    remote_config: JsonDict = {}
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp(prefix="taskmgr-test-")
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
@@ -71,7 +76,7 @@ class Env(unittest.TestCase):
             "TASKMGR_TEST_PROTOCOL_VERSION",
         ):
             self.env.pop(k, None)
-        self.machines = []
+        self.machines: list[JsonDict] = []
         for name in self.servers:
             root = os.path.join(self.tmp, "remote-" + name)
             os.makedirs(root)
@@ -89,10 +94,10 @@ class Env(unittest.TestCase):
                 }
             )
         self.write_machines()
-        self.daemons = {}
+        self.daemons: dict[str, list[subprocess.Popen[bytes]]] = {}
         self.pkg_count = 0
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         for name in list(self.daemons):
             self.stop_daemon(name)
         # Kill any task / shim process left behind by this test.
@@ -108,8 +113,8 @@ class Env(unittest.TestCase):
                     pass
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _pids_under(self, root):
-        pids = []
+    def _pids_under(self, root: str) -> list[int]:
+        pids: list[int] = []
         for n in os.listdir("/proc"):
             if not n.isdigit():
                 continue
@@ -124,26 +129,26 @@ class Env(unittest.TestCase):
         return pids
 
     # -- fixtures -------------------------------------------------------------
-    def set_gpus(self, gpus):
+    def set_gpus(self, gpus: Iterable[tuple[int, str]]) -> None:
         with open(self.gpu_file, "w") as f:
             for i, u in gpus:
                 f.write("%d, %s\n" % (i, u))
 
-    def set_boot(self, value):
+    def set_boot(self, value: str) -> None:
         with open(self.boot_file, "w") as f:
             f.write(value + "\n")
 
-    def write_machines(self):
+    def write_machines(self) -> None:
         with open(os.path.join(self.home, "machines.json"), "w") as f:
             json.dump({"servers": self.machines}, f)
 
-    def server(self, name):
+    def server(self, name: str) -> JsonDict:
         return next(m for m in self.machines if m["name"] == name)
 
-    def root(self, name="s1"):
+    def root(self, name: str = "s1") -> str:
         return self.server(name)["remote_root"]
 
-    def set_config(self, name="s1", **kw):
+    def set_config(self, name: str = "s1", **kw: Any) -> None:
         p = os.path.join(self.root(name), "config.json")
         with open(p) as f:
             cfg = json.load(f)
@@ -153,22 +158,22 @@ class Env(unittest.TestCase):
 
     def make_pkg(
         self,
-        task_id="AA-01",
-        script=None,
-        gpus=(),
-        required=None,
-        extra=None,
-        files=None,
-        argv=None,
-        timeout=None,
-        env=None,
-    ):
+        task_id: str = "AA-01",
+        script: str | None = None,
+        gpus: Iterable[int | str] = (),
+        required: Iterable[str] | None = None,
+        extra: JsonDict | None = None,
+        files: dict[str, str] | None = None,
+        argv: list[str] | None = None,
+        timeout: float | None = None,
+        env: dict[str, str] | None = None,
+    ) -> str:
         """Create a package whose entry runs `sh -c script` (default: write a valid result)."""
         script = OK_RESULT if script is None else script
         self.pkg_count += 1
         d = os.path.join(self.tmp, "pkg-%d" % self.pkg_count)
         os.makedirs(d)
-        task = {
+        task: JsonDict = {
             "schema_version": 1,
             "task_id": task_id,
             "entry": {"argv": argv or ["sh", "-c", script]},
@@ -198,7 +203,9 @@ class Env(unittest.TestCase):
         return d
 
     # -- running commands -----------------------------------------------------
-    def task(self, *args, env=None, timeout=120) -> tuple[int, Any, str]:
+    def task(
+        self, *args: object, env: dict[str, str] | None = None, timeout: float = 120
+    ) -> tuple[int, Any, str]:
         e = dict(self.env)
         e.update(env or {})
         p = subprocess.run(
@@ -216,20 +223,26 @@ class Env(unittest.TestCase):
             obj = out
         return p.returncode, obj, p.stderr.decode()
 
-    def ok(self, *args, **kw) -> Any:
+    def ok(self, *args: object, **kw: Any) -> Any:
         rc, obj, err = self.task(*args, **kw)
         self.assertEqual(rc, 0, "task %s -> %d\nstdout=%s\nstderr=%s" % (args, rc, obj, err))
         return obj
 
-    def submit(self, pkg, host="s1", key=None):
-        args = (
+    def submit(self, pkg: str, host: str | None = "s1", key: str | None = None) -> str:
+        args: list[str] = (
             ["submit", pkg]
             + (["--host", host] if host else [])
             + (["--submission-key", key] if key else [])
         )
         return self.ok(*args)["jobid"]
 
-    def remote(self, *args, name="s1", env=None, stdin=None) -> tuple[int, Any, str]:
+    def remote(
+        self,
+        *args: object,
+        name: str = "s1",
+        env: dict[str, str] | None = None,
+        stdin: IO[Any] | None = None,
+    ) -> tuple[int, Any, str]:
         e = dict(self.env)
         e.update(env or {})
         p = subprocess.run(
@@ -247,7 +260,9 @@ class Env(unittest.TestCase):
             obj = p.stdout.decode()
         return p.returncode, obj, p.stderr.decode()
 
-    def start_daemon(self, name="s1", env=None):
+    def start_daemon(
+        self, name: str = "s1", env: dict[str, str] | None = None
+    ) -> subprocess.Popen[bytes]:
         e = dict(self.env)
         e.update(env or {})
         log = open(os.path.join(self.tmp, "daemon-%s.log" % name), "ab")
@@ -262,7 +277,7 @@ class Env(unittest.TestCase):
         self.daemons.setdefault(name, []).append(p)
         return p
 
-    def stop_daemon(self, name="s1", group=False):
+    def stop_daemon(self, name: str = "s1", group: bool = False) -> None:
         for p in self.daemons.pop(name, []):
             if p.poll() is None:
                 if group:
@@ -275,7 +290,7 @@ class Env(unittest.TestCase):
                     p.kill()
                     p.wait()
 
-    def daemon_log(self, name="s1"):
+    def daemon_log(self, name: str = "s1") -> str:
         try:
             with open(os.path.join(self.tmp, "daemon-%s.log" % name)) as f:
                 return f.read()
@@ -283,7 +298,7 @@ class Env(unittest.TestCase):
             return ""
 
     # -- inspecting remote state ----------------------------------------------
-    def job_dir(self, jobid, name="s1") -> str:
+    def job_dir(self, jobid: str, name: str = "s1") -> str:
         """The job's current directory; FileNotFoundError (an OSError) if it has none."""
         for d in ("queue", "in-progress", "done"):
             p = os.path.join(self.root(name), d, jobid)
@@ -291,17 +306,17 @@ class Env(unittest.TestCase):
                 return p
         raise FileNotFoundError("job %s has no directory on %s" % (jobid, name))
 
-    def job(self, jobid, name="s1"):
+    def job(self, jobid: str, name: str = "s1") -> JsonDict:
         with open(os.path.join(self.job_dir(jobid, name), "job.json")) as f:
             return json.load(f)
 
-    def runner(self, jobid, n=1, name="s1"):
+    def runner(self, jobid: str, n: int = 1, name: str = "s1") -> JsonDict:
         with open(
             os.path.join(self.job_dir(jobid, name), "attempts", "%04d" % n, "runner.json")
         ) as f:
             return json.load(f)
 
-    def result(self, jobid, n=1, name="s1"):
+    def result(self, jobid: str, n: int = 1, name: str = "s1") -> JsonDict:
         with open(
             os.path.join(
                 self.job_dir(jobid, name), "attempts", "%04d" % n, "workdir", "result.json"
@@ -309,7 +324,13 @@ class Env(unittest.TestCase):
         ) as f:
             return json.load(f)
 
-    def wait_for(self, pred, timeout=30, msg="condition", interval=0.1):
+    def wait_for(
+        self,
+        pred: Callable[[], T],
+        timeout: float = 30,
+        msg: str = "condition",
+        interval: float = 0.1,
+    ) -> T:
         end = time.time() + timeout
         while time.time() < end:
             v = pred()
@@ -318,11 +339,13 @@ class Env(unittest.TestCase):
             time.sleep(interval)
         self.fail("timed out waiting for %s\n--- daemon log ---\n%s" % (msg, self.daemon_log()))
 
-    def wait_state(self, jobid, states, name="s1", timeout=30):
+    def wait_state(
+        self, jobid: str, states: str | tuple[str, ...], name: str = "s1", timeout: float = 30
+    ) -> JsonDict:
         if isinstance(states, str):
             states = (states,)
 
-        def check():
+        def check() -> bool:
             try:
                 return self.job(jobid, name)["state"] in states
             except (OSError, ValueError, TypeError):
@@ -331,8 +354,10 @@ class Env(unittest.TestCase):
         self.wait_for(check, timeout, "job %s to reach %s" % (jobid, states))
         return self.job(jobid, name)
 
-    def wait_runner(self, jobid, key, n=1, name="s1", timeout=30):
-        def check():
+    def wait_runner(
+        self, jobid: str, key: str, n: int = 1, name: str = "s1", timeout: float = 30
+    ) -> JsonDict:
+        def check() -> bool:
             try:
                 return self.runner(jobid, n, name).get(key) is not None
             except (OSError, ValueError, TypeError):
@@ -342,7 +367,7 @@ class Env(unittest.TestCase):
         return self.runner(jobid, n, name)
 
 
-def pid_alive(pid):
+def pid_alive(pid: int) -> bool:
     try:
         with open("/proc/%d/stat" % pid) as f:
             data = f.read()
@@ -351,7 +376,7 @@ def pid_alive(pid):
     return data[data.rfind(")") + 2] not in "ZX"
 
 
-def kill_quiet(pid, sig=signal.SIGKILL, group=False):
+def kill_quiet(pid: int, sig: int = signal.SIGKILL, group: bool = False) -> None:
     try:
         (os.killpg if group else os.kill)(pid, sig)
     except OSError:

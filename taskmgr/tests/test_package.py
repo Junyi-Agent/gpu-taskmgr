@@ -9,9 +9,13 @@ import time
 from helpers import Env
 
 from taskmgr import package
+from taskmgr.common import JsonDict
 
 
-def write_tar(path, entries):
+TarEntry = tuple[JsonDict, "bytes | None"]
+
+
+def write_tar(path: str, entries: list[TarEntry]) -> None:
     """entries: list of (TarInfo kwargs, data or None)."""
     with tarfile.open(path, "w:gz") as tar:
         for kw, data in entries:
@@ -26,7 +30,7 @@ def write_tar(path, entries):
 
 
 class PackageTest(Env):
-    def test_pack_is_deterministic_and_hash_matches_archive(self):
+    def test_pack_is_deterministic_and_hash_matches_archive(self) -> None:
         pkg = self.make_pkg(files={"src/a.py": "print(1)\n", "z.txt": "z"})
         os.symlink("src/a.py", os.path.join(pkg, "link.py"))
         os.chmod(os.path.join(pkg, "src/a.py"), 0o755)
@@ -54,14 +58,14 @@ class PackageTest(Env):
         self.assertEqual((rc1, rc2), (0, 0))
         self.assertEqual(v1["content_hash"], v2["content_hash"])
 
-    def test_hash_sees_exec_bit_and_content(self):
+    def test_hash_sees_exec_bit_and_content(self) -> None:
         pkg = self.make_pkg(files={"x.sh": "echo\n"})
         h1 = package.content_hash(pkg)
         os.chmod(os.path.join(pkg, "x.sh"), 0o755)
         h2 = package.content_hash(pkg)
         self.assertNotEqual(h1, h2)
 
-    def test_init_and_validate_exit_codes(self):
+    def test_init_and_validate_exit_codes(self) -> None:
         target = os.path.join(self.tmp, "AA-01")
         out = self.ok("init", "AA-01", "--output", target)
         self.assertEqual(out["path"], target)
@@ -99,14 +103,14 @@ class PackageTest(Env):
             (0, {"valid": True, "task_id": "AA-01", "content_hash": out.get("content_hash")}),
         )
 
-    def test_examples_are_valid(self):
+    def test_examples_are_valid(self) -> None:
         ex = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples")
         for name in os.listdir(ex):
             rc, out, err = self.task("validate", os.path.join(ex, name))
             self.assertEqual(rc, 0, (name, out, err))
 
-    def test_invalid_packages_rejected(self):
-        cases = [
+    def test_invalid_packages_rejected(self) -> None:
+        cases: list[tuple[JsonDict, str]] = [
             ({"extra": {"task_id": "A-1"}}, "task_id"),
             ({"extra": {"task_id": "aa-01"}}, "task_id"),
             ({"argv": ["./missing.sh"]}, "entry"),
@@ -136,7 +140,7 @@ class PackageTest(Env):
             f.write("\n<REQUIRED: fill me>\n")
         self.assertEqual(self.task("validate", pkg)[0], 1)
 
-    def test_symlinks_and_special_files(self):
+    def test_symlinks_and_special_files(self) -> None:
         pkg = self.make_pkg()
         os.symlink("/etc/passwd", os.path.join(pkg, "abs"))
         rc, out, _ = self.task("validate", pkg)
@@ -155,15 +159,15 @@ class PackageTest(Env):
         os.symlink("d/f", os.path.join(pkg, "ok"))  # internal relative link is fine
         self.assertEqual(self.task("validate", pkg)[0], 0)
 
-    def test_command_name_entry_passes_validation(self):
+    def test_command_name_entry_passes_validation(self) -> None:
         pkg = self.make_pkg(argv=["bash", "-c", "exit 0"])
         self.assertEqual(self.task("validate", pkg)[0], 0)
         pkg = self.make_pkg(argv=["definitely-not-a-command-xyz"])
         self.assertEqual(self.task("validate", pkg)[0], 0)  # checked remotely
 
-    def _tar_with(self, extra_entries):
+    def _tar_with(self, extra_entries: list[TarEntry]) -> str:
         good = self.make_pkg()
-        entries = []
+        entries: list[TarEntry] = []
         for name in ("task.json", "TASK.md", "progress.json"):
             with open(os.path.join(good, name), "rb") as f:
                 entries.append(({"name": name, "mode": 0o644}, f.read()))
@@ -171,8 +175,8 @@ class PackageTest(Env):
         write_tar(path, entries + extra_entries)
         return path
 
-    def test_unsafe_archives_rejected_locally_and_remotely(self):
-        bad = [
+    def test_unsafe_archives_rejected_locally_and_remotely(self) -> None:
+        bad: list[list[TarEntry]] = [
             [({"name": "../evil", "mode": 0o644}, b"x")],
             [({"name": "/abs/evil", "mode": 0o644}, b"x")],
             [({"name": "lnk", "type": tarfile.SYMTYPE, "linkname": "../../etc"}, None)],
@@ -196,14 +200,14 @@ class PackageTest(Env):
         self.assertEqual(os.listdir(os.path.join(self.root(), "queue")), [])
         self.assertEqual(os.listdir(os.path.join(self.root(), "incoming")), [])
 
-    def test_remote_rejects_oversized_package(self):
+    def test_remote_rejects_oversized_package(self) -> None:
         self.set_config(max_package_bytes=1000)
         pkg = self.make_pkg(files={"big.bin": "x" * 5000})
         rc, out, _ = self.task("submit", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
         self.assertEqual(out["error"]["code"], "package_too_large")
 
-    def test_remote_rejects_unknown_gpu(self):
+    def test_remote_rejects_unknown_gpu(self) -> None:
         pkg = self.make_pkg(gpus=[7])
         rc, out, _ = self.task("submit", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
@@ -216,7 +220,7 @@ class PackageTest(Env):
         self.assertEqual(rc, 2)
         self.assertIn("duplicate", out["error"]["message"])
 
-    def test_wrapped_archive_with_top_level_directory(self):
+    def test_wrapped_archive_with_top_level_directory(self) -> None:
         pkg = self.make_pkg()
         path = os.path.join(self.tmp, "wrapped.tar.gz")
         with tarfile.open(path, "w:gz") as tar:
@@ -225,7 +229,7 @@ class PackageTest(Env):
         self.assertEqual(out["task_id"], "AA-01")
         self.assertEqual(out["content_hash"], package.content_hash(pkg))
 
-    def test_symlink_chain_escaping_package_is_rejected(self):
+    def test_symlink_chain_escaping_package_is_rejected(self) -> None:
         pkg = self.make_pkg()
         os.symlink(".", os.path.join(pkg, "x"))
         os.symlink("x/..", os.path.join(pkg, "y"))  # lexically ".", physically the parent
@@ -243,7 +247,7 @@ class PackageTest(Env):
             rc, out, _ = self.remote("receive", stdin=f)
         self.assertEqual((rc, out["error"]["code"]), (2, "unsafe_package"))
 
-    def test_validate_archive_reports_all_errors(self):
+    def test_validate_archive_reports_all_errors(self) -> None:
         path = self._tar_with(
             [({"name": "../a", "mode": 0o644}, b"x"), ({"name": "/b", "mode": 0o644}, b"x")]
         )
@@ -258,7 +262,7 @@ class PackageTest(Env):
         rc, out, _ = self.task("validate", "--", "\n")
         self.assertEqual(rc, 2)
 
-    def test_regexes_reject_trailing_newline(self):
+    def test_regexes_reject_trailing_newline(self) -> None:
         from taskmgr.common import SUBMISSION_KEY_RE, TASK_ID_RE
 
         self.assertIsNone(TASK_ID_RE.match("AA-01\n"))

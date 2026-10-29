@@ -3,7 +3,7 @@
 import taskmgr_task as tt
 
 
-def main():
+def main() -> None:
     tt.write_progress("starting", percent=0)
     # ... do the work, writing artifacts under ./artifacts/ ...
     tt.update_outputs(example=True)

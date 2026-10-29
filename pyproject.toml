@@ -33,4 +33,4 @@ target-version = "py310"
 pythonVersion = "3.10"
 pythonPlatform = "Linux"  # the remote side relies on /proc, fork, setsid
 include = ["taskmgr"]
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"

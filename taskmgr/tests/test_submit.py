@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from typing import Any
 
 from helpers import REMOTE, Env
 
@@ -15,7 +16,7 @@ from taskmgr import package
 class SubmitTest(Env):
     servers = ("s1", "s2", "s3")
 
-    def test_directory_and_archive_submission(self):
+    def test_directory_and_archive_submission(self) -> None:
         pkg = self.make_pkg()
         a = self.ok("submit", "--host", "s1", pkg)
         tgz = os.path.join(self.tmp, "p.tar.gz")
@@ -38,7 +39,7 @@ class SubmitTest(Env):
         # The original local directory is untouched.
         self.assertEqual(sorted(os.listdir(pkg)), ["TASK.md", "progress.json", "task.json"])
 
-    def test_round_robin_skips_disabled_and_host_overrides(self):
+    def test_round_robin_skips_disabled_and_host_overrides(self) -> None:
         self.machines[1]["enabled"] = False
         self.write_machines()
         pkg = self.make_pkg()
@@ -47,21 +48,25 @@ class SubmitTest(Env):
         # --host may target a disabled server.
         self.assertEqual(self.ok("submit", "--host", "s2", pkg)["host"], "s2")
         self.assertEqual(self.ok("submit", pkg)["host"], "s1")  # cursor not consumed by --host
-        rc, out, _ = self.task("submit", "--host", "nope", pkg)
+        rc, _, _ = self.task("submit", "--host", "nope", pkg)
         self.assertEqual(rc, 2)
 
-    def test_round_robin_under_concurrent_clis(self):
+    def test_round_robin_under_concurrent_clis(self) -> None:
         pkg = self.make_pkg()
         n = 12
+
+        def submit(_: int) -> tuple[int, Any, str]:
+            return self.task("submit", pkg)
+
         with concurrent.futures.ThreadPoolExecutor(n) as ex:
-            res = list(ex.map(lambda _: self.task("submit", pkg), range(n)))
+            res = list(ex.map(submit, range(n)))
         hosts = [r[1]["host"] for r in res if r[0] == 0]
         self.assertEqual(len(hosts), n)
         self.assertEqual({h: hosts.count(h) for h in set(hosts)}, {"s1": 4, "s2": 4, "s3": 4})
         with open(os.path.join(self.home, "rr.json")) as f:
             self.assertEqual(json.load(f)["cursor"], n)
 
-    def test_submission_key_rules(self):
+    def test_submission_key_rules(self) -> None:
         pkg = self.make_pkg()
         rc, out, _ = self.task("submit", "--submission-key", "k1", pkg)
         self.assertEqual(rc, 2)
@@ -89,19 +94,27 @@ class SubmitTest(Env):
         d = self.ok("submit", "--host", "s2", "--submission-key", "k1", other)
         self.assertFalse(d["deduplicated"])
 
-    def test_concurrent_submissions(self):
+    def test_concurrent_submissions(self) -> None:
         pkg = self.make_pkg()
+
+        def submit_s1(_: int) -> tuple[int, Any, str]:
+            return self.task("submit", "--host", "s1", pkg)
+
         with concurrent.futures.ThreadPoolExecutor(8) as ex:
-            res = list(ex.map(lambda i: self.task("submit", "--host", "s1", pkg), range(8)))
+            res = list(ex.map(submit_s1, range(8)))
         ids = [r[1]["jobid"] for r in res]
         self.assertEqual(len(set(ids)), 8)
         seqs = sorted(self.job(j)["enqueue_seq"] for j in ids)
         self.assertEqual(seqs, list(range(1, 9)))
         # Concurrent retries with one key enqueue exactly one job.
+
+        def submit_s2_same_key(_: int) -> tuple[int, Any, str]:
+            return self.task("submit", "--host", "s2", "--submission-key", "same", pkg)
+
         with concurrent.futures.ThreadPoolExecutor(6) as ex:
             res = list(
                 ex.map(
-                    lambda i: self.task("submit", "--host", "s2", "--submission-key", "same", pkg),
+                    submit_s2_same_key,
                     range(6),
                 )
             )
@@ -110,7 +123,7 @@ class SubmitTest(Env):
         self.assertEqual(sum(1 for r in res if not r[1]["deduplicated"]), 1)
         self.assertEqual(len(os.listdir(os.path.join(self.root("s2"), "queue"))), 1)
 
-    def test_uncertain_outcome_reports_retry_command(self):
+    def test_uncertain_outcome_reports_retry_command(self) -> None:
         self.machines[0]["local"] = {"fail": "ssh: connect timed out"}
         self.write_machines()
         pkg = self.make_pkg()
@@ -130,14 +143,14 @@ class SubmitTest(Env):
                 and os.listdir(os.path.join(self.root(s), "queue"))
             )
 
-    def test_dedup_answers_before_machine_dependent_checks(self):
+    def test_dedup_answers_before_machine_dependent_checks(self) -> None:
         pkg = self.make_pkg(gpus=[1])
         a = self.ok("submit", "--host", "s1", "--submission-key", "gpu-k", pkg)
         self.set_gpus([])  # the GPU vanished (or nvidia-smi broke) after the first enqueue
         b = self.ok("submit", "--host", "s1", "--submission-key", "gpu-k", pkg)
         self.assertEqual((b["jobid"], b["deduplicated"]), (a["jobid"], True))
 
-    def test_retry_after_lost_ack(self):
+    def test_retry_after_lost_ack(self) -> None:
         pkg = self.make_pkg()
         # Simulate: the server enqueued the job but the client never saw the ACK.
         tgz = os.path.join(self.tmp, "p.tgz")
@@ -148,7 +161,7 @@ class SubmitTest(Env):
         r = self.ok("submit", "--host", "s1", "--submission-key", "lost-1", pkg)
         self.assertEqual((r["jobid"], r["deduplicated"]), (ack["jobid"], True))
 
-    def test_protocol_version_mismatch(self):
+    def test_protocol_version_mismatch(self) -> None:
         rc, out, _ = self.remote("--protocol-version", "99", "jobs")
         self.assertEqual((rc, out["error"]["code"]), (2, "protocol_mismatch"))
         rc, out, _ = self.task("jobs", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "99"})
@@ -173,7 +186,7 @@ class SubmitTest(Env):
         self.assertEqual(rc, 2)
         self.assertEqual(os.listdir(self.root()), ["config.json"])  # never reached receive
 
-    def test_daemon_restart_keeps_in_progress_upload(self):
+    def test_daemon_restart_keeps_in_progress_upload(self) -> None:
         pkg = self.make_pkg()
         tgz = os.path.join(self.tmp, "p.tgz")
         package.pack_dir(pkg, tgz)

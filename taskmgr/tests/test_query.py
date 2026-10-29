@@ -13,19 +13,19 @@ from helpers import TASK, Env
 class QueryTest(Env):
     servers = ("s1", "s2", "s3")
 
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.machines[2]["enabled"] = False  # disabled servers are still queried
         self.write_machines()
 
-    def unreachable(self, name, on=True):
+    def unreachable(self, name: str, on: bool = True) -> None:
         if on:
             self.server(name)["local"] = {"fail": "ssh: connect to host %s timed out" % name}
         else:
             self.server(name).pop("local", None)
         self.write_machines()
 
-    def test_jobs_across_servers(self):
+    def test_jobs_across_servers(self) -> None:
         a = self.submit(self.make_pkg(task_id="AA-01"), host="s1")
         b = self.submit(self.make_pkg(task_id="BB-02"), host="s3")
         out = self.ok("jobs")
@@ -52,7 +52,7 @@ class QueryTest(Env):
         rc, out, _ = self.task("jobs")
         self.assertEqual(rc, 2)
 
-    def test_status_lookup_table(self):
+    def test_status_lookup_table(self) -> None:
         j = self.submit(self.make_pkg(), host="s3")
         out = self.ok("status", j)
         self.assertEqual((out["host"], out["state"], out["complete"]), ("s3", "queued", True))
@@ -78,7 +78,7 @@ class QueryTest(Env):
         rc, out, _ = self.task("status", "0123456789abcdef", "--host", "s1")
         self.assertEqual((rc, out["error"]["code"]), (2, "not_found"))
 
-    def test_wait_outcomes(self):
+    def test_wait_outcomes(self) -> None:
         self.start_daemon("s1")
         ok = self.submit(
             self.make_pkg(script="sleep 1; echo '{\"outputs\": {}}' > $TASKMGR_RESULT_FILE")
@@ -101,7 +101,7 @@ class QueryTest(Env):
         self.assertEqual(out["error"]["code"], "wait_timeout")
         self.assertEqual(self.job(slow)["state"], "running")  # wait never changes remote state
 
-    def test_wait_retries_connection_failures(self):
+    def test_wait_retries_connection_failures(self) -> None:
         self.start_daemon("s1")
         flag = os.path.join(self.tmp, "down")
         self.server("s1")["local"] = {"fail_if_exists": flag}
@@ -143,7 +143,7 @@ class QueryTest(Env):
         os.unlink(flag)
         self.assertEqual(self.job(j2)["state"], "running")
 
-    def test_wait_without_host_locates_once(self):
+    def test_wait_without_host_locates_once(self) -> None:
         self.start_daemon("s2")
         j = self.submit(self.make_pkg(script="sleep 1.5; exit 3"), host="s2")
         flag = os.path.join(self.tmp, "s1down")
@@ -157,10 +157,10 @@ class QueryTest(Env):
         )
         time.sleep(0.8)
         open(flag, "w").close()  # s1 going down after the lookup does not matter
-        out, err = p.communicate(timeout=30)
+        _, err = p.communicate(timeout=30)
         self.assertEqual(p.returncode, 1, err)
 
-    def test_logs_and_follow(self):
+    def test_logs_and_follow(self) -> None:
         self.start_daemon("s1")
         j = self.submit(
             self.make_pkg(script="for i in 1 2 3; do echo line$i; sleep 0.5; done; echo err >&2")
@@ -182,7 +182,7 @@ class QueryTest(Env):
         rc, out, _ = self.task("logs", j, "--host", "s1", "--attempt", "9")
         self.assertEqual(rc, 2)
 
-    def test_fetch(self):
+    def test_fetch(self) -> None:
         self.start_daemon("s1")
         j = self.submit(
             self.make_pkg(
@@ -228,7 +228,7 @@ class QueryTest(Env):
         rc, out, _ = self.task("fetch", j, "--host", "s1", "--output", out2, "--attempt", "2")
         self.assertEqual(rc, 2)
 
-    def test_fetch_running_is_partial(self):
+    def test_fetch_running_is_partial(self) -> None:
         self.start_daemon("s1")
         j = self.submit(self.make_pkg(script="echo started; sleep 30"))
         self.wait_for(

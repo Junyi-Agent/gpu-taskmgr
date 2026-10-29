@@ -7,10 +7,12 @@ detection, takeover) and `taskmgr-remote resolve`.
 import os
 import signal
 import time
+from collections.abc import Callable, Iterable
+from typing import Any, cast
 
 from . import procutil
-from .common import TERMINAL_STATES, try_flock_fd, try_read_json, utcnow_iso
-from .store import finalize_attempt, load_task, requeue_or_end_interrupted
+from .common import TERMINAL_STATES, JsonDict, try_flock_fd, try_read_json, utcnow_iso
+from .store import Store, finalize_attempt, load_task, requeue_or_end_interrupted
 
 STOP_OUTCOME = {"cancel": "cancelled", "timeout": "timed_out"}
 
@@ -18,15 +20,24 @@ STOP_OUTCOME = {"cancel": "cancelled", "timeout": "timed_out"}
 class GroupStopper:
     """Non-blocking stop procedure (Section 13.1): SIGTERM, grace, SIGKILL, confirm."""
 
-    def __init__(self, pgid, min_start, grace, confirm, reap=None):
-        self.pgid, self.min_start = pgid, min_start
-        self.grace, self.confirm = float(grace), float(confirm)
-        self.reap = reap
-        self.phase = None
-        self.deadline = 0.0
-        self.alive = []
+    def __init__(
+        self,
+        pgid: int,
+        min_start: int,
+        grace: float,
+        confirm: float,
+        reap: Callable[[], object] | None = None,
+    ) -> None:
+        self.pgid: int = pgid
+        self.min_start: int = min_start
+        self.grace: float = float(grace)
+        self.confirm: float = float(confirm)
+        self.reap: Callable[[], object] | None = reap
+        self.phase: str | None = None
+        self.deadline: float = 0.0
+        self.alive: list[int] = []
 
-    def _kill(self, sig):
+    def _kill(self, sig: int) -> None:
         # TASKMGR_TEST_IGNORE_KILL: test-only, simulates processes that survive SIGKILL.
         if os.environ.get("TASKMGR_TEST_IGNORE_KILL") == "1":
             return
@@ -35,12 +46,12 @@ class GroupStopper:
         except (ProcessLookupError, PermissionError):
             pass
 
-    def start(self):
+    def start(self) -> None:
         self._kill(signal.SIGTERM)
         self.phase = "term"
         self.deadline = time.monotonic() + self.grace
 
-    def step(self):
+    def step(self) -> str | None:
         """Advance; returns None (in progress), "stopped" or "unconfirmed"."""
         if self.reap:
             self.reap()
@@ -57,7 +68,7 @@ class GroupStopper:
         return None
 
 
-def set_stopping(store, jobid, n, reason):
+def set_stopping(store: Store, jobid: str, n: int, reason: str) -> bool:
     """Persist running -> stopping with the stop reason. Returns False if not applicable."""
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
@@ -70,28 +81,37 @@ def set_stopping(store, jobid, n, reason):
         return True
 
 
-def mark_unknown(store, jobid, n, kind, message, details=None):
+def mark_unknown(
+    store: Store,
+    jobid: str,
+    n: int | None,
+    kind: str,
+    message: str,
+    details: Any = None,
+) -> JsonDict:
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
         if job.get("current_attempt") != n or job["state"] not in ("running", "stopping"):
             return job
-        adir = store.attempt_dir(jobdir, n)
-        runner, _ = store.read_runner(adir)
-        if isinstance(runner, dict):
-            runner["unknown"] = {
-                "kind": kind,
-                "message": message,
-                "details": details,
-                "at": utcnow_iso(),
-            }
-            store.write_runner(adir, runner)
+        if n is not None:  # a job without a current attempt has no runner.json to annotate
+            adir = store.attempt_dir(jobdir, n)
+            raw_runner, _ = store.read_runner(adir)
+            if isinstance(raw_runner, dict):
+                runner = cast(JsonDict, raw_runner)
+                runner["unknown"] = {
+                    "kind": kind,
+                    "message": message,
+                    "details": details,
+                    "at": utcnow_iso(),
+                }
+                store.write_runner(adir, runner)
         job["state"] = "unknown"
         job["error"] = {"kind": kind, "message": message}
         store.save_job(jobdir, job)
         return job
 
 
-def identity_of(runner):
+def identity_of(runner: object) -> JsonDict | None:
     keys = (
         "boot_id",
         "shim_pid",
@@ -101,14 +121,24 @@ def identity_of(runner):
         "leader_start_time",
         "argv_hash",
     )
-    return {k: runner.get(k) for k in keys} if isinstance(runner, dict) else None
+    if not isinstance(runner, dict):
+        return None
+    r = cast(JsonDict, runner)
+    return {k: r.get(k) for k in keys}
 
 
-def _has_identity(runner):
+def _has_identity(runner: JsonDict) -> bool:
     return all(runner.get(k) is not None for k in ("boot_id", "pgid", "leader_start_time"))
 
 
-def finish_stopped(store, jobid, n, stop_reason, exited, warnings=()):
+def finish_stopped(
+    store: Store,
+    jobid: str,
+    n: int,
+    stop_reason: str | None,
+    exited: bool,
+    warnings: Iterable[str] = (),
+) -> JsonDict:
     """Finalize once the process group is confirmed gone."""
     if stop_reason in STOP_OUTCOME:
         return finalize_attempt(
@@ -129,7 +159,7 @@ def finish_stopped(store, jobid, n, stop_reason, exited, warnings=()):
     )
 
 
-def assess(store, jobid, resolve=False):
+def assess(store: Store, jobid: str, resolve: bool = False) -> dict[str, Any]:
     """Section 12.2 check for one job in running/stopping (or unknown when resolve=True).
 
     Returns a dict describing the decision. For decision "takeover" the dict
@@ -144,11 +174,12 @@ def assess(store, jobid, resolve=False):
         mark_unknown(store, jobid, n, "record_incomplete", "job has no current attempt")
         return {"decision": "unknown", "reason": "record_incomplete"}
     adir = store.attempt_dir(jobdir, n)
-    runner, err = store.read_runner(adir)
-    if not isinstance(runner, dict):
+    raw_runner, err = store.read_runner(adir)
+    if not isinstance(raw_runner, dict):
         if not resolve:
             mark_unknown(store, jobid, n, "record_incomplete", "runner.json is %s" % err)
         return {"decision": "unknown", "reason": "runner.json is %s" % err}
+    runner = cast(JsonDict, raw_runner)
 
     if runner.get("final"):
         if runner.get("status") == "interrupted":
@@ -208,7 +239,7 @@ def assess(store, jobid, resolve=False):
                 "identity": identity_of(runner),
             }
         if not members:
-            warnings = []
+            warnings: list[str] = []
             if "leftover" in (job.get("stop_reason"), runner.get("stop_unconfirmed_reason")):
                 warnings = ["leftover_processes"]
             j = finish_stopped(store, jobid, n, stop_reason, exited, warnings)
@@ -244,23 +275,40 @@ def assess(store, jobid, resolve=False):
 class Takeover:
     """Daemon-side tracking of an attempt whose shim died while the task lives on."""
 
-    def __init__(self, store, jobid, n, runner, lock_fd, exited, job):
-        self.store, self.jobid, self.n = store, jobid, n
-        self.lock_fd = lock_fd
-        self.pgid = runner["pgid"]
-        self.min_start = runner["leader_start_time"]
-        self.exited = exited
-        self.started_epoch = runner.get("started_at_epoch")
-        self.timeout = load_task(
-            os.path.dirname(os.path.dirname(store.attempt_dir(store.find_job_dir(jobid), n)))
+    def __init__(
+        self,
+        store: Store,
+        jobid: str,
+        n: int,
+        runner: JsonDict,
+        lock_fd: int | None,
+        exited: bool,
+        job: JsonDict,
+    ) -> None:
+        self.store: Store = store
+        self.jobid: str = jobid
+        self.n: int = n
+        self.lock_fd: int | None = lock_fd
+        self.pgid: int = runner["pgid"]
+        self.min_start: int = runner["leader_start_time"]
+        self.exited: bool = exited
+        self.started_epoch: float | None = runner.get("started_at_epoch")
+        self.timeout: float | None = load_task(
+            os.path.dirname(
+                os.path.dirname(store.attempt_dir(cast(str, store.find_job_dir(jobid)), n))
+            )
         ).get("timeout_seconds")
-        self.stop_reason = job.get("stop_reason") if job["state"] == "stopping" else None
-        self.stopper = None
-        self.last_poll = 0.0
-        self.warnings = []
-        self.done = False
+        self.stop_reason: str | None = (
+            job.get("stop_reason") if job["state"] == "stopping" else None
+        )
+        self.stopper: GroupStopper | None = None
+        self.last_poll: float = 0.0
+        self.warnings: list[str] = []
+        self.done: bool = False
         cfg = store.config
-        self.poll = float(cfg.get("control_poll_seconds", 2))
+        self.poll: float = float(cfg.get("control_poll_seconds", 2))
+        self.grace: float
+        self.confirm: float
         self.grace, self.confirm = (
             cfg.get("stop_grace_seconds", 30),
             cfg.get("kill_confirm_seconds", 10),
@@ -273,27 +321,28 @@ class Takeover:
         elif self.stop_reason:
             self._begin_stop(self.stop_reason)
 
-    def _note(self):
-        adir = self.store.attempt_dir(self.store.find_job_dir(self.jobid), self.n)
-        runner, _ = self.store.read_runner(adir)
-        if isinstance(runner, dict):
+    def _note(self) -> None:
+        adir = self.store.attempt_dir(cast(str, self.store.find_job_dir(self.jobid)), self.n)
+        raw_runner, _ = self.store.read_runner(adir)
+        if isinstance(raw_runner, dict):
+            runner = cast(JsonDict, raw_runner)
             runner.setdefault("takeovers", []).append({"at": utcnow_iso(), "by_pid": os.getpid()})
             self.store.write_runner(adir, runner)
 
-    def _begin_stop(self, reason):
+    def _begin_stop(self, reason: str) -> None:
         self.stop_reason = reason
         if reason in STOP_OUTCOME:
             set_stopping(self.store, self.jobid, self.n, reason)
         self.stopper = GroupStopper(self.pgid, self.min_start, self.grace, self.confirm)
         self.stopper.start()
 
-    def close(self):
+    def close(self) -> None:
         if self.lock_fd is not None:
             os.close(self.lock_fd)
             self.lock_fd = None
         self.done = True
 
-    def tick(self):
+    def tick(self) -> None:
         if self.done:
             return
         try:
@@ -334,10 +383,11 @@ class Takeover:
             )
             self.close()
 
-    def _record_unconfirmed(self):
-        adir = self.store.attempt_dir(self.store.find_job_dir(self.jobid), self.n)
-        runner, _ = self.store.read_runner(adir)
-        if isinstance(runner, dict):
+    def _record_unconfirmed(self) -> None:
+        adir = self.store.attempt_dir(cast(str, self.store.find_job_dir(self.jobid)), self.n)
+        raw_runner, _ = self.store.read_runner(adir)
+        if isinstance(raw_runner, dict):
+            runner = cast(JsonDict, raw_runner)
             runner["stop_unconfirmed_reason"] = self.stop_reason
             self.store.write_runner(adir, runner)
         mark_unknown(
@@ -350,6 +400,6 @@ class Takeover:
         )
 
 
-def runner_status_snapshot(adir):
+def runner_status_snapshot(adir: str) -> Any:
     runner, _ = try_read_json(os.path.join(adir, "runner.json"))
     return runner

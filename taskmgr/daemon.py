@@ -5,18 +5,20 @@ import os
 import signal
 import sys
 import time
+from types import FrameType
+from typing import TextIO, cast
 
-from .common import TERMINAL_STATES, try_flock_fd, utcnow_iso
-from .monitor import assess
-from .store import end_without_result, remove_tree
+from .common import TERMINAL_STATES, JsonDict, try_flock_fd, utcnow_iso
+from .monitor import Takeover, assess
+from .store import Store, end_without_result, remove_tree
 
 INCOMING_MAX_AGE = 3600
 
 
-_log_file = None
+_log_file: TextIO | None = None
 
 
-def log(msg):
+def log(msg: str) -> None:
     line = "%s daemon[%d] %s\n" % (utcnow_iso(), os.getpid(), msg)
     sys.stderr.write(line)
     sys.stderr.flush()
@@ -26,13 +28,13 @@ def log(msg):
 
 
 class Daemon:
-    def __init__(self, store):
+    def __init__(self, store: Store) -> None:
         self.store = store
-        self.takeovers = {}  # jobid -> Takeover
+        self.takeovers: dict[str, Takeover] = {}  # jobid -> Takeover
         self.stop = False
 
     # -- startup ------------------------------------------------------------
-    def acquire_instance_lock(self):
+    def acquire_instance_lock(self) -> bool:
         # TASKMGR_TEST_SKIP_DAEMON_LOCK: test-only, to prove state.lock alone prevents
         # double dispatch when several daemons run.
         if os.environ.get("TASKMGR_TEST_SKIP_DAEMON_LOCK") == "1":
@@ -45,7 +47,7 @@ class Daemon:
         os.write(fd, ("%d\n" % os.getpid()).encode())
         return True
 
-    def clean_incoming(self):
+    def clean_incoming(self) -> None:
         base = self.store.path("incoming")
         for name in sorted(os.listdir(base)):
             p = os.path.join(base, name)
@@ -63,7 +65,7 @@ class Daemon:
             finally:
                 os.close(fd)
 
-    def recover(self):
+    def recover(self) -> None:
         """Startup recovery (Section 12.2) under the state lock."""
         st = self.store
         with st.state_lock():
@@ -81,21 +83,21 @@ class Daemon:
                 elif job["state"] in TERMINAL_STATES and job.get("current_attempt"):
                     self.repair_terminal(jid)
 
-    def repair_terminal(self, jobid):
-        from .store import finalize_attempt, _result_complete
+    def repair_terminal(self, jobid: str) -> None:
+        from .store import finalize_attempt, result_complete
 
         jobdir, job = self.store.load_job(jobid)
         adir = self.store.attempt_dir(jobdir, job["current_attempt"])
         runner, _ = self.store.read_runner(adir)
         if (
             isinstance(runner, dict)
-            and runner.get("final")
-            and runner.get("taskmgr")
-            and not _result_complete(adir)
+            and cast(JsonDict, runner).get("final")
+            and cast(JsonDict, runner).get("taskmgr")
+            and not result_complete(adir)
         ):
             finalize_attempt(self.store, jobid, job["current_attempt"])
 
-    def check_attempt(self, jobid):
+    def check_attempt(self, jobid: str) -> None:
         if jobid in self.takeovers:
             return
         res = assess(self.store, jobid)
@@ -107,12 +109,12 @@ class Daemon:
             log("recovery of %s: %s" % (jobid, {k: v for k, v in res.items() if k != "takeover"}))
 
     # -- scheduling -----------------------------------------------------------
-    def schedule_pass(self):
+    def schedule_pass(self) -> None:
         st = self.store
         cfg = st.config
         with st.state_lock():
             jobs = list(st.iter_jobs())
-            held = {}  # uuid -> state of the holder
+            held: dict[str, str] = {}  # uuid -> state of the holder
             cpu_active = 0
             for _, job in jobs:
                 if job["state"] in ("running", "stopping", "unknown"):
@@ -125,7 +127,7 @@ class Daemon:
                 (j for j in jobs if j[1]["state"] == "queued"),
                 key=lambda e: (e[1].get("enqueue_seq", 0), e[1]["jobid"]),
             )
-            reserved = set()
+            reserved: set[str] = set()
             max_cpu = cfg.get("max_cpu_jobs")
             for jobdir, job in queued:
                 uuids = [g["uuid"] for g in job.get("gpus", [])]
@@ -143,7 +145,7 @@ class Daemon:
                 else:
                     reserved.update(uuids)
 
-    def dispatch(self, jobdir, job):
+    def dispatch(self, jobdir: str, job: JsonDict) -> bool:
         """Record the dispatch, then start a detached shim. Needs the state lock."""
         st = self.store
         jobdir, job = st.load_job(job["jobid"])  # re-read under the lock
@@ -152,7 +154,7 @@ class Daemon:
         n = max([len(job.get("attempts", []))] + st.existing_attempts(jobdir)) + 1
         adir = st.attempt_dir(jobdir, n)
         os.makedirs(adir)
-        runner = {
+        runner: JsonDict = {
             "schema_version": 1,
             "attempt": n,
             "jobid": job["jobid"],
@@ -199,7 +201,7 @@ class Daemon:
         )
         return True
 
-    def spawn_shim(self, jobid, n, adir):
+    def spawn_shim(self, jobid: str, n: int, adir: str) -> str | None:
         """Double-fork a shim into its own session, handing it the locked shim.lock."""
         lock_fd = os.open(os.path.join(adir, "shim.lock"), os.O_RDWR | os.O_CREAT, 0o644)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
@@ -254,7 +256,7 @@ class Daemon:
             os.waitpid(pid, 0)
         except ChildProcessError:
             pass
-        chunks = []
+        chunks: list[bytes] = []
         while True:
             b = os.read(rfd, 4096)
             if not b:
@@ -265,20 +267,20 @@ class Daemon:
         return msg or None
 
     # -- main loop ------------------------------------------------------------
-    def health_check(self):
+    def health_check(self) -> None:
         """Detect dead shims while running; same rules as startup recovery."""
         with self.store.state_lock():
             for _, job in list(self.store.iter_jobs()):
                 if job["state"] in ("running", "stopping") and job["jobid"] not in self.takeovers:
                     self.check_attempt(job["jobid"])
 
-    def tick_takeovers(self):
+    def tick_takeovers(self) -> None:
         for jid, tk in list(self.takeovers.items()):
             tk.tick()
             if tk.done:
                 del self.takeovers[jid]
 
-    def run(self):
+    def run(self) -> int:
         st = self.store
         st.ensure_layout()
         if not self.acquire_instance_lock():
@@ -316,10 +318,10 @@ class Daemon:
         log("stopping (running shims and tasks are left alone)")
         return 0
 
-    def _sleep(self, seconds):
+    def _sleep(self, seconds: float) -> None:
         end = time.monotonic() + seconds
         while not self.stop and time.monotonic() < end:
             time.sleep(min(0.1, end - time.monotonic()) if end > time.monotonic() else 0)
 
-    def _on_signal(self, signum, frame):
+    def _on_signal(self, signum: int, frame: FrameType | None) -> None:
         self.stop = True

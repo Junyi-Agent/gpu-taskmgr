@@ -7,14 +7,14 @@ class ProcUnavailable(Exception):
     """/proc cannot be read, so liveness cannot be determined."""
 
 
-def boot_id():
+def boot_id() -> str:
     # TASKMGR_BOOT_ID_FILE: test-only override to simulate a machine reboot.
     path = os.environ.get("TASKMGR_BOOT_ID_FILE") or "/proc/sys/kernel/random/boot_id"
     with open(path) as f:
         return f.read().strip()
 
 
-def read_stat(pid):
+def read_stat(pid: int) -> tuple[str, int, int] | None:
     """Return (state, pgid, starttime) from /proc/<pid>/stat, or None if gone."""
     try:
         with open("/proc/%d/stat" % pid, "rb") as f:
@@ -28,12 +28,12 @@ def read_stat(pid):
     return rest[0], int(rest[2]), int(rest[19])
 
 
-def start_time(pid):
+def start_time(pid: int) -> int | None:
     st = read_stat(pid)
     return None if st is None else st[2]
 
 
-def group_members(pgid, min_start):
+def group_members(pgid: int, min_start: int) -> list[int]:
     """PIDs of live (non-zombie) processes in process group pgid started at/after min_start."""
     try:
         names = os.listdir("/proc")
@@ -41,7 +41,7 @@ def group_members(pgid, min_start):
         raise ProcUnavailable(str(e))
     if not os.path.exists("/proc/self/stat"):
         raise ProcUnavailable("/proc is not mounted")
-    pids = []
+    pids: list[int] = []
     for n in names:
         if not n.isdigit():
             continue

@@ -17,23 +17,25 @@ import fcntl
 import json
 import os
 import tempfile
+from collections.abc import Generator, Mapping
+from typing import Any, cast
 
 SCHEMA_VERSION = 1
 
 
-def progress_path():
+def progress_path() -> str:
     return os.environ.get("TASKMGR_PROGRESS_FILE") or os.path.abspath("progress.json")
 
 
-def result_path():
+def result_path() -> str:
     return os.environ.get("TASKMGR_RESULT_FILE") or os.path.abspath("result.json")
 
 
-def _now():
+def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def atomic_write_json(path, obj):
+def atomic_write_json(path: str, obj: Any) -> None:
     """Write JSON via temp file + fsync + os.replace so readers never see a partial file."""
     d = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=d)
@@ -51,7 +53,7 @@ def atomic_write_json(path, obj):
 
 
 @contextlib.contextmanager
-def locked(path):
+def locked(path: str) -> Generator[None, None, None]:
     """flock on <path>.lock to serialize read-modify-write between task processes."""
     fd = os.open(path + ".lock", os.O_RDWR | os.O_CREAT, 0o644)
     try:
@@ -61,19 +63,28 @@ def locked(path):
         os.close(fd)
 
 
-def _read(path, default: dict) -> dict:
+def _read(path: str, default: dict[str, Any]) -> dict[str, Any]:
     try:
         with open(path) as f:
             obj = json.load(f)
-        return obj if isinstance(obj, dict) else default
+        return cast("dict[str, Any]", obj) if isinstance(obj, dict) else default
     except (FileNotFoundError, ValueError):
         return default
 
 
-def write_progress(stage, percent=None, message=None, **extra):
+def write_progress(
+    stage: object,
+    percent: float | None = None,
+    message: object = None,
+    **extra: Any,
+) -> dict[str, Any]:
     """Replace progress.json (stage and updated_at are always set)."""
     path = progress_path()
-    obj = {"schema_version": SCHEMA_VERSION, "stage": str(stage), "updated_at": _now()}
+    obj: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "stage": str(stage),
+        "updated_at": _now(),
+    }
     if percent is not None:
         obj["percent"] = max(0, min(100, percent))
     if message is not None:
@@ -84,7 +95,7 @@ def write_progress(stage, percent=None, message=None, **extra):
     return obj
 
 
-def update_progress(**fields):
+def update_progress(**fields: Any) -> dict[str, Any]:
     """Merge fields into progress.json under the lock."""
     path = progress_path()
     with locked(path):
@@ -95,24 +106,24 @@ def update_progress(**fields):
     return obj
 
 
-def write_result(outputs, **extra):
+def write_result(outputs: Mapping[str, Any], **extra: Any) -> dict[str, Any]:
     """Replace result.json with the given outputs object."""
     path = result_path()
-    obj = {"schema_version": SCHEMA_VERSION, "outputs": dict(outputs)}
+    obj: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "outputs": dict(outputs)}
     obj.update({k: v for k, v in extra.items() if k != "_taskmgr"})
     with locked(path):
         atomic_write_json(path, obj)
     return obj
 
 
-def update_outputs(**outputs):
+def update_outputs(**outputs: Any) -> dict[str, Any]:
     """Merge keys into result.json "outputs" under the lock (safe across processes)."""
     path = result_path()
     with locked(path):
         obj = _read(path, {"schema_version": SCHEMA_VERSION})
         obj.pop("_taskmgr", None)
         prev = obj.get("outputs")
-        out = dict(prev) if isinstance(prev, dict) else {}
+        out: dict[str, Any] = dict(cast("dict[str, Any]", prev)) if isinstance(prev, dict) else {}
         out.update(outputs)
         obj["outputs"] = out
         obj.setdefault("schema_version", SCHEMA_VERSION)

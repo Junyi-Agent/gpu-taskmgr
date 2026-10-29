@@ -9,33 +9,34 @@ import posixpath
 import shutil
 import stat
 import tarfile
+from typing import IO, Any, cast
 
-from .common import SCHEMA_VERSION, TASK_ID_RE, TaskmgrError, parse_utc_iso
+from .common import SCHEMA_VERSION, TASK_ID_RE, JsonDict, TaskmgrError, parse_utc_iso
 
 REQUIRED_FILES = ("task.json", "TASK.md", "progress.json")
 PLACEHOLDER = "<REQUIRED"
 RESERVED_ENV = ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "VIRTUAL_ENV")
 
 
-def _err(errors, code, message, path=None):
+def _err(errors: list[JsonDict], code: str, message: str, path: str | None = None) -> None:
     e = {"code": code, "message": message}
     if path is not None:
         e["path"] = path
     errors.append(e)
 
 
-def _is_int(v):
+def _is_int(v: object) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def _link_resolves_inside(root, link):
+def _link_resolves_inside(root: str, link: str) -> bool:
     """True if a symlink's physical target (following chains) stays inside root."""
     real_root = os.path.realpath(root)
     real = os.path.realpath(link)
     return real == real_root or real.startswith(real_root + os.sep)
 
 
-def _inside(rel):
+def _inside(rel: str) -> bool:
     """True if a normalized relative POSIX path stays inside the package root."""
     n = posixpath.normpath(rel)
     return not (n == ".." or n.startswith("../") or n.startswith("/"))
@@ -45,11 +46,12 @@ def _inside(rel):
 # Schemas
 
 
-def check_task_json(task, errors):
+def check_task_json(task: object, errors: list[JsonDict]) -> None:
     """Schema checks for task.json (Section 2.2)."""
     if not isinstance(task, dict):
         _err(errors, "schema", "task.json must be a JSON object", "task.json")
         return
+    task = cast(JsonDict, task)
     if task.get("schema_version") != SCHEMA_VERSION:
         _err(errors, "schema", "schema_version must be %d" % SCHEMA_VERSION, "task.json")
     tid = task.get("task_id")
@@ -61,13 +63,19 @@ def check_task_json(task, errors):
             "task.json",
         )
     entry = task.get("entry")
-    argv = entry.get("argv") if isinstance(entry, dict) else None
-    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv) and argv[0]):
+    argv = cast(JsonDict, entry).get("argv") if isinstance(entry, dict) else None
+    if not (
+        isinstance(argv, list)
+        and argv
+        and all(isinstance(a, str) for a in cast(list[Any], argv))
+        and argv[0]
+    ):
         _err(errors, "schema", "entry.argv must be a non-empty array of strings", "task.json")
     gpus = task.get("gpus")
     if not isinstance(gpus, list):
         _err(errors, "schema", "gpus must be an array (use [] for no GPU)", "task.json")
     else:
+        gpus = cast(list[Any], gpus)
         for g in gpus:
             if _is_int(g):
                 if g < 0:
@@ -97,12 +105,14 @@ def check_task_json(task, errors):
         if not isinstance(envi, dict):
             _err(errors, "schema", "environment must be an object", "task.json")
         else:
+            envi = cast(JsonDict, envi)
             venv = envi.get("venv")
             if venv is not None and not (isinstance(venv, str) and venv.startswith("/")):
                 _err(errors, "schema", "environment.venv must be an absolute path", "task.json")
             rp = envi.get("required_paths")
             if rp is not None and not (
-                isinstance(rp, list) and all(isinstance(p, str) and p.startswith("/") for p in rp)
+                isinstance(rp, list)
+                and all(isinstance(p, str) and p.startswith("/") for p in cast(list[Any], rp))
             ):
                 _err(
                     errors,
@@ -115,6 +125,7 @@ def check_task_json(task, errors):
         if not isinstance(env, dict):
             _err(errors, "schema", "env must be an object of strings", "task.json")
         else:
+            env = cast(JsonDict, env)
             for k, v in env.items():
                 if not isinstance(v, str):
                     _err(errors, "schema", "env value for %s must be a string" % k, "task.json")
@@ -129,9 +140,10 @@ def check_task_json(task, errors):
         if not isinstance(res, dict):
             _err(errors, "schema", "result must be an object", "task.json")
         else:
+            res = cast(JsonDict, res)
             ro = res.get("required_outputs")
             if ro is not None and not (
-                isinstance(ro, list) and all(isinstance(k, str) for k in ro)
+                isinstance(ro, list) and all(isinstance(k, str) for k in cast(list[Any], ro))
             ):
                 _err(
                     errors,
@@ -141,10 +153,11 @@ def check_task_json(task, errors):
                 )
 
 
-def check_progress_json(p, errors, path="progress.json"):
+def check_progress_json(p: object, errors: list[JsonDict], path: str = "progress.json") -> None:
     if not isinstance(p, dict):
         _err(errors, "schema", "progress.json must be a JSON object", path)
         return
+    p = cast(JsonDict, p)
     if p.get("schema_version") != SCHEMA_VERSION:
         _err(errors, "schema", "progress.json schema_version must be %d" % SCHEMA_VERSION, path)
     if not isinstance(p.get("stage"), str):
@@ -163,7 +176,7 @@ def check_progress_json(p, errors, path="progress.json"):
 # Validation
 
 
-def scan_tree(root, errors):
+def scan_tree(root: str, errors: list[JsonDict]) -> None:
     """Check every entry for unsafe symlinks and special files (Section 2.4)."""
     for dirpath, dirnames, filenames in os.walk(root):
         for name in sorted(dirnames + filenames):
@@ -184,15 +197,15 @@ def scan_tree(root, errors):
                 _err(errors, "special_file", "special files are not allowed", rel)
 
 
-def validate_dir(root):
+def validate_dir(root: str) -> tuple[list[JsonDict], JsonDict | None]:
     """Validate an extracted task package. Returns (errors, task_or_None)."""
-    errors = []
+    errors: list[JsonDict] = []
     if not os.path.isdir(root):
         raise TaskmgrError("not_found", "not a directory: %s" % root)
     for f in REQUIRED_FILES:
         if not os.path.isfile(os.path.join(root, f)) or os.path.islink(os.path.join(root, f)):
             _err(errors, "missing_file", "required file is missing", f)
-    raw = {}
+    raw: dict[str, str] = {}
     for f in REQUIRED_FILES:
         p = os.path.join(root, f)
         if os.path.isfile(p) and not os.path.islink(p):
@@ -206,7 +219,7 @@ def validate_dir(root):
                     "unfilled <REQUIRED> placeholder on line(s) %s" % ",".join(map(str, lines)),
                     f,
                 )
-    task = None
+    task: Any = None
     if "task.json" in raw:
         try:
             task = json.loads(raw["task.json"])
@@ -222,9 +235,9 @@ def validate_dir(root):
         else:
             check_progress_json(prog, errors)
     if isinstance(task, dict):
-        argv = (
-            (task.get("entry") or {}).get("argv") if isinstance(task.get("entry"), dict) else None
-        )
+        task = cast(JsonDict, task)
+        entry = task.get("entry")
+        argv = cast(JsonDict, entry).get("argv") if isinstance(entry, dict) else None
         if (
             isinstance(argv, list)
             and argv
@@ -251,15 +264,15 @@ def validate_dir(root):
                         "task.json",
                     )
     scan_tree(root, errors)
-    return errors, (task if isinstance(task, dict) else None)
+    return errors, (cast(JsonDict, task) if isinstance(task, dict) else None)
 
 
 # ---------------------------------------------------------------------------
 # Packing and hashing
 
 
-def _sorted_entries(root):
-    out = []
+def _sorted_entries(root: str) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
         for name in dirnames + filenames:
@@ -269,7 +282,7 @@ def _sorted_entries(root):
     return out
 
 
-def pack_dir(root, dest):
+def pack_dir(root: str, dest: str) -> None:
     """Deterministically pack a directory into a tar.gz (Section 5.1)."""
     with open(dest, "wb") as raw:
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
@@ -297,7 +310,7 @@ def pack_dir(root, dest):
                         raise TaskmgrError("invalid_package", "special file in package: %s" % rel)
 
 
-def content_hash(root):
+def content_hash(root: str) -> str:
     """Normalized content hash over regular files and symlinks (Section 6.1)."""
     manifest = io.StringIO()
     for rel, full in _sorted_entries(root):
@@ -321,31 +334,36 @@ def content_hash(root):
 # Safe extraction
 
 
-def _member_name(m):
+def _member_name(m: tarfile.TarInfo) -> str:
     name = m.name
     while name.startswith("./"):
         name = name[2:]
     return name.rstrip("/")
 
 
-def safe_extract(tar_path_or_fileobj, dest, max_bytes=None, skip_unsafe=False):
+def safe_extract(
+    tar_path_or_fileobj: str | IO[bytes],
+    dest: str,
+    max_bytes: int | None = None,
+    skip_unsafe: bool = False,
+) -> list[JsonDict]:
     """Extract a tar(.gz) refusing unsafe entries (Section 5.2).
 
     Returns a list of skipped entries when skip_unsafe is set; otherwise raises
     TaskmgrError on the first unsafe entry.
     """
     os.makedirs(dest, exist_ok=True)
-    skipped = []
+    skipped: list[JsonDict] = []
     total = 0
-    seen = set()
+    seen: set[str] = set()
 
-    def reject(name, why):
+    def reject(name: str, why: str) -> None:
         if skip_unsafe:
             skipped.append({"path": name, "reason": why})
             return
         raise TaskmgrError("unsafe_package", "unsafe archive entry %r: %s" % (name, why))
 
-    links = []
+    links: list[tuple[str, str]] = []
     try:
         if isinstance(tar_path_or_fileobj, (str, os.PathLike)):
             tar = tarfile.open(tar_path_or_fileobj, mode="r:*")
@@ -434,7 +452,7 @@ def safe_extract(tar_path_or_fileobj, dest, max_bytes=None, skip_unsafe=False):
     return skipped
 
 
-def package_root(extracted):
+def package_root(extracted: str) -> str:
     """Accept archives with a single top-level directory wrapping the package."""
     if os.path.isfile(os.path.join(extracted, "task.json")):
         return extracted
@@ -450,7 +468,7 @@ def package_root(extracted):
     return extracted
 
 
-def add_tree_to_tar(tar, root, arcroot):
+def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> None:
     """Add a directory tree to an open tar without following symlinks; skip special files."""
     try:
         entries = [("", root)] + _sorted_entries(root)

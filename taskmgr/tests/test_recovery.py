@@ -2,40 +2,40 @@
 
 import json
 import os
-import signal
 import subprocess
 import time
 
 from helpers import REPO, Env, kill_quiet, pid_alive
 
 from taskmgr import procutil
+from taskmgr.common import JsonDict
 
 
 class RecoveryTest(Env):
-    def counter(self):
+    def counter(self) -> str:
         return os.path.join(self.tmp, "runs")
 
-    def runs(self):
+    def runs(self) -> int:
         try:
             with open(self.counter()) as f:
                 return len(f.read().splitlines())
         except FileNotFoundError:
             return 0
 
-    def kill_shim(self, jobid):
+    def kill_shim(self, jobid: str) -> JsonDict:
         r = self.wait_runner(jobid, "pgid")
         kill_quiet(r["shim_pid"])
         self.wait_for(lambda: not pid_alive(r["shim_pid"]), 10, "shim death")
         return r
 
-    def test_systemd_user_unit_uses_killmode_process(self):
+    def test_systemd_user_unit_uses_killmode_process(self) -> None:
         with open(os.path.join(REPO, "taskmgr", "deploy", "taskmgr-remote.user.service")) as f:
             unit = f.read()
         self.assertIn("KillMode=process", unit)
         self.assertIn(" serve", unit)
         self.assertNotIn("User=", unit)  # user unit: runs as the unprivileged owner
 
-    def test_task_survives_daemon_stop_and_keeps_real_exit_code(self):
+    def test_task_survives_daemon_stop_and_keeps_real_exit_code(self) -> None:
         self.start_daemon()
         gate = os.path.join(self.tmp, "go")
         j = self.submit(
@@ -54,7 +54,7 @@ class RecoveryTest(Env):
         self.assertEqual(self.job(j)["state"], "failed")
         self.assertEqual(len(job["attempts"]), 1)
 
-    def test_daemon_restart_while_running(self):
+    def test_daemon_restart_while_running(self) -> None:
         self.start_daemon()
         j = self.submit(self.make_pkg(script="sleep 2; exit 0"))
         r = self.wait_runner(j, "pgid")
@@ -65,7 +65,7 @@ class RecoveryTest(Env):
         self.assertEqual(self.result(j)["_taskmgr"]["return_code"], 0)
         self.assertEqual(len(self.job(j)["attempts"]), 1)
 
-    def test_crash_after_exit_recorded_is_not_rerun(self):
+    def test_crash_after_exit_recorded_is_not_rerun(self) -> None:
         self.start_daemon(env={"TASKMGR_TEST_SHIM_CRASH": "after_exit_recorded"})
         j = self.submit(self.make_pkg(script="echo x >> %s; exit 0" % self.counter()))
         self.wait_state(j, "invalid_result", timeout=20)
@@ -74,11 +74,10 @@ class RecoveryTest(Env):
         self.assertEqual(r["return_code"], 0)
         self.assertEqual(self.runs(), 1)
         self.assertEqual(len(self.job(j)["attempts"]), 1)
-        self.assertIn(
-            "test crash", open(os.path.join(self.job_dir(j), "attempts", "0001", "shim.log")).read()
-        )
+        with open(os.path.join(self.job_dir(j), "attempts", "0001", "shim.log")) as f:
+            self.assertIn("test crash", f.read())
 
-    def test_crash_before_identity_reruns_from_package(self):
+    def test_crash_before_identity_reruns_from_package(self) -> None:
         self.set_config(max_auto_restarts=1)
         self.start_daemon(env={"TASKMGR_TEST_SHIM_CRASH": "before_identity"})
         j = self.submit(self.make_pkg(script="echo x >> %s" % self.counter()))
@@ -88,18 +87,24 @@ class RecoveryTest(Env):
         self.assertEqual(self.runs(), 0)  # the entry command never executed
         self.assertEqual(self.runner(j, 1)["status"], "interrupted")
 
-    def test_takeover_after_shim_death_ends_exit_code_lost(self):
+    def test_takeover_after_shim_death_ends_exit_code_lost(self) -> None:
         self.start_daemon()
-        j = self.submit(self.make_pkg(script="sleep 2; exit 0"))
+        # The task waits for a gate file, so it is certainly alive when the daemon notices
+        # the dead shim (a fixed sleep raced the health check under load).
+        gate = os.path.join(self.tmp, "go")
+        j = self.submit(
+            self.make_pkg(script="while [ ! -f %s ]; do sleep 0.05; done; exit 0" % gate)
+        )
         self.kill_shim(j)
         self.wait_for(lambda: self.runner(j).get("takeovers"), 10, "takeover")
         self.assertEqual(self.job(j)["state"], "running")
+        open(gate, "w").close()
         job = self.wait_state(j, "failed", timeout=20)
         self.assertEqual(job["error"]["kind"], "exit_code_lost")
         self.assertIsNone(self.result(j)["_taskmgr"]["return_code"])
         self.assertEqual(len(job["attempts"]), 1)
 
-    def test_takeover_group_with_exited_leader_is_not_stopped(self):
+    def test_takeover_group_with_exited_leader_is_not_stopped(self) -> None:
         self.start_daemon()
         marker = os.path.join(self.tmp, "member.pid")
         j = self.submit(self.make_pkg(script="sleep 4 & echo $! > %s; sleep 1; exit 0" % marker))
@@ -114,7 +119,7 @@ class RecoveryTest(Env):
         job = self.wait_state(j, "failed", timeout=10)
         self.assertEqual(job["error"]["kind"], "exit_code_lost")
 
-    def test_cancel_and_timeout_during_takeover(self):
+    def test_cancel_and_timeout_during_takeover(self) -> None:
         self.start_daemon()
         c = self.submit(self.make_pkg(script="trap '' TERM; while true; do sleep 0.1; done"))
         t = self.submit(self.make_pkg(script="sleep 60", timeout=4))
@@ -127,7 +132,7 @@ class RecoveryTest(Env):
         self.assertFalse(pid_alive(rc_["leader_pid"]))
         self.assertFalse(pid_alive(rt["leader_pid"]))
 
-    def test_cancel_request_survives_daemon_restart(self):
+    def test_cancel_request_survives_daemon_restart(self) -> None:
         self.start_daemon()
         j = self.submit(self.make_pkg(script="sleep 60"))
         self.wait_runner(j, "pgid")
@@ -140,7 +145,7 @@ class RecoveryTest(Env):
         self.assertFalse(pid_alive(r["leader_pid"]))
         self.assertEqual(len(self.job(j)["attempts"]), 1)
 
-    def test_exit_code_lost_when_shim_and_task_gone(self):
+    def test_exit_code_lost_when_shim_and_task_gone(self) -> None:
         self.start_daemon()
         j = self.submit(self.make_pkg(script="echo x >> %s; sleep 1; exit 5" % self.counter()))
         r = self.wait_runner(j, "pgid")
@@ -154,7 +159,7 @@ class RecoveryTest(Env):
         self.assertEqual(self.runs(), 1)
         self.assertEqual(len(self.job(j)["attempts"]), 1)
 
-    def _simulate_reboot(self, jobid):
+    def _simulate_reboot(self, jobid: str) -> JsonDict:
         r = self.wait_runner(jobid, "pgid")
         self.stop_daemon()
         # The "pre-reboot" processes must really be gone before swapping boot_id.
@@ -168,7 +173,7 @@ class RecoveryTest(Env):
         self.set_boot("boot-2")
         return r
 
-    def test_reboot_reruns_with_new_attempt(self):
+    def test_reboot_reruns_with_new_attempt(self) -> None:
         self.start_daemon()
         script = "echo x >> {c}; [ $(wc -l < {c}) -ge 2 ] && exit 0; sleep 60".format(
             c=self.counter()
@@ -185,7 +190,7 @@ class RecoveryTest(Env):
         self.assertEqual(self.runner(j, 2)["boot_id"], "boot-2")
         self.assertEqual(self.runs(), 2)
 
-    def test_reboot_beyond_auto_restart_limit_fails(self):
+    def test_reboot_beyond_auto_restart_limit_fails(self) -> None:
         self.set_config(max_auto_restarts=0)
         self.start_daemon()
         j = self.submit(self.make_pkg(script="sleep 60"))
@@ -195,7 +200,7 @@ class RecoveryTest(Env):
         self.assertEqual(job["error"]["kind"], "too_many_interruptions")
         self.assertEqual(len(job["attempts"]), 1)
 
-    def test_reboot_with_cancel_requested_is_cancelled(self):
+    def test_reboot_with_cancel_requested_is_cancelled(self) -> None:
         self.start_daemon()
         j = self.submit(self.make_pkg(script="sleep 60"))
         self.wait_runner(j, "pgid")
@@ -212,8 +217,13 @@ class RecoveryTest(Env):
 
     # -- unknown --------------------------------------------------------------
     def make_unknown(
-        self, gpus=(0,), state="unknown", unconfirmed=True, runner_extra=None, job_extra=None
-    ):
+        self,
+        gpus: tuple[int, ...] = (0,),
+        state: str = "unknown",
+        unconfirmed: bool = True,
+        runner_extra: JsonDict | None = None,
+        job_extra: JsonDict | None = None,
+    ) -> tuple[str, "subprocess.Popen[bytes]"]:
         """Fixture: a job in `state` whose recorded process group is a live process.
 
         unconfirmed=True records that the stop procedure already failed (SIGKILL did not
@@ -225,7 +235,7 @@ class RecoveryTest(Env):
         jd = self.job_dir(j)
         adir = os.path.join(jd, "attempts", "0001")
         os.makedirs(os.path.join(adir, "workdir"))
-        runner = {
+        runner: JsonDict = {
             "attempt": 1,
             "final": False,
             "exited": False,
@@ -260,7 +270,7 @@ class RecoveryTest(Env):
         os.rename(jd, os.path.join(self.root(), "in-progress", j))
         return j, proc
 
-    def test_unknown_never_reruns_or_releases_and_resolve_check(self):
+    def test_unknown_never_reruns_or_releases_and_resolve_check(self) -> None:
         u, proc = self.make_unknown()
         b = self.submit(self.make_pkg(gpus=[0]))
         self.start_daemon()
@@ -268,7 +278,7 @@ class RecoveryTest(Env):
         self.assertEqual(self.job(u)["state"], "unknown")
         self.assertEqual(self.job(b)["state"], "queued")  # GPU 0 stays held
         self.assertEqual(os.listdir(os.path.join(self.job_dir(u), "attempts")), ["0001"])
-        rc, out, err = self.task("status", u, "--wait", "--poll-interval", "0.2")
+        rc, out, _ = self.task("status", u, "--wait", "--poll-interval", "0.2")
         self.assertEqual(rc, 3)
         self.assertEqual(out["state"], "unknown")
         rc, out, _ = self.task("retry", u, "--host", "s1")
@@ -285,7 +295,7 @@ class RecoveryTest(Env):
         self.assertEqual((out["state"], out["changed"]), ("cancelled", True))
         self.wait_state(b, "succeeded")  # GPU released
 
-    def test_resolve_unknown_without_cancel_is_exit_code_lost(self):
+    def test_resolve_unknown_without_cancel_is_exit_code_lost(self) -> None:
         u, proc = self.make_unknown()
         kill_quiet(proc.pid)
         proc.wait()
@@ -293,8 +303,8 @@ class RecoveryTest(Env):
         self.assertEqual(out["state"], "failed")
         self.assertEqual(self.job(u)["error"]["kind"], "exit_code_lost")
 
-    def test_resolve_as_stopped(self):
-        u, proc = self.make_unknown()
+    def test_resolve_as_stopped(self) -> None:
+        u, _ = self.make_unknown()
         rc, out, _ = self.task("resolve", u, "--host", "s1", "--as", "stopped")
         self.assertEqual(rc, 2)
         rc, out, _ = self.task(
@@ -315,14 +325,14 @@ class RecoveryTest(Env):
         out = self.ok("resolve", u2, "--host", "s1", "--as", "stopped", "--confirm", u2)
         self.assertEqual(out["state"], "cancelled")
 
-    def test_daemon_never_touches_unknown_processes(self):
+    def test_daemon_never_touches_unknown_processes(self) -> None:
         u, proc = self.make_unknown()
         self.start_daemon()
         time.sleep(1.5)
         self.assertEqual(self.job(u)["state"], "unknown")
         self.assertTrue(pid_alive(proc.pid))
 
-    def test_unconfirmed_stop_becomes_unknown_then_resolves(self):
+    def test_unconfirmed_stop_becomes_unknown_then_resolves(self) -> None:
         # TASKMGR_TEST_IGNORE_KILL makes the stop procedure's signals no-ops, standing in
         # for a process that survives SIGKILL (e.g. stuck in uninterruptible sleep).
         self.start_daemon(env={"TASKMGR_TEST_IGNORE_KILL": "1"})
@@ -341,7 +351,7 @@ class RecoveryTest(Env):
         self.assertEqual(out["state"], "cancelled")
         self.wait_state(b, "succeeded")
 
-    def test_resolve_hands_decidable_unknown_back_to_takeover(self):
+    def test_resolve_hands_decidable_unknown_back_to_takeover(self) -> None:
         u, proc = self.make_unknown(unconfirmed=False)
         self.start_daemon()
         out = self.ok("resolve", u, "--host", "s1")
@@ -352,7 +362,7 @@ class RecoveryTest(Env):
         job = self.wait_state(u, "failed")
         self.assertEqual(job["error"]["kind"], "exit_code_lost")
 
-    def test_cancel_on_unknown_wins_even_after_exit(self):
+    def test_cancel_on_unknown_wins_even_after_exit(self) -> None:
         u, proc = self.make_unknown(runner_extra={"exited": True, "return_code": 0, "signal": None})
         self.ok("cancel", u, "--host", "s1")
         kill_quiet(proc.pid)
@@ -360,7 +370,7 @@ class RecoveryTest(Env):
         out = self.ok("resolve", u, "--host", "s1")
         self.assertEqual(out["state"], "cancelled")
 
-    def test_takeover_of_stopping_job_keeps_stop_reason(self):
+    def test_takeover_of_stopping_job_keeps_stop_reason(self) -> None:
         # The shim died after the entry exited but while cancel cleanup was running.
         u, proc = self.make_unknown(
             state="stopping",

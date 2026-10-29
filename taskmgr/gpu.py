@@ -4,17 +4,19 @@ import os
 import shutil
 import subprocess
 
-from .common import TaskmgrError
+from typing import Any
+
+from .common import JsonDict, TaskmgrError
 
 
-def nvidia_smi_path():
+def nvidia_smi_path() -> str:
     # TASKMGR_NVIDIA_SMI: test-only override pointing at a fake nvidia-smi script.
     return (
         os.environ.get("TASKMGR_NVIDIA_SMI") or shutil.which("nvidia-smi") or "/usr/bin/nvidia-smi"
     )
 
 
-def query_gpus():
+def query_gpus() -> list[tuple[int, str]]:
     """Return [(index, uuid), ...] in nvidia-smi index (PCI bus) order."""
     cmd = [nvidia_smi_path(), "--query-gpu=index,uuid", "--format=csv,noheader"]
     try:
@@ -28,7 +30,7 @@ def query_gpus():
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         raise TaskmgrError("nvidia_smi_failed", "cannot query GPUs with nvidia-smi: %s" % e)
-    gpus = []
+    gpus: list[tuple[int, str]] = []
     for line in out.decode(errors="replace").splitlines():
         if not line.strip():
             continue
@@ -42,14 +44,15 @@ def query_gpus():
     return gpus
 
 
-def resolve_declarations(decls):
+def resolve_declarations(decls: list[Any]) -> list[JsonDict]:
     """Resolve declared GPU indices/UUIDs to [{"declared": d, "uuid": u}, ...]."""
     if not decls:
         return []
     available = query_gpus()
     by_index = dict(available)
     uuids = {u for _, u in available}
-    out, errors = [], []
+    out: list[JsonDict] = []
+    errors: list[str] = []
     for d in decls:
         if isinstance(d, str) and d.startswith("MIG-"):
             errors.append("MIG instances are not supported: %s" % d)

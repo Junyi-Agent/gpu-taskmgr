@@ -7,6 +7,11 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Generator
+from typing import Any
+
+# A parsed JSON object (job.json, runner.json, result.json, CLI output, ...).
+JsonDict = dict[str, Any]
 
 PROTOCOL_VERSION = 1
 SCHEMA_VERSION = 1
@@ -19,7 +24,7 @@ TERMINAL_STATES = ("succeeded", "failed", "invalid_result", "cancelled", "timed_
 GPU_HOLDING_STATES = ("running", "stopping", "unknown")
 ALL_STATES = ("queued",) + GPU_HOLDING_STATES + TERMINAL_STATES
 
-STATE_DIRS = {
+STATE_DIRS: dict[str, str] = {
     "queued": "queue",
     "running": "in-progress",
     "stopping": "in-progress",
@@ -29,7 +34,7 @@ for _s in TERMINAL_STATES:
     STATE_DIRS[_s] = "done"
 JOB_DIRS = ("queue", "in-progress", "done")
 
-DEFAULT_REMOTE_CONFIG = {
+DEFAULT_REMOTE_CONFIG: JsonDict = {
     "max_package_bytes": 1024**3,
     "max_cpu_jobs": None,
     "max_auto_restarts": 2,
@@ -44,7 +49,14 @@ DEFAULT_REMOTE_CONFIG = {
 class TaskmgrError(Exception):
     """Error reported to the user as {"error": {...}} with an exit code."""
 
-    def __init__(self, code, message, exit_code=2, host=None, details=None):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        exit_code: int = 2,
+        host: str | None = None,
+        details: Any = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
@@ -52,8 +64,8 @@ class TaskmgrError(Exception):
         self.host = host
         self.details = details
 
-    def to_json(self):
-        err = {"code": self.code, "message": self.message}
+    def to_json(self) -> JsonDict:
+        err: JsonDict = {"code": self.code, "message": self.message}
         if self.host is not None:
             err["host"] = self.host
         if self.details is not None:
@@ -61,11 +73,11 @@ class TaskmgrError(Exception):
         return {"error": err}
 
 
-def utcnow_iso():
+def utcnow_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def parse_utc_iso(value):
+def parse_utc_iso(value: object) -> datetime.datetime | None:
     """Parse a UTC ISO 8601 timestamp (Z or +00:00 suffix). Returns None if invalid."""
     if not isinstance(value, str):
         return None
@@ -79,7 +91,7 @@ def parse_utc_iso(value):
     return dt
 
 
-def fsync_dir(path):
+def fsync_dir(path: str) -> None:
     try:
         fd = os.open(path, os.O_RDONLY)
     except OSError:
@@ -92,7 +104,7 @@ def fsync_dir(path):
         os.close(fd)
 
 
-def atomic_write_bytes(path, data, fsync_parent=True):
+def atomic_write_bytes(path: str, data: bytes, fsync_parent: bool = True) -> None:
     d = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=".tmp-" + os.path.basename(path) + ".", dir=d)
     try:
@@ -109,11 +121,11 @@ def atomic_write_bytes(path, data, fsync_parent=True):
         fsync_dir(d)
 
 
-def atomic_write_json(path, obj):
+def atomic_write_json(path: str, obj: object) -> None:
     atomic_write_bytes(path, (json.dumps(obj, indent=2, sort_keys=True) + "\n").encode())
 
 
-def read_json(path, default=None):
+def read_json(path: str, default: Any = None) -> Any:
     """Read a JSON file; return default if it does not exist."""
     try:
         with open(path, "rb") as f:
@@ -122,7 +134,7 @@ def read_json(path, default=None):
         return default
 
 
-def try_read_json(path):
+def try_read_json(path: str) -> tuple[Any, str | None]:
     """Return (obj, error_string). obj is None on missing or corrupt files."""
     try:
         with open(path, "rb") as f:
@@ -136,7 +148,7 @@ def try_read_json(path):
 
 
 @contextlib.contextmanager
-def flocked(path, exclusive=True):
+def flocked(path: str, exclusive: bool = True) -> Generator[int, None, None]:
     """Blocking flock on a lock file, created if needed."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
@@ -147,7 +159,7 @@ def flocked(path, exclusive=True):
         os.close(fd)
 
 
-def try_flock_fd(path, create=False, directory=False):
+def try_flock_fd(path: str, create: bool = False, directory: bool = False) -> int | None:
     """Try a non-blocking exclusive flock. Returns the fd (lock held) or None."""
     if directory:
         flags = os.O_RDONLY
@@ -163,7 +175,3 @@ def try_flock_fd(path, create=False, directory=False):
         os.close(fd)
         return None
     return fd
-
-
-def dump_json_line(obj):
-    return json.dumps(obj, sort_keys=True)
