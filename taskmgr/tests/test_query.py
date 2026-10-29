@@ -117,6 +117,12 @@ class QueryTest(Env):
         rc, out, _ = self.task("status", j2, "--host", "s1", "--wait", "--poll-interval", "0.2",
                                "--retry-timeout", "1")
         self.assertEqual((rc, out["error"]["code"]), (2, "connection_error"))
+        # --timeout still applies while connection failures are being retried.
+        t0 = time.time()
+        rc, out, _ = self.task("status", j2, "--host", "s1", "--wait", "--poll-interval", "0.2",
+                               "--retry-timeout", "60", "--timeout", "1")
+        self.assertEqual((rc, out["error"]["code"]), (2, "wait_timeout"))
+        self.assertLess(time.time() - t0, 15)
         os.unlink(flag)
         self.assertEqual(self.job(j2)["state"], "running")
 

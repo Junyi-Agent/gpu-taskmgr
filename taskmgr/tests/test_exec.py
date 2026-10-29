@@ -113,6 +113,8 @@ class ExecTest(Env):
             {"outputs": {}, "_taskmgr": {"status": "fake"}, "keep": 1})))
         missing = self.submit(self.make_pkg(script="exit 0"))  # writes no result.json
         corrupt = self.submit(self.make_pkg(script="echo '{not json' > $TASKMGR_RESULT_FILE"))
+        clash = self.submit(self.make_pkg(
+            script="echo task > result.json.corrupt; echo '[1' > $TASKMGR_RESULT_FILE"))
         self.wait_state(taskwrote, "succeeded")
         res = self.result(taskwrote)
         self.assertEqual(res["keep"], 1)
@@ -128,6 +130,12 @@ class ExecTest(Env):
         wd = os.path.join(self.job_dir(corrupt), "attempts", "0001", "workdir")
         with open(os.path.join(wd, "result.json.corrupt")) as f:
             self.assertEqual(f.read(), "{not json\n")
+        self.wait_state(clash, "invalid_result")
+        wd = os.path.join(self.job_dir(clash), "attempts", "0001", "workdir")
+        with open(os.path.join(wd, "result.json.corrupt")) as f:
+            self.assertEqual(f.read(), "task\n")  # the task's own file is untouched
+        with open(os.path.join(wd, "result.json.corrupt.1")) as f:
+            self.assertEqual(f.read(), "[1\n")
 
     def test_progress_written_by_task_only(self):
         j = self.submit(self.make_pkg(

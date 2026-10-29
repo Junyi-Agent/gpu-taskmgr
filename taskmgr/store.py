@@ -202,10 +202,14 @@ def read_task_result(workdir, own=None):
         if not isinstance(obj, dict):
             raise ValueError("top level is not a JSON object")
     except (ValueError, UnicodeDecodeError) as e:
-        if not os.path.exists(p + ".corrupt"):
-            os.replace(p, p + ".corrupt")
+        keep, i = p + ".corrupt", 0
+        while os.path.lexists(keep):
+            i += 1
+            keep = "%s.corrupt.%d" % (p, i)
+        os.replace(p, keep)
         return ({"schema_version": SCHEMA_VERSION},
-                ["result.json is corrupt (kept as result.json.corrupt): %s" % e], warnings)
+                ["result.json is corrupt (kept as %s): %s" % (os.path.basename(keep), e)],
+                warnings)
     if "_taskmgr" in obj:
         meta = obj.pop("_taskmgr")
         ours = own is not None and isinstance(meta, dict) and meta.get("final") is True \
@@ -305,6 +309,10 @@ def finalize_attempt(store, jobid, n, *, status=None, error=None, warnings=(),
                 status = "invalid_result"
             else:
                 status = "succeeded"
+        warnings = list(dict.fromkeys(warnings))
+        # Persist the step 2-3 findings first so a crash here does not lose them.
+        runner["warnings"] = warnings
+        store.write_runner(adir, runner)
         meta = build_meta(job, runner, adir, status, verrs, error, warnings)
         write_result(adir, business, meta)
         runner.update({"final": True, "status": attempt_status or status, "taskmgr": meta,

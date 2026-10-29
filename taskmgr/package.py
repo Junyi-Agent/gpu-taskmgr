@@ -28,6 +28,13 @@ def _is_int(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+def _link_resolves_inside(root, link):
+    """True if a symlink's physical target (following chains) stays inside root."""
+    real_root = os.path.realpath(root)
+    real = os.path.realpath(link)
+    return real == real_root or real.startswith(real_root + os.sep)
+
+
 def _inside(rel):
     """True if a normalized relative POSIX path stays inside the package root."""
     n = posixpath.normpath(rel)
@@ -144,7 +151,8 @@ def scan_tree(root, errors):
                 target = os.readlink(full)
                 if target.startswith("/"):
                     _err(errors, "symlink", "absolute symlink -> %s" % target, rel)
-                elif not _inside(posixpath.join(posixpath.dirname(rel), target)):
+                elif not _inside(posixpath.join(posixpath.dirname(rel), target)) \
+                        or not _link_resolves_inside(root, full):
                     _err(errors, "symlink", "symlink points outside the package -> %s" % target,
                          rel)
             elif not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
@@ -291,10 +299,14 @@ def safe_extract(tar_path_or_fileobj, dest, max_bytes=None, skip_unsafe=False):
             return
         raise TaskmgrError("unsafe_package", "unsafe archive entry %r: %s" % (name, why))
 
-    if isinstance(tar_path_or_fileobj, (str, os.PathLike)):
-        tar = tarfile.open(tar_path_or_fileobj, mode="r:*")
-    else:
-        tar = tarfile.open(fileobj=tar_path_or_fileobj, mode="r|*")
+    links = []
+    try:
+        if isinstance(tar_path_or_fileobj, (str, os.PathLike)):
+            tar = tarfile.open(tar_path_or_fileobj, mode="r:*")
+        else:
+            tar = tarfile.open(fileobj=tar_path_or_fileobj, mode="r|*")
+    except (tarfile.TarError, EOFError, OSError, gzip.BadGzipFile) as e:
+        raise TaskmgrError("bad_archive", "cannot read archive: %s" % e)
     try:
         for m in tar:
             name = _member_name(m)
@@ -341,6 +353,7 @@ def safe_extract(tar_path_or_fileobj, dest, max_bytes=None, skip_unsafe=False):
                     continue
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 os.symlink(ln, target)
+                links.append((m.name, target))
             elif m.isdir():
                 os.makedirs(target, exist_ok=True)
                 os.chmod(target, (m.mode & 0o777) | 0o700)
@@ -362,6 +375,11 @@ def safe_extract(tar_path_or_fileobj, dest, max_bytes=None, skip_unsafe=False):
         raise TaskmgrError("bad_archive", "cannot read archive: %s" % e)
     finally:
         tar.close()
+    # Chains such as x -> . and y -> x/.. pass the lexical check; check physical targets.
+    for name, target in links:
+        if not _link_resolves_inside(dest, target):
+            os.unlink(target)
+            reject(name, "symlink resolves outside the package")
     return skipped
 
 
@@ -380,20 +398,27 @@ def package_root(extracted):
 
 def add_tree_to_tar(tar, root, arcroot):
     """Add a directory tree to an open tar without following symlinks; skip special files."""
-    for rel, full in [("", root)] + _sorted_entries(root):
-        st = os.lstat(full)
+    try:
+        entries = [("", root)] + _sorted_entries(root)
+    except OSError:
+        return
+    for rel, full in entries:
+        if posixpath.basename(rel).startswith(".tmp-"):
+            continue  # in-flight atomic writes
         arc = arcroot if not rel else arcroot + "/" + rel
-        if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode)):
-            continue
-        ti = tar.gettarinfo(full, arcname=arc)
-        if ti.islnk():  # never emit hard links
-            ti.type = tarfile.REGTYPE
-            ti.linkname = ""
-        if ti.isreg():
-            try:
-                with open(full, "rb") as f:
-                    tar.addfile(ti, f)
-            except OSError:
+        try:
+            st = os.lstat(full)
+            if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)
+                    or stat.S_ISLNK(st.st_mode)):
                 continue
-        else:
-            tar.addfile(ti)
+            ti = tar.gettarinfo(full, arcname=arc)
+            data = None
+            if ti.isreg() or ti.islnk():
+                with open(full, "rb") as f:  # a running task may still be writing it
+                    data = f.read()
+                ti.type = tarfile.REGTYPE  # never emit hard links
+                ti.linkname = ""
+                ti.size = len(data)
+        except OSError:
+            continue  # vanished while walking a running attempt
+        tar.addfile(ti, io.BytesIO(data) if data is not None else None)

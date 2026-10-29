@@ -204,8 +204,13 @@ class RecoveryTest(Env):
         self.assertEqual(len(self.job(j)["attempts"]), 1)
 
     # -- unknown --------------------------------------------------------------
-    def make_unknown(self, gpus=(0,)):
-        """Fixture: a job in unknown whose recorded process group is a live process."""
+    def make_unknown(self, gpus=(0,), state="unknown", unconfirmed=True, runner_extra=None,
+                     job_extra=None):
+        """Fixture: a job in `state` whose recorded process group is a live process.
+
+        unconfirmed=True records that the stop procedure already failed (SIGKILL did not
+        help); False models an unknown caused by an undeterminable check.
+        """
         j = self.submit(self.make_pkg(gpus=list(gpus)))
         proc = subprocess.Popen(["sleep", "300"], start_new_session=True)
         self.addCleanup(lambda: (kill_quiet(proc.pid), proc.wait()))
@@ -216,12 +221,17 @@ class RecoveryTest(Env):
                   "shim_pid": 999999, "shim_start_time": 1, "pgid": proc.pid,
                   "leader_pid": proc.pid, "leader_start_time": procutil.start_time(proc.pid),
                   "argv_hash": "x", "started_at": "2026-10-29T08:00:00Z"}
+        if unconfirmed:
+            runner["stop_unconfirmed_reason"] = "fixture"
+        runner.update(runner_extra or {})
         with open(os.path.join(adir, "runner.json"), "w") as f:
             json.dump(runner, f)
         job = self.job(j)
-        job.update({"state": "unknown", "current_attempt": 1,
+        job.update({"state": state, "current_attempt": 1,
                     "attempts": [{"attempt": 1, "status": "running"}],
-                    "error": {"kind": "stop_unconfirmed", "message": "fixture"}})
+                    "error": {"kind": "stop_unconfirmed", "message": "fixture"}
+                    if state == "unknown" else None})
+        job.update(job_extra or {})
         with open(os.path.join(jd, "job.json"), "w") as f:
             json.dump(job, f)
         os.rename(jd, os.path.join(self.root(), "in-progress", j))
@@ -306,3 +316,33 @@ class RecoveryTest(Env):
         out = self.ok("resolve", j, "--host", "s1")
         self.assertEqual(out["state"], "cancelled")
         self.wait_state(b, "succeeded")
+
+    def test_resolve_hands_decidable_unknown_back_to_takeover(self):
+        u, proc = self.make_unknown(unconfirmed=False)
+        self.start_daemon()
+        out = self.ok("resolve", u, "--host", "s1")
+        self.assertEqual((out["decision"], out["state"]), ("handed_to_daemon", "running"))
+        self.wait_for(lambda: self.runner(u).get("takeovers"), 10, "takeover")
+        kill_quiet(proc.pid)
+        proc.wait()
+        job = self.wait_state(u, "failed")
+        self.assertEqual(job["error"]["kind"], "exit_code_lost")
+
+    def test_cancel_on_unknown_wins_even_after_exit(self):
+        u, proc = self.make_unknown(runner_extra={"exited": True, "return_code": 0,
+                                                  "signal": None})
+        self.ok("cancel", u, "--host", "s1")
+        kill_quiet(proc.pid)
+        proc.wait()
+        out = self.ok("resolve", u, "--host", "s1")
+        self.assertEqual(out["state"], "cancelled")
+
+    def test_takeover_of_stopping_job_keeps_stop_reason(self):
+        # The shim died after the entry exited but while cancel cleanup was running.
+        u, proc = self.make_unknown(state="stopping", runner_extra={
+            "exited": True, "return_code": 0, "signal": None},
+            job_extra={"stop_reason": "cancel", "cancel_requested": True})
+        self.start_daemon()
+        job = self.wait_state(u, "cancelled", timeout=20)
+        self.assertEqual(job["state"], "cancelled")
+        self.assertFalse(pid_alive(proc.pid))

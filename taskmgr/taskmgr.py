@@ -251,11 +251,14 @@ def validate_path(path):
         return errors, task, (None if errors else package.content_hash(path))
     with tempfile.TemporaryDirectory(prefix="taskmgr-validate-") as tmp:
         try:
-            package.safe_extract(path, tmp)
+            skipped = package.safe_extract(path, tmp, skip_unsafe=True)
         except TaskmgrError as e:
             return [{"code": e.code, "message": e.message}], None, None
+        unsafe = [{"code": "unsafe_package", "message": "unsafe archive entry: %s" % s["reason"],
+                   "path": s["path"]} for s in skipped]
         root = package.package_root(tmp)
         errors, task = package.validate_dir(root)
+        errors = unsafe + errors  # report every error, not only the first unsafe entry
         return errors, task, (None if errors else package.content_hash(root))
 
 
@@ -293,13 +296,14 @@ def cmd_submit(args):
         remote = Remote(server)
         try:
             ack = remote.call(["receive", "--submission-key", key], stdin_path=upload)
-        except ConnError as e:
+        except (ConnError, KeyboardInterrupt) as e:
+            msg = e.message if isinstance(e, ConnError) else "interrupted during upload"
             eprint("submission outcome is uncertain on host %s (submission key %s): %s"
-                   % (server["name"], key, e.message))
+                   % (server["name"], key, msg))
             eprint("do NOT resubmit elsewhere; retry safely with:")
             eprint("  task submit --host %s --submission-key %s %s"
                    % (shlex.quote(server["name"]), shlex.quote(key), shlex.quote(args.path)))
-            raise TaskmgrError("submission_uncertain", e.message, 2, server["name"],
+            raise TaskmgrError("submission_uncertain", msg, 2, server["name"],
                                {"submission_key": key})
     return {"host": server["name"], "jobid": ack["jobid"], "task_id": ack["task_id"],
             "submission_key": ack["submission_key"], "deduplicated": ack["deduplicated"],
@@ -399,8 +403,15 @@ def wait_status(args, servers):
             if now - fail_since >= args.retry_timeout:
                 raise TaskmgrError("connection_error", "giving up after %.0fs of connection "
                                    "failures: %s" % (now - fail_since, e.message), 2, e.host)
+            if deadline is not None and now >= deadline:
+                host = server["name"] if server else args.host
+                out = render_status(host, st, complete) if st else {}
+                out["error"] = {"code": "wait_timeout", "message": "--timeout expired while "
+                                "the server was unreachable: %s" % e.message, "host": host}
+                return out, 2
             eprint("connection failed (%s); retrying" % e.message)
-            time.sleep(args.poll_interval)
+            time.sleep(args.poll_interval if deadline is None
+                       else max(0.0, min(args.poll_interval, deadline - now)))
             continue
         state = st["job"]["state"]
         if st["terminal"]:
@@ -606,8 +617,18 @@ def main(argv=None):
         eprint("error: %s" % e.message)
     except KeyboardInterrupt:
         eprint("interrupted (remote jobs are not affected)")
-        sys.stdout.write(json.dumps({"error": {"code": "interrupted",
-                                               "message": "interrupted locally"}}) + "\n")
+        if args.cmd != "logs":
+            sys.stdout.write(json.dumps({"error": {"code": "interrupted",
+                                                   "message": "interrupted locally"}}) + "\n")
+        return 2
+    except Exception as e:  # noqa: BLE001 - keep the JSON / exit-code contract
+        import traceback
+        eprint(traceback.format_exc())
+        err = {"error": {"code": "internal_error", "message": "%s: %s" % (type(e).__name__, e)}}
+        if args.cmd == "logs":
+            eprint(json.dumps(err))
+        else:
+            sys.stdout.write(json.dumps(err) + "\n")
         return 2
     if out is not None:
         sys.stdout.write(json.dumps(out, indent=2, sort_keys=True) + "\n")

@@ -11,9 +11,9 @@ import tempfile
 PROTOCOL_VERSION = 1
 SCHEMA_VERSION = 1
 
-TASK_ID_RE = re.compile(r"^[A-Z]{2}-[0-9]{2,4}$")
-SUBMISSION_KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-JOBID_RE = re.compile(r"^[0-9a-f]{16}$")
+TASK_ID_RE = re.compile(r"^[A-Z]{2}-[0-9]{2,4}\Z")
+SUBMISSION_KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}\Z")
+JOBID_RE = re.compile(r"^[0-9a-f]{16}\Z")
 
 TERMINAL_STATES = ("succeeded", "failed", "invalid_result", "cancelled", "timed_out")
 GPU_HOLDING_STATES = ("running", "stopping", "unknown")

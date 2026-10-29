@@ -245,7 +245,7 @@ stdin is `/dev/null`; stdout/stderr go to `stdout.log` / `stderr.log` of the att
  "submitted_at": "...", "updated_at": "...", "ended_at": "...", "enqueue_seq": 17,
  "content_hash": "<sha256>", "submission_key": "cli-...",
  "gpus": [{"declared": 0, "uuid": "GPU-..."}],
- "cancel_requested": false, "stop_reason": null | "cancel" | "timeout",
+ "cancel_requested": false, "stop_reason": null | "cancel" | "timeout" | "leftover",
  "auto_restarts": 0, "retries": 0, "current_attempt": 1,
  "attempts": [{"attempt": 1, "status": "running", "dispatched_at": "...", "ended_at": "..."}],
  "error": null}
@@ -385,7 +385,7 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
 5. `task cancel` on a running job only sets `cancel_requested`; the shim (or the daemon
    during takeover) moves it to `stopping` within `control_poll_seconds`. A cancel that
    arrives after the entry has already exited does not change its outcome. A cancel seen
-   before the entry starts ends the attempt as cancelled without running it.
+   before the entry starts goes running → stopping → cancelled without running it.
 6. `task status` of a finished job prints `result.json` with two added top-level keys,
    `host` and `complete`. A job that ended without any attempt (cancelled while queued)
    prints a synthesized `{"schema_version", "_taskmgr": {...}}`.
@@ -393,9 +393,14 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
    (`wait_timeout`) and exits 2. Ctrl-C prints an `interrupted` error and exits 2.
 8. Protocol compatibility means equal integer `protocol_version` (currently 1). ssh exit
    status 255 is treated as a connection failure; ssh runs with `BatchMode=yes`.
-9. Leftover cleanup that cannot be confirmed puts the job into `unknown` (same as
-   cancel/timeout).
-10. `resolve` never starts a takeover: if processes are alive it leaves the job unknown.
+9. Leftover cleanup after the entry exits moves the job to `stopping` with
+   `stop_reason: "leftover"`; a confirmed stop finalizes from the real exit code, an
+   unconfirmed one puts the job into `unknown` (same as cancel/timeout).
+10. `resolve` with live group members: if the unknown came from a check that could not be
+    decided (unreadable `/proc`, incomplete record), the job goes back to running/stopping
+    and the daemon takes over tracking (case 4.4). If SIGKILL already failed
+    (`stop_unconfirmed_reason` set) the job stays unknown for the operator. A cancel
+    recorded on an unknown job makes it cancelled once the stop is confirmed.
 11. `_taskmgr.paths` point to the attempt's final location (`done/...`); while running,
     `TASKMGR_WORKDIR` and friends point to `in-progress/...` (the directory moves when the
     job ends).
@@ -405,6 +410,10 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
     with a warning and lists them in `skipped`; it includes `shim.lock`.
 14. `max_cpu_jobs` counts CPU-only jobs in running, stopping and unknown.
 15. jobid uniqueness is checked against all job directories on the server.
+    `receive` answers a known submission key (dedup or conflict) right after extraction and
+    hashing, before GPU resolution and validation, so a retry after a lost ACK succeeds even
+    if the machine's GPUs changed. A corrupt `result.json` is kept as
+    `result.json.corrupt` (or `.corrupt.N` if that name is taken).
 16. `_taskmgr.host` is the remote machine's hostname.
 17. Extra config key `scheduler_poll_seconds`; extra command `task hosts`.
 

@@ -132,6 +132,10 @@ def run(store, jobid, n, lock_fd):
             runner.update({"final": True, "ended_at": utcnow_iso(), "return_code": None,
                            "signal": None})
             if job.get("cancel_requested"):
+                # running -> stopping -> cancelled; nothing was started, so the stop is
+                # confirmed immediately.
+                set_stopping(store, jobid, n, "cancel")
+                jobdir, job = store.load_job(jobid)
                 runner["status"] = "cancelled"
                 end_without_result(store, jobdir, job, n, "cancelled", None, runner)
             else:
@@ -258,6 +262,9 @@ def supervise(store, jobid, n, adir, runner, pid, task, cfg):
         if members:
             log("leftover processes %s; running stop procedure" % members)
             warnings.append("leftover_processes")
+            runner["warnings"] = warnings
+            store.write_runner(adir, runner)  # survives a shim crash during cleanup
+            set_stopping(store, jobid, n, "leftover")
             stopper = GroupStopper(pid, runner["leader_start_time"], grace, confirm)
             stopper.start()
             while True:
@@ -274,7 +281,7 @@ def supervise(store, jobid, n, adir, runner, pid, task, cfg):
         record_exit(st)
     _crash_point("before_finalize")
     status = STOP_OUTCOME.get(stop_reason)
-    job = finalize_attempt(store, jobid, n, status=status, warnings=warnings)
+    job = finalize_attempt(store, jobid, n, status=status)
     log("finalized: %s" % job["state"])
     return 0
 

@@ -144,8 +144,11 @@ def assess(store, jobid, resolve=False):
     try:
         stop_reason = job.get("stop_reason") if state in ("stopping", "unknown") else None
         exited = bool(runner.get("exited"))
-        if stop_reason is None and job.get("cancel_requested") and not exited:
-            stop_reason = "cancel"  # a cancel request stays effective across restarts
+        if job.get("cancel_requested") and (state == "unknown" or (stop_reason is None
+                                                                    and not exited)):
+            # A cancel request stays effective across restarts; on an unknown job it
+            # turns into cancelled once the stop is confirmed (Section 13.2).
+            stop_reason = "cancel"
         if not exited and not _has_identity(runner):
             if runner.get("pgid") is None and runner.get("boot_id") is None:
                 j = requeue_or_end_interrupted(store, jobid, n, "entry command never started")
@@ -176,12 +179,23 @@ def assess(store, jobid, resolve=False):
                     "identity": identity_of(runner)}
         if not members:
             warnings = []
-            if state == "unknown" and runner.get("stop_unconfirmed_reason") == "leftover":
+            if "leftover" in (job.get("stop_reason"), runner.get("stop_unconfirmed_reason")):
                 warnings = ["leftover_processes"]
             j = finish_stopped(store, jobid, n, stop_reason, exited, warnings)
             return {"decision": "finalized", "state": j["state"]}
         if resolve:
-            return {"decision": "still_running", "alive_pids": members,
+            if runner.get("stop_unconfirmed_reason"):
+                # SIGKILL already failed once: an operator has to look at it.
+                return {"decision": "still_running", "alive_pids": members,
+                        "identity": identity_of(runner)}
+            # The unknown came from an undeterminable check that can now be decided:
+            # hand the attempt back to the daemon, which takes over tracking (case 4.4).
+            with store.state_lock():
+                jobdir, job = store.load_job(jobid)
+                job["state"] = "stopping" if job.get("stop_reason") else "running"
+                job["error"] = None
+                store.save_job(jobdir, job)
+            return {"decision": "handed_to_daemon", "alive_pids": members,
                     "identity": identity_of(runner)}
         keep_fd = True
         tk = Takeover(store, jobid, n, runner, lock_fd, exited, job)
@@ -214,8 +228,9 @@ class Takeover:
             "kill_confirm_seconds", 10)
         self._note()
         if self.exited:
-            self.warnings.append("leftover_processes")
-            self._begin_stop("leftover")
+            if self.stop_reason in (None, "leftover"):
+                self.warnings.append("leftover_processes")
+            self._begin_stop(self.stop_reason or "leftover")
         elif self.stop_reason:
             self._begin_stop(self.stop_reason)
 

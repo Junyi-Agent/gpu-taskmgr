@@ -221,3 +221,37 @@ class PackageTest(Env):
         out = self.ok("submit", "--host", "s1", path)
         self.assertEqual(out["task_id"], "AA-01")
         self.assertEqual(out["content_hash"], package.content_hash(pkg))
+
+    def test_symlink_chain_escaping_package_is_rejected(self):
+        pkg = self.make_pkg()
+        os.symlink(".", os.path.join(pkg, "x"))
+        os.symlink("x/..", os.path.join(pkg, "y"))  # lexically ".", physically the parent
+        rc, out, _ = self.task("validate", pkg)
+        self.assertEqual(rc, 1)
+        self.assertEqual([e["path"] for e in out["errors"] if e["code"] == "symlink"], ["y"])
+        path = self._tar_with([({"name": "x", "type": tarfile.SYMTYPE, "linkname": "."}, None),
+                               ({"name": "y", "type": tarfile.SYMTYPE, "linkname": "x/.."},
+                                None)])
+        self.assertEqual(self.task("validate", path)[0], 1)
+        with open(path, "rb") as f:
+            rc, out, _ = self.remote("receive", stdin=f)
+        self.assertEqual((rc, out["error"]["code"]), (2, "unsafe_package"))
+
+    def test_validate_archive_reports_all_errors(self):
+        path = self._tar_with([({"name": "../a", "mode": 0o644}, b"x"),
+                               ({"name": "/b", "mode": 0o644}, b"x")])
+        rc, out, _ = self.task("validate", path)
+        self.assertEqual(rc, 1)
+        self.assertEqual(len([e for e in out["errors"] if e["code"] == "unsafe_package"]), 2)
+        junk = os.path.join(self.tmp, "junk.tar.gz")
+        with open(junk, "w") as f:
+            f.write("not an archive")
+        rc, out, _ = self.task("validate", junk)
+        self.assertEqual((rc, out["errors"][0]["code"]), (1, "bad_archive"))
+        rc, out, _ = self.task("validate", "--", "\n")
+        self.assertEqual(rc, 2)
+
+    def test_regexes_reject_trailing_newline(self):
+        from taskmgr.common import SUBMISSION_KEY_RE, TASK_ID_RE
+        self.assertIsNone(TASK_ID_RE.match("AA-01\n"))
+        self.assertIsNone(SUBMISSION_KEY_RE.match("k\n"))

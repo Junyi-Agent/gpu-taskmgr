@@ -123,6 +123,13 @@ class SubmitTest(Env):
             self.assertFalse(os.listdir(os.path.join(self.root(s))) != ["config.json"] and
                              os.listdir(os.path.join(self.root(s), "queue")))
 
+    def test_dedup_answers_before_machine_dependent_checks(self):
+        pkg = self.make_pkg(gpus=[1])
+        a = self.ok("submit", "--host", "s1", "--submission-key", "gpu-k", pkg)
+        self.set_gpus([])  # the GPU vanished (or nvidia-smi broke) after the first enqueue
+        b = self.ok("submit", "--host", "s1", "--submission-key", "gpu-k", pkg)
+        self.assertEqual((b["jobid"], b["deduplicated"]), (a["jobid"], True))
+
     def test_retry_after_lost_ack(self):
         pkg = self.make_pkg()
         # Simulate: the server enqueued the job but the client never saw the ACK.

@@ -6,6 +6,7 @@ Every subcommand except `logs`, `fetch`, `serve` and `shim` prints one JSON obje
 """
 
 import argparse
+import fcntl
 import json
 import os
 import secrets
@@ -17,7 +18,7 @@ import time
 
 from . import package
 from .common import (PROTOCOL_VERSION, SCHEMA_VERSION, SUBMISSION_KEY_RE, TERMINAL_STATES,
-                     TaskmgrError, atomic_write_json, fsync_dir, read_json, try_flock_fd,
+                     TaskmgrError, atomic_write_json, fsync_dir, read_json,
                      try_read_json, utcnow_iso)
 from .gpu import resolve_declarations
 from .monitor import assess, identity_of
@@ -50,7 +51,8 @@ def cmd_receive(store, args):
     updir = store.path("incoming", "up-%s-%s" % (time.strftime("%Y%m%d%H%M%S"),
                                                  secrets.token_hex(6)))
     os.mkdir(updir)
-    lock_fd = try_flock_fd(updir, directory=True)
+    lock_fd = os.open(updir, os.O_RDONLY)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)  # held for the whole upload and reception
     try:
         tar_path = os.path.join(updir, "package.tar.gz")
         with open(tar_path, "wb") as f:
@@ -62,29 +64,29 @@ def cmd_receive(store, args):
         ext = os.path.join(updir, "extract")
         package.safe_extract(tar_path, ext, store.config.get("max_package_bytes"))
         root = package.package_root(ext)
+        chash = package.content_hash(root)
+        # A retry of an already enqueued submission answers from the key mapping before
+        # any check that depends on the machine's current state (e.g. GPU visibility).
+        with store.state_lock():
+            ack = _dedup_ack(store, key, chash)
+        if ack:
+            return emit(ack)
         errors, task = package.validate_dir(root)
         if errors:
             raise TaskmgrError("invalid_package", "package validation failed (%d errors)"
                                % len(errors), details=errors)
-        chash = package.content_hash(root)
         gpus = resolve_declarations(task.get("gpus") or [])
         pkg = os.path.join(updir, "package")
         os.rename(root, pkg)
         if os.path.exists(ext):
             remove_tree(ext)
         _make_read_only(pkg)
+        os.sync()  # package/ is the source of every attempt: durable before the ACK
         with store.state_lock():
+            ack = _dedup_ack(store, key, chash)
+            if ack:
+                return emit(ack)
             kpath = store.path("submission-keys", key + ".json")
-            mapping = read_json(kpath)
-            if mapping and store.find_job_dir(mapping.get("jobid")):
-                if mapping.get("content_hash") != chash:
-                    raise TaskmgrError("submission_key_conflict",
-                                       "submission key %s was already used for different "
-                                       "content (job %s)" % (key, mapping["jobid"]))
-                _, old = store.load_job(mapping["jobid"])
-                return emit({"ok": True, "jobid": mapping["jobid"], "task_id": old["task_id"],
-                             "submission_key": key, "deduplicated": True,
-                             "content_hash": chash, "state": old["state"]})
             jobid = store.new_jobid()
             now = utcnow_iso()
             job = {
@@ -112,19 +114,40 @@ def cmd_receive(store, args):
             remove_tree(updir)
 
 
+def _dedup_ack(store, key, chash):
+    """Section 6.2 lookup; needs the state lock. Returns an ACK, None, or raises."""
+    mapping = read_json(store.path("submission-keys", key + ".json"))
+    if not mapping or not store.find_job_dir(mapping.get("jobid")):
+        return None  # unused key, or a stale mapping whose job was never enqueued
+    if mapping.get("content_hash") != chash:
+        raise TaskmgrError("submission_key_conflict", "submission key %s was already used for "
+                           "different content (job %s)" % (key, mapping["jobid"]))
+    _, old = store.load_job(mapping["jobid"])
+    return {"ok": True, "jobid": mapping["jobid"], "task_id": old["task_id"],
+            "submission_key": key, "deduplicated": True, "content_hash": chash,
+            "state": old["state"]}
+
+
 def _make_read_only(root):
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
         for f in filenames:
             p = os.path.join(dirpath, f)
             if not os.path.islink(p):
                 os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) & ~0o222)
+        os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) & ~0o222)
 
 
 # ---------------------------------------------------------------------------
 # queries
 
 def cmd_jobs(store, args):
-    jobs = [job_summary(j) for _, j in store.iter_jobs()
+    # A directory rename during the scan can show a job twice; keep its newest record.
+    latest = {}
+    for _, j in store.iter_jobs():
+        old = latest.get(j["jobid"])
+        if old is None or (j.get("updated_at") or "") >= (old.get("updated_at") or ""):
+            latest[j["jobid"]] = j
+    jobs = [job_summary(j) for j in latest.values()
             if not args.state or j.get("state") == args.state]
     jobs.sort(key=lambda j: (j.get("submitted_at") or "", j["jobid"]))
     return emit({"jobs": jobs})
@@ -138,11 +161,16 @@ def synthesized_result(job):
         "note": "the job ended without running an attempt", "final": True}}
 
 
-def job_status(store, jobid):
+def job_status(store, jobid, _retry=True):
     jd = store.find_job_dir(jobid)
     if jd is None:
         return {"found": False, "jobid": jobid}
-    _, job = store.load_job(jobid)
+    try:
+        jd, job = store.load_job(jobid)
+    except TaskmgrError:
+        if _retry:  # the directory moved between lookup and read
+            return job_status(store, jobid, False)
+        raise
     out = {"found": True, "job": job_summary(job), "attempts": store.existing_attempts(jd),
            "terminal": job["state"] in TERMINAL_STATES}
     n = job.get("current_attempt")
@@ -151,6 +179,8 @@ def job_status(store, jobid):
         res = None
         if adir:
             res, _ = try_read_json(os.path.join(adir, "workdir", "result.json"))
+            if not isinstance(res, dict) and _retry:
+                return job_status(store, jobid, False)
         out["result"] = res if isinstance(res, dict) else synthesized_result(job)
         return out
     if adir:
@@ -408,6 +438,14 @@ def main(argv=None):
         return emit(e.to_json(), e.exit_code)
     except BrokenPipeError:
         return 0
+    except Exception as e:  # noqa: BLE001 - always answer with JSON
+        import traceback
+        sys.stderr.write(traceback.format_exc())
+        err = {"error": {"code": "internal_error", "message": "%s: %s" % (type(e).__name__, e)}}
+        if stream_cmd:
+            sys.stderr.write(json.dumps(dict(err, protocol_version=PROTOCOL_VERSION)) + "\n")
+            return 2
+        return emit(err, 2)
 
 
 if __name__ == "__main__":
