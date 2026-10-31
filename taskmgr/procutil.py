@@ -1,6 +1,8 @@
-"""Linux /proc helpers: boot id, process start time, process-group membership."""
+"""Linux /proc helpers: boot id, process start time, process-group membership, and the
+signal dispositions a started program gets."""
 
 import os
+import signal
 
 
 class ProcUnavailable(Exception):
@@ -33,8 +35,33 @@ def start_time(pid: int) -> int | None:
     return None if st is None else st[2]
 
 
-def group_members(pgid: int, min_start: int) -> list[int]:
-    """PIDs of live (non-zombie) processes in process group pgid started at/after min_start."""
+def job_tag(pid: int) -> str | None:
+    """TASKMGR_JOBID from /proc/<pid>/environ (the environment the process was exec'd
+    with); None when it is not set or the environ cannot be read."""
+    try:
+        with open("/proc/%d/environ" % pid, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    for item in data.split(b"\0"):
+        if item.startswith(b"TASKMGR_JOBID="):
+            return item[len(b"TASKMGR_JOBID=") :].decode(errors="replace")
+    return None
+
+
+def group_members(pgid: int, min_start: int, jobid: str | None = None) -> list[int]:
+    """PIDs of live (non-zombie) processes in process group pgid started at/after min_start.
+
+    min_start is the start time of the group leader (pid pgid). With `jobid`, a process
+    whose environment carries a different TASKMGR_JOBID is not a member: after the group
+    is gone, its pid can become the pgid of an unrelated new session (another job's task
+    calls setsid too). A process without a readable tag (environ unreadable because it is
+    not dumpable or belongs to another user, or the task cleared its environment) still
+    counts, unless the pid pgid is now held by a process that is not the recorded leader;
+    the kernel does not reuse a pid while a process group of that id exists, so then the
+    whole group is a new one. Counting untagged processes keeps a job from being finished
+    while processes it started may still run (and hold its GPUs).
+    """
     try:
         names = os.listdir("/proc")
     except OSError as e:
@@ -51,4 +78,29 @@ def group_members(pgid: int, min_start: int) -> list[int]:
         state, pg, start = st
         if pg == pgid and start >= min_start and state not in ("Z", "X", "x"):
             pids.append(int(n))
-    return sorted(pids)
+    if jobid is None or not pids:
+        return sorted(pids)
+    leader = read_stat(pgid)
+    foreign_leader = leader is not None and leader[2] != min_start
+    members: list[int] = []
+    for pid in pids:
+        tag = job_tag(pid)
+        if tag == jobid or (tag is None and not foreign_leader):
+            members.append(pid)
+    return sorted(members)
+
+
+def default_signals() -> None:
+    """Give every ignored signal its default action back and clear the signal mask.
+
+    Ignored dispositions survive execve: Python ignores SIGPIPE and SIGXFSZ, the shim
+    ignores SIGHUP, so a program started from here would inherit those (e.g. `yes | head`
+    would print "Broken pipe" errors). Called in a forked child right before execve.
+    """
+    for sig in signal.valid_signals():
+        try:
+            if signal.getsignal(sig) == signal.SIG_IGN:
+                _ = signal.signal(sig, signal.SIG_DFL)
+        except (OSError, ValueError):
+            pass
+    _ = signal.pthread_sigmask(signal.SIG_SETMASK, [])
