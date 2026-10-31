@@ -18,7 +18,8 @@ from typing import Protocol, cast
 from .common import TaskmgrError, atomic_write_bytes, flocked, read_json
 from .hostsetup import AddHostArgs, Declined, NonInteractive, Ui, add_host
 from .records import JsonValue, Server
-from .textout import BOLD, GREEN, RED, YELLOW, CmdResult, hint, message, render_table
+from .textout import BOLD, GREEN, RED, YELLOW, CmdResult, cell, hint, message, render_table
+from .textout import rows as _rows
 from .transport import Remote, load_machines
 
 HELP = [
@@ -293,14 +294,7 @@ def host_ping(name: str | None, home: str) -> CmdResult:
 
 
 def _s(v: object, default: str = "") -> str:
-    return default if v is None else str(v)
-
-
-def _rows(out: Mapping[str, object], key: str) -> list[Mapping[str, object]]:
-    v = out.get(key)
-    if not isinstance(v, list):
-        return []
-    return [cast(Mapping[str, object], r) for r in cast(list[object], v) if isinstance(r, Mapping)]
+    return cell(v, default)
 
 
 def render(args: HostArgs, out: Mapping[str, object], color: bool) -> str:
