@@ -31,7 +31,7 @@ task --help
 
 ```sh
 task host add gpu1 --ssh tuner@10.0.0.12
-# 依次执行，每处改动先询问 [y/N]（--yes 全部回答 yes）：
+# 主要步骤，依次执行（全部十步见 docs/install.zh-CN.md）；每处改动先询问 [y/N]（--yes 全部回答 yes）：
 #  1. 检查 ssh、Linux、python3 >= 3.10、systemctl --user
 #  2. 上传 dist/taskmgr-remote.pyz 到 ~/.taskmgr-remote/versions/<version>.pyz，
 #     把 ~/.taskmgr-remote/taskmgr-remote.pyz 链接过去（不在本地构建；code version 与 task 不同时报错）
@@ -42,9 +42,8 @@ task host add gpu1 --ssh tuner@10.0.0.12
 ```
 
 更新服务器（`git pull` 或改代码之后）：重新运行 `python3 -m taskmgr.pyz -o dist`，再运行
-`task host add gpu1`。`task host add`。
-
-更新的命令是幂等的
+`task host add gpu1`。`task host add` 是幂等的：服务器已是最新时，它不做改动，也不提问。每一步、
+数据检查和手动部署方式见 [[docs/install.zh-CN]]（"远程服务器：`task host add`"）。
 
 **3. 使用**
 

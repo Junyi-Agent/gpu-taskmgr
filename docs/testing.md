@@ -12,12 +12,37 @@ Other language: [[docs/testing.zh-CN]]
 ```sh
 python -m unittest discover -s taskmgr/tests      # Linux, no GPU, no network
 # from macOS:
-docker run --rm --init -v "$PWD":/src -w /src python:3.11-slim \
-    python -m unittest discover -s taskmgr/tests
+docker run --rm --init -v "$PWD":/src:ro python:3.10-slim \
+    sh -c 'cp -a /src /w && cd /w && python -m unittest discover -s taskmgr/tests'
+# one module: ... python -m unittest taskmgr.tests.test_query
 ```
+
+The tests need Linux (`/proc`, process groups, `setsid`). On any other platform every test
+class built on `helpers.Env` is skipped with a message pointing here; only the few pure unit
+tests run natively. Use the Docker command on macOS.
+
+The checkout is mounted read-only and copied into the container (`cp -a /src /w`): the
+tests write nothing into your working tree (no `__pycache__`, no `dist/`), and two runs
+from different worktrees do not share files. `python:3.10-slim` matches the oldest Python
+the project supports (`.python-version`).
 
 Run with `--init` (or any init that reaps orphans) in containers: tests kill shims and the
 orphaned task processes must be reaped.
+
+Cleanup: each test registers its teardown with `addCleanup` (so it runs even when `setUp`
+fails), and an `atexit` hook plus a SIGTERM / SIGHUP handler clean up whatever is left if
+the run is interrupted. Cleanup stops the test's daemons, kills every process running in
+or naming the test's temp directory, gives read-only package copies `u+w` back, and removes
+the directory. A `SIGKILL`ed runner cannot clean up; in Docker the container goes away with
+it.
+
+The test environment drops every inherited `TASKMGR_*` variable and `NO_COLOR`, then sets
+what the tests need, so settings from your shell cannot change the results.
+
+To assert that a job is "still queued" after the scheduler had its chance, use
+`Env.wait_scheduler_passes(n)` instead of a fixed sleep: it submits no-op probe jobs and
+waits until each has succeeded; the pass that dispatches a probe has considered every job
+queued before it.
 
 **Test-only overrides** (do not use in production):
 

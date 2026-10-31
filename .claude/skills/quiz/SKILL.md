@@ -13,8 +13,8 @@ description: 针对 gpu-taskmgr 项目的设计决策出题考用户，检查用
 
 按顺序读，读到够出题为止：
 
-1. `agent/requirements-*.md`（需求文档，按编号从新到旧）
-2. `README.md`、`CLAUDE.md`、`agent/` 下其他设计/计划文档
+1. `agent/desc-*.md`（需求与设计决策文档，按编号从新到旧：`desc-1` 需求规格，`desc-2` 设计决策，`desc-3` 工具链）
+2. `README.md`、`taskmgr/README.md`、`docs/*.md`（英文版；`*.zh-CN.md` 是同内容的中文版）
 3. `git log --oneline -30` 和最近几次提交的 diff（看实际落地了什么）
 4. 主要源码的入口、数据结构、调度/状态流转逻辑
 5. 当前对话里 agent 刚做过的决定（如果用户在本次会话中调用）

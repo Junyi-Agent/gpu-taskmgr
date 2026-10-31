@@ -18,7 +18,7 @@ The runtime has no third-party dependencies. The `dev` dependency group holds th
 
 | Tool | Use |
 | --- | --- |
-| `ruff` | code formatting (`ruff format`), line length 100 |
+| `ruff` | linting (`ruff check`, rules in `[tool.ruff.lint]`) and formatting (`ruff format`, line length 100); covers `taskmgr/` and the extensionless scripts in `bin/` |
 | `basedpyright` | type checking, `typeCheckingMode = "all"`, Python 3.10, platform Linux |
 | `pre-commit` | runs the hooks below on each commit |
 
@@ -34,6 +34,7 @@ uv run pre-commit install        # installs the git hook
 | Hook | Command | Notes |
 | --- | --- | --- |
 | `uv-lock` | `uv lock` | keeps `uv.lock` in sync with `pyproject.toml` |
+| `ruff-check` | `uv run --frozen ruff check --fix` | lints staged Python files and applies safe fixes; the commit fails on fixes or remaining errors |
 | `ruff-format` | `uv run --frozen ruff format` | reformats staged Python files; the commit fails if files changed, re-stage them |
 | `basedpyright` | `uv run --frozen basedpyright` | checks the whole project (not only staged files) |
 
@@ -42,6 +43,7 @@ so the versions in `uv.lock` are the ones the hooks use.
 
 ```sh
 uv run pre-commit run --all-files    # run every hook on the whole repo
+uv run ruff check .                  # lint by hand
 uv run ruff format .                 # format by hand
 uv run basedpyright                  # type-check by hand
 ```
@@ -68,8 +70,11 @@ Linux, see [[docs/testing]].
   `taskmgr`; they use `object` where JSON values pass through. `pyproject.toml` adds
   `executionEnvironments` with `extraPaths` so `import taskmgr_task` next to `run.py`
   resolves.
-- No `# type: ignore` / `# pyright: ignore`, except the optional `torch` import in
-  `examples/multi-gpu/run.py`.
+- `# type: ignore` / `# pyright: ignore` only where the checker cannot be satisfied
+  otherwise, always with the rule name and a reason. Current uses: the optional `torch`
+  import in `examples/multi-gpu/run.py`, and `argparse._SubParsersAction` /
+  `argparse._HelpAction` (`reportPrivateUsage`) in `taskmgr.py`, which walks the parser to
+  print help.
 
 ## Tests
 

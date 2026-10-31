@@ -17,7 +17,7 @@ up: "[[taskmgr/README.zh-CN]]"
 
 | 工具 | 用途 |
 | --- | --- |
-| `ruff` | 代码格式化（`ruff format`），行宽 100 |
+| `ruff` | 代码检查（`ruff check`，规则见 `[tool.ruff.lint]`）和格式化（`ruff format`，行宽 100）；覆盖 `taskmgr/` 和 `bin/` 下无扩展名的脚本 |
 | `basedpyright` | 类型检查，`typeCheckingMode = "all"`，Python 3.10，平台 Linux |
 | `pre-commit` | 每次提交时运行下面的 hook |
 
@@ -33,6 +33,7 @@ uv run pre-commit install        # 安装 git hook
 | Hook | 命令 | 说明 |
 | --- | --- | --- |
 | `uv-lock` | `uv lock` | 保持 `uv.lock` 与 `pyproject.toml` 一致 |
+| `ruff-check` | `uv run --frozen ruff check --fix` | 检查暂存的 Python 文件并应用安全修复；有修复或仍有错误时提交失败 |
 | `ruff-format` | `uv run --frozen ruff format` | 格式化暂存的 Python 文件；有文件被改动时提交失败，重新 add 后再提交 |
 | `basedpyright` | `uv run --frozen basedpyright` | 检查整个项目（不只检查暂存文件） |
 
@@ -41,6 +42,7 @@ ruff 和 basedpyright 在项目 venv 中运行（`language: system` + `uv run --
 
 ```sh
 uv run pre-commit run --all-files    # 对整个仓库运行所有 hook
+uv run ruff check .                  # 手动代码检查
 uv run ruff format .                 # 手动格式化
 uv run basedpyright                  # 手动类型检查
 ```
@@ -64,8 +66,10 @@ basedpyright 配置了 `pythonPlatform = "Linux"`，因为远程端用到 `/proc
 - `taskmgr_task.py` 和 `run.py` 会随任务包分发，不能 import `taskmgr`；JSON 值透传的地方用
   `object`。`pyproject.toml` 通过 `executionEnvironments` 的 `extraPaths` 让 `run.py` 旁边的
   `import taskmgr_task` 能被解析。
-- 不使用 `# type: ignore` / `# pyright: ignore`，唯一例外是 `examples/multi-gpu/run.py` 中可选的
-  `torch` import。
+- 只有在类型检查器无法用其他方式满足时才用 `# type: ignore` / `# pyright: ignore`，并写明规则名和
+  原因。目前的用处：`examples/multi-gpu/run.py` 中可选的 `torch` import，以及 `taskmgr.py` 遍历
+  parser 打印帮助时用到的 `argparse._SubParsersAction` / `argparse._HelpAction`
+  （`reportPrivateUsage`）。
 
 ## 测试
 

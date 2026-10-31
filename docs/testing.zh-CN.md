@@ -12,12 +12,31 @@ up: "[[taskmgr/README.zh-CN]]"
 ```sh
 python -m unittest discover -s taskmgr/tests      # Linux，无需 GPU，无需网络
 # 在 macOS 上：
-docker run --rm --init -v "$PWD":/src -w /src python:3.11-slim \
-    python -m unittest discover -s taskmgr/tests
+docker run --rm --init -v "$PWD":/src:ro python:3.10-slim \
+    sh -c 'cp -a /src /w && cd /w && python -m unittest discover -s taskmgr/tests'
+# 只跑一个模块：... python -m unittest taskmgr.tests.test_query
 ```
+
+测试需要 Linux（`/proc`、进程组、`setsid`）。在其他平台上，所有基于 `helpers.Env` 的测试类都会
+被跳过，跳过信息指向本页；只有少量纯单元测试会在本机运行。在 macOS 上请用上面的 Docker 命令。
+
+代码目录以只读方式挂载，再复制进容器（`cp -a /src /w`）：测试不会往工作目录写任何东西（没有
+`__pycache__`，没有 `dist/`），从不同 worktree 同时运行也不会共用文件。`python:3.10-slim` 对应
+项目支持的最低 Python 版本（`.python-version`）。
 
 在容器中运行时要加 `--init`（或其他会回收孤儿进程的 init）：测试会杀掉 shim，产生的孤儿任务
 进程需要被回收。
+
+清理：每个测试用 `addCleanup` 注册清理（`setUp` 中途失败也会执行）；运行被中断时，`atexit` 钩子
+以及 SIGTERM / SIGHUP 处理函数会清理剩下的部分。清理会停掉该测试的 daemon，杀掉所有在该测试临时
+目录中运行或命令行包含该目录的进程，给只读的任务包副本恢复 `u+w`，然后删除目录。被 `SIGKILL`
+的测试进程无法清理；在 Docker 中容器会随之一起消失。
+
+测试环境会去掉继承来的所有 `TASKMGR_*` 变量和 `NO_COLOR`，再设置测试需要的值，因此 shell 中的
+设置不会影响测试结果。
+
+要断言某个任务在调度器处理过之后"仍在排队"，用 `Env.wait_scheduler_passes(n)` 代替固定的
+sleep：它提交空操作的探测任务并等每个都成功；调度出探测任务的那一轮已经考虑过排在它前面的所有任务。
 
 **仅用于测试的覆盖项**（不要在生产环境使用）：
 

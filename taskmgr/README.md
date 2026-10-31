@@ -32,7 +32,7 @@ task --help
 
 ```sh
 task host add gpu1 --ssh tuner@10.0.0.12
-# runs these steps in order; every change asks [y/N] first (--yes answers yes):
+# main steps, in order (all ten: docs/install.md); every change asks [y/N] first (--yes answers yes):
 #  1. check ssh, Linux, python3 >= 3.10, systemctl --user
 #  2. upload dist/taskmgr-remote.pyz to ~/.taskmgr-remote/versions/<version>.pyz and
 #     point ~/.taskmgr-remote/taskmgr-remote.pyz at it (nothing is built locally; fails
@@ -45,7 +45,8 @@ task host add gpu1 --ssh tuner@10.0.0.12
 
 To update the server (after `git pull` or a code change): run `python3 -m taskmgr.pyz -o dist`
 again, then `task host add gpu1`. `task host add` is idempotent: on an up-to-date server it
-changes nothing and asks nothing.
+changes nothing and asks nothing. Every step, the data check and the manual fallback:
+[[docs/install]] ("Remote server: `task host add`").
 
 **3. Use it**
 
