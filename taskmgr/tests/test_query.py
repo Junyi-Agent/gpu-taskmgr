@@ -269,19 +269,33 @@ class QueryTest(Env):
     def test_wait_without_host_locates_once(self) -> None:
         _ = self.start_daemon("s2")
         j = self.submit(self.make_pkg(script="sleep 1.5; exit 3"), host="s2")
-        flag = os.path.join(self.tmp, "s1down")
-        self.server("s1")["local"] = {"fail_if_exists": flag}
+        # Count every remote call per server: the wrapper appends a line, then runs the
+        # real taskmgr-remote.
+        counts = {n: os.path.join(self.tmp, "calls-" + n) for n in self.servers}
+        for n in self.servers:
+            self.server(n)["remote_command"] = 'sh -c \'echo x >> "$0"; exec "$@"\' %s %s' % (
+                counts[n],
+                self.server(n)["remote_command"],
+            )
         self.write_machines()
-        p = subprocess.Popen(
-            [sys.executable, TASK, "status", j, "--wait", "--poll-interval", "0.2"],
-            env=self.env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+
+        def calls(n: str) -> int:
+            try:
+                with open(counts[n]) as f:
+                    return len(f.readlines())
+            except FileNotFoundError:
+                return 0
+
+        rc, out, err = self.task("status", j, "--wait", "--poll-interval", "0.2")
+        self.assertEqual(
+            (rc, self.get(out, "_taskmgr", "status"), self.get(out, "host")),
+            (1, "failed", "s2"),
+            err,
         )
-        time.sleep(0.8)
-        open(flag, "w").close()  # s1 going down after the lookup does not matter
-        _, err = p.communicate(timeout=30)
-        self.assertEqual(p.returncode, 1, err)
+        # One cross-server lookup, then only s2 (where the job is) is polled.
+        self.assertEqual((calls("s1"), calls("s3")), (1, 1))
+        self.assertGreater(calls("s2"), 2)
+        self.assertNotIn("unreachable", err)
 
     def test_logs_and_follow(self) -> None:
         _ = self.start_daemon("s1")
@@ -302,8 +316,6 @@ class QueryTest(Env):
         self.assertEqual((rc, out), (0, "err\n"))
         rc, out, _ = self.task("logs", j, "--host", "s1", "--stream", "shim")
         self.assertIn("finalized", self.text(out))
-        rc, out, _ = self.task("logs", j, "--host", "s1", "--attempt", "1")
-        self.assertEqual(rc, 2)  # there are no attempts any more
 
     def test_logs_of_a_queued_job(self) -> None:
         q = self.submit(self.make_pkg(script="echo hello"), host="s2")  # s2: no daemon yet

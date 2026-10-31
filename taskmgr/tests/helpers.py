@@ -1,12 +1,15 @@
 """Test fixtures: fake GPUs, fake boot id, local-transport servers, daemons, packages.
 
-Everything runs on one Linux machine without GPUs or network (Section 18.1).
+Everything runs on one Linux machine without GPUs or network (Section 18.1). On other
+platforms the Env-based tests are skipped; run them in Docker (docs/testing.md).
 """
 
+import atexit
 import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -40,8 +43,46 @@ GPUS = [
     (2, "GPU-22222222-2222-2222-2222-222222222222"),
     (3, "GPU-33333333-3333-3333-3333-333333333333"),
 ]
+LINUX_ONLY = "needs Linux (/proc, setsid); on macOS run the tests in Docker, see docs/testing.md"
+
+# Env instances whose sandbox has not been cleaned up yet. If the run ends without tearDown
+# (Ctrl-C, SIGTERM, an error in the runner), the atexit hook stops their daemons / shims and
+# removes their directories, so nothing outlives the test run.
+_live: "list[Env]" = []
 
 
+def _cleanup_all() -> None:
+    for env in list(_live):
+        env.cleanup_sandbox()
+
+
+def _exit_on_signal(signum: int, _frame: object) -> None:
+    # SystemExit would only fail the current test (unittest catches it), so clean up here
+    # and then die of the signal as before.
+    _cleanup_all()
+    _ = signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+_ = atexit.register(_cleanup_all)
+for _sig in (signal.SIGTERM, signal.SIGHUP):
+    if signal.getsignal(_sig) is signal.SIG_DFL:
+        _ = signal.signal(_sig, _exit_on_signal)
+
+
+def force_rmtree(path: str) -> None:
+    """rmtree that first gives u+rwx back to directories made read-only (package copies)."""
+    for dirpath, dirnames, _files in os.walk(path):
+        for d in [dirpath] + [os.path.join(dirpath, n) for n in dirnames]:
+            try:
+                if not os.path.islink(d):
+                    os.chmod(d, stat.S_IMODE(os.lstat(d).st_mode) | stat.S_IRWXU)
+            except OSError:
+                pass
+    shutil.rmtree(path, ignore_errors=True)
+
+
+@unittest.skipUnless(sys.platform == "linux", LINUX_ONLY)
 class Env(unittest.TestCase):
     """Base class: builds a sandbox with N local-transport servers."""
 
@@ -60,7 +101,12 @@ class Env(unittest.TestCase):
 
     @override
     def setUp(self) -> None:
+        self.daemons = {}
         self.tmp = tempfile.mkdtemp(prefix="taskmgr-test-")
+        # Registered first, so it also runs when setUp fails half-way; tearDown calls it
+        # too (it is idempotent).
+        _live.append(self)
+        self.addCleanup(self.cleanup_sandbox)
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.gpu_file = os.path.join(self.tmp, "gpus.txt")
@@ -71,7 +117,11 @@ class Env(unittest.TestCase):
         os.chmod(self.smi, 0o755)
         self.boot_file = os.path.join(self.tmp, "boot_id")
         self.set_boot("boot-1")
-        self.env = dict(os.environ)
+        # Nothing in the caller's environment may steer the code under test: drop every
+        # TASKMGR_* variable (test hooks, TASKMGR_HOME, ...) and NO_COLOR.
+        self.env = {
+            k: v for k, v in os.environ.items() if not k.startswith("TASKMGR_") and k != "NO_COLOR"
+        }
         self.env.update(
             {
                 "TASKMGR_HOME": self.home,
@@ -81,13 +131,6 @@ class Env(unittest.TestCase):
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
         )
-        for k in (
-            "TASKMGR_TEST_SHIM_CRASH",
-            "TASKMGR_SHIM_EXECUTABLE",
-            "TASKMGR_TEST_SKIP_DAEMON_LOCK",
-            "TASKMGR_TEST_PROTOCOL_VERSION",
-        ):
-            _ = self.env.pop(k, None)
         self.machines = []
         for name in self.servers:
             root = os.path.join(self.tmp, "remote-" + name)
@@ -106,30 +149,36 @@ class Env(unittest.TestCase):
                 }
             )
         self.write_machines()
-        self.daemons = {}
         self.pkg_count = 0
 
     @override
     def tearDown(self) -> None:
+        self.cleanup_sandbox()
+
+    def cleanup_sandbox(self) -> None:
+        """Stop this test's daemons, kill its tasks / shims, remove its directory. Idempotent."""
+        if self not in _live:
+            return
+        _live.remove(self)
         for name in list(self.daemons):
             self.stop_daemon(name)
-        # Kill any task / shim process left behind by this test.
-        for name in self.servers:
-            for pid in self._pids_under(self.root(name)):
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except OSError:
-                    pass
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        # Kill any task / shim process left behind by this test (anything running in or
+        # naming the sandbox: daemons, shims, tasks, servers' homes).
+        for pid in self._pids_under(self.tmp):
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        force_rmtree(self.tmp)
 
     def _pids_under(self, root: str) -> list[int]:
         pids: list[int] = []
         for n in os.listdir("/proc"):
-            if not n.isdigit():
+            if not n.isdigit() or int(n) == os.getpid():
                 continue
             try:
                 with open("/proc/%s/cmdline" % n, "rb") as f:
@@ -414,6 +463,26 @@ class Env(unittest.TestCase):
 
         _ = self.wait_for(check, timeout, "runner.%s of %s" % (key, jobid))
         return self.runner(jobid, name)
+
+    def wait_scheduler_passes(
+        self, n: int = 1, name: str = "s1", gpus: Iterable[int] = (), timeout: float = 30
+    ) -> list[str]:
+        """Return once the daemon on `name` has run n scheduler passes that began after this
+        call; use it instead of a fixed sleep before asserting that a job is "still queued".
+
+        The marker is a no-op probe job, submitted after everything the caller has set up.
+        A pass walks the queue in submission order, so the pass that dispatches the probe
+        has also considered every job queued before it. Each probe is waited for until it
+        has succeeded, so it holds no slot afterwards. The probe is a CPU job: with a full
+        max_cpu_jobs, pass a free GPU in `gpus`. Returns the probe jobids, so callers that
+        compare job sets (jobids(), `task jobs`) can leave them out.
+        """
+        probes: list[str] = []
+        for _ in range(n):
+            j = self.submit(self.make_pkg(task_id="ZZ-99", gpus=gpus), host=name)
+            _ = self.wait_state(j, "succeeded", name, timeout)
+            probes.append(j)
+        return probes
 
     # -- typed access to parsed JSON ------------------------------------------
     def get(self, x: object, *path: str | int) -> JsonValue:
