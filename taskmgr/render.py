@@ -1,0 +1,266 @@
+"""Text renderers of the `task` commands: (args, JSON result, color) -> text for stdout.
+
+The default output; `--detail` prints the JSON object instead. Renderers only build text:
+warnings that go with a result (skipped or unreachable servers) are printed by the
+command layer (taskmgr.py), in both modes.
+"""
+
+import shlex
+from collections.abc import Mapping
+from typing import cast
+
+from . import hostcmds
+from .cliparse import Args
+from .records import JsonDict
+from .textout import (
+    BOLD,
+    GPU_BUSY_STATE,
+    GREEN,
+    RED,
+    STATE_COLORS,
+    YELLOW,
+    as_dict,
+    hint,
+    message,
+    paint,
+    render_fields,
+    render_table,
+    rows,
+)
+from .textout import cell as _s
+from .transport import json_str as _str
+
+JOBS_COLUMNS = ("JOBID", "TASK_ID", "SUBMITTED", "HOST", "STATE")
+RETRY_COLUMNS = ("JOBID", "RETRY_OF", "HOST", "STATE")
+
+Fields = list[tuple[str, str, str | None]]
+
+
+def display_state(job: JsonDict) -> str:
+    """The STATE cell: the job state, or GPU_BUSY_STATE for a running job that waits."""
+    state = _str(job.get("state"), "-")
+    if state == "running" and job.get("pending_reason"):
+        return GPU_BUSY_STATE
+    return state
+
+
+def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
+    """`task jobs` table: one row per job, oldest submission first."""
+    table = sorted(
+        (
+            (
+                _str(j.get("jobid"), "-"),
+                _str(j.get("task_id"), "-"),
+                _str(j.get("submitted_at"), "-"),
+                _str(j.get("host"), "-"),
+                display_state(j),
+            )
+            for j in jobs
+        ),
+        key=lambda r: (r[2], r[3], r[0]),
+    )
+    return render_table(JOBS_COLUMNS, table, color)
+
+
+def text_init(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    return message("created", GREEN, "%s in %s" % (out["task_id"], out["path"]), color) + hint(
+        "fill every <REQUIRED...> marker, then run `task validate %s`"
+        % shlex.quote(str(out["path"])),
+        color,
+    )
+
+
+def text_validate(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    if out.get("valid"):
+        return message(
+            "valid",
+            GREEN,
+            "%s, content_hash %s" % (out.get("task_id"), out.get("content_hash")),
+            color,
+        )
+    errors = rows(out, "errors")
+    lines = [
+        message(
+            "invalid", RED, "%d error%s" % (len(errors), "" if len(errors) == 1 else "s"), color
+        ).rstrip("\n")
+    ]
+    for e in errors:
+        where = " %s:" % e["path"] if e.get("path") else ""
+        lines.append("  %s%s %s" % (paint(_s(e.get("code")), BOLD, color), where, e.get("message")))
+    return "\n".join(lines) + "\n"
+
+
+def text_submit(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    row = [_s(out.get(k)) for k in ("jobid", "task_id", "host", "state")]
+    text = render_table(("JOBID", "TASK_ID", "HOST", "STATE"), [row], color)
+    if out.get("deduplicated"):
+        text += message(
+            "note",
+            YELLOW,
+            "already submitted with submission key %s; no new job" % out.get("submission_key"),
+            color,
+        )
+    return text
+
+
+def text_jobs(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    if out.get("error"):
+        return ""
+    return render_jobs_table(cast(list[JsonDict], rows(out, "jobs")), color)
+
+
+def _error_field(err: object) -> Fields:
+    e = as_dict(err)
+    return [("error", "%s: %s" % (e.get("kind"), e.get("message")), RED)] if "kind" in e else []
+
+
+def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    meta = as_dict(out.get("_taskmgr"))
+    if meta:  # terminal: the job's result.json
+        state = _s(meta.get("status"))
+        fields: Fields = [
+            ("jobid", _s(meta.get("jobid")), None),
+            ("task_id", _s(meta.get("task_id")), None),
+            ("host", _s(out.get("host")), None),
+            ("state", state, STATE_COLORS.get(state)),
+            ("return_code", _s(meta.get("return_code")), None),
+            ("started_at", _s(meta.get("started_at")), None),
+            ("ended_at", _s(meta.get("ended_at")), None),
+        ] + _error_field(meta.get("error"))
+        for k in ("validation_errors", "warnings"):
+            if meta.get(k):
+                fields.append((k, _s(meta.get(k)), YELLOW))
+        skip = ("host", "complete", "retry_of", "retried_as")
+        keys = sorted(k for k in out if not k.startswith("_") and k not in skip)
+        fields.append(("result", ", ".join(keys) or "-", None))
+    else:
+        state = display_state(cast(JsonDict, out))
+        fields = [
+            ("jobid", _s(out.get("jobid")), None),
+            ("task_id", _s(out.get("task_id")), None),
+            ("host", _s(out.get("host")), None),
+            ("state", state, STATE_COLORS.get(state)),
+            ("submitted_at", _s(out.get("submitted_at")), None),
+            ("gpus", _s(out.get("gpus")), None),
+        ]
+        if out.get("pending_reason"):
+            fields.append(("pending_reason", _s(out.get("pending_reason")), YELLOW))
+        if out.get("cancel_requested"):
+            fields.append(("cancel_requested", "yes", YELLOW))
+        prog = as_dict(out.get("progress"))
+        if prog:
+            pct = prog.get("percent")
+            parts = (_s(prog.get("stage"), ""), "" if pct is None else "%s%%" % pct)
+            msg = " ".join(x for x in parts + (_s(prog.get("message"), ""),) if x)
+            fields.append(("progress", msg or "-", None))
+        fields += _error_field(out.get("error"))
+    if out.get("retry_of"):
+        fields.append(("retry_of", _s(out.get("retry_of")), None))
+    retried = out.get("retried_as")
+    if isinstance(retried, list) and retried:
+        fields.append(("retried_as", ", ".join(map(str, cast(list[object], retried))), None))
+    if out.get("complete") is False:
+        fields.append(("note", "some servers were unreachable", YELLOW))
+    return render_fields(fields, color)
+
+
+def text_cancel(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    state = _s(out.get("state"))
+    if out.get("changed"):
+        label, sgr = "cancel requested", GREEN
+    elif out.get("cancel_requested"):
+        label, sgr = "cancel already requested", YELLOW
+    else:
+        label, sgr = "nothing to cancel", YELLOW
+    job = "job %s on %s is %s" % (
+        out.get("jobid"),
+        out.get("host"),
+        paint(state, STATE_COLORS.get(state), color),
+    )
+    return message(label, sgr, job, color)
+
+
+def text_retry(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    row = [_s(out.get(k.lower())) for k in RETRY_COLUMNS]
+    return render_table(RETRY_COLUMNS, [row], color)
+
+
+def text_resolve(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    state = _s(out.get("state"))
+    fields: Fields = [
+        ("jobid", _s(out.get("jobid")), None),
+        ("host", _s(out.get("host")), None),
+        ("state", state, STATE_COLORS.get(state)),
+        ("changed", _s(out.get("changed")), None),
+    ]
+    for k, v in sorted(out.items()):
+        if k not in ("jobid", "host", "state", "changed"):
+            fields.append((k, _s(v), None))
+    return render_fields(fields, color)
+
+
+def text_fetch(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    where = "job %s from %s into %s" % (out.get("jobid"), out.get("host"), out.get("path"))
+    text = message("fetched", GREEN, where, color)
+    if out.get("partial"):
+        text += message("partial", YELLOW, "the job is still %s" % out.get("state"), color)
+    for s in rows(out, "skipped"):
+        why = "unsafe entry %s (%s)" % (s.get("path"), s.get("reason"))
+        text += message("skipped", YELLOW, why, color)
+    return text
+
+
+def text_whoami(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    hosts = rows(out, "hosts")
+    table = [[_s(h.get("host")), _s(h.get("user")), _s(h.get("hostname"))] for h in hosts]
+    text = render_table(("HOST", "USER", "HOSTNAME"), table, color, {}) if table else ""
+    if any("user" not in h for h in hosts):
+        text += hint("- means the server runs older code; `task host add NAME` updates it", color)
+    return text
+
+
+def text_version(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    loc = as_dict(out.get("local"))
+    commit = _s(loc.get("commit"))
+    if loc.get("dirty"):
+        commit += " (uncommitted changes)"
+    text = render_fields(
+        [
+            ("local", "taskmgr %s" % _s(loc.get("version")), None),
+            ("commit", commit, YELLOW if loc.get("dirty") else None),
+            ("code_version", _s(loc.get("code_version"))[:12], None),
+            ("protocol", _s(loc.get("protocol_version")), None),
+        ],
+        color,
+    )
+    hosts = rows(out, "hosts")
+    if hosts:
+        table = [
+            [
+                _s(h.get("host")),
+                _s(h.get("code_version"), "none")[:12],
+                "up to date" if h.get("up_to_date") else "differs",
+            ]
+            for h in hosts
+        ]
+        text += "\n" + render_table(
+            ("HOST", "CODE_VERSION", "STATUS"),
+            table,
+            color,
+            {2: {"up to date": GREEN, "differs": YELLOW}},
+        )
+        if any(not h.get("up_to_date") for h in hosts):
+            text += hint("`task host add NAME` installs the local version on a server", color)
+    return text
+
+
+def text_update(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    if not out.get("changed"):
+        return message("up to date", GREEN, "%s at %s" % (out["path"], out["after"]), color)
+    return message(
+        "updated", GREEN, "%s from %s to %s" % (out["path"], out["before"], out["after"]), color
+    ) + hint("servers keep their code until `task host add NAME` (see `task version`)", color)
+
+
+def text_host(args: Args, out: Mapping[str, object], color: bool) -> str:
+    return hostcmds.render(args, out, color)

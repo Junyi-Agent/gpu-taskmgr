@@ -116,7 +116,7 @@ def fsync_dir(path: str) -> None:
         os.close(fd)
 
 
-def atomic_write_bytes(path: str, data: bytes, fsync_parent: bool = True) -> None:
+def atomic_write_bytes(path: str, data: bytes) -> None:
     d = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=".tmp-" + os.path.basename(path) + ".", dir=d)
     try:
@@ -129,8 +129,7 @@ def atomic_write_bytes(path: str, data: bytes, fsync_parent: bool = True) -> Non
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
-    if fsync_parent:
-        fsync_dir(d)
+    fsync_dir(d)
 
 
 def atomic_write_json(path: str, obj: object) -> None:
@@ -160,12 +159,12 @@ def try_read_json(path: str) -> tuple[JsonValue, str | None]:
 
 
 @contextlib.contextmanager
-def flocked(path: str, exclusive: bool = True) -> Generator[int, None, None]:
-    """Blocking flock on a lock file, created if needed."""
+def flocked(path: str) -> Generator[int, None, None]:
+    """Blocking exclusive flock on a lock file, created if needed."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        fcntl.flock(fd, fcntl.LOCK_EX)
         yield fd
     finally:
         os.close(fd)

@@ -126,8 +126,29 @@ def json_text(obj: object, color: bool | None = None, indent: int | None = 2) ->
     return enc(obj, 0)
 
 
-def state_cell(state: str, color: bool) -> str:
-    return paint(state, STATE_COLORS.get(state), color)
+def cell(v: object, default: str = "-") -> str:
+    """A JSON value as the text of a table cell or field: `default` for null, "" and [];
+    yes/no for booleans; JSON for arrays and objects."""
+    if v is None or v == "" or v == []:
+        return default
+    if isinstance(v, bool):
+        return "yes" if v else "no"
+    if isinstance(v, (list, dict)):
+        return json.dumps(v, sort_keys=True)
+    return str(v)
+
+
+def rows(out: Mapping[str, object], key: str) -> list[dict[str, object]]:
+    """out[key] as a list of objects (JSON arrays of objects in command results)."""
+    v = out.get(key)
+    if not isinstance(v, list):
+        return []
+    return [cast(dict[str, object], r) for r in cast(list[object], v) if isinstance(r, dict)]
+
+
+def as_dict(v: object) -> dict[str, object]:
+    """v if it is a JSON object, else {}."""
+    return cast(dict[str, object], v) if isinstance(v, dict) else {}
 
 
 def render_table(

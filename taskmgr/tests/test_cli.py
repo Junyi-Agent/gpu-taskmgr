@@ -220,3 +220,43 @@ class CliTest(Env):
         self.assertRegex(out, r"(?m)^local: +taskmgr \S+$")
         self.assertRegex(out, r"(?m)^s1 +none +differs$")
         self.assertIn("task host add NAME", out)
+
+    def test_an_empty_machine_list_is_not_a_failure(self) -> None:
+        """jobs, whoami and version share one rule: exit 2 only when servers were asked and
+        none answered."""
+        with open(os.path.join(self.home, "machines.json"), "w") as f:
+            json.dump({"servers": []}, f)
+        for cmd, key in (("jobs", "jobs"), ("whoami", "hosts"), ("version", "hosts")):
+            out = self.ok(cmd)
+            self.assertEqual((self.get(out, key), self.get(out, "complete")), ([], True), cmd)
+
+    def test_a_corrupt_round_robin_cursor_starts_over(self) -> None:
+        rr = os.path.join(self.home, "rr.json")
+        for junk in ("{not json", '{"cursor": "x"}', '{"cursor": 1e400}', "[1]"):
+            with open(rr, "w") as f:
+                _ = f.write(junk)
+            out = self.ok("submit", self.make_pkg())
+            self.assertEqual(self.get(out, "host"), "s1", junk)
+        with open(rr) as f:
+            self.assertEqual(json.load(f)["cursor"], 1)
+
+    def test_options_are_not_abbreviated(self) -> None:
+        """--plain and --detail are recognized before parsing, so only exact spellings."""
+        pkg = self.make_pkg()
+        for argv in (
+            ["validate", pkg, "--det"],
+            ["validate", pkg, "--pla"],
+            ["jobs", "--hos", "s1"],
+        ):
+            rc, _, err = self.task(*argv, text=True)
+            self.assertEqual(rc, 2, argv)
+            self.assertIn("unrecognized arguments", err, argv)
+        rc, _, err = self.task("host", "add", "x", "--ss", "u@h", text=True)
+        self.assertEqual(rc, 2)
+        self.assertIn("unrecognized arguments", err)
+
+    def test_jobs_state_must_be_a_job_state(self) -> None:
+        rc, _, err = self.task("jobs", "--state", "bogus", text=True)
+        self.assertEqual(rc, 2)
+        self.assertIn("invalid choice: 'bogus'", err)
+        self.assertEqual(self.get(self.ok("jobs", "--state", "succeeded"), "jobs"), [])
