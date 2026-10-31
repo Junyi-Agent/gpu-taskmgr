@@ -3,9 +3,12 @@
 import os
 import subprocess
 import sys
+import tempfile
+import unittest
 import zipfile
 
 from taskmgr import pyz
+from taskmgr.common import copy_package_tree
 from taskmgr.records import override
 from taskmgr.tests.helpers import REPO, TASK, Env
 
@@ -149,3 +152,23 @@ class PyzTest(Env):
         jobid = p.stdout.split('"jobid": "')[1].split('"')[0]
         job = self.wait_state(jobid, "succeeded")
         self.assertEqual(job["state"], "succeeded", self.daemon_log())
+
+
+class CodeVersionTest(unittest.TestCase):
+    def test_docs_do_not_change_the_code_version(self) -> None:
+        """README*, deploy/ and examples/ are outside the code version; code and template/
+        (copied by `task init`) are in it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = os.path.join(tmp, "taskmgr")
+            _ = copy_package_tree("", pkg, pyz.EXCLUDE)
+            base = pyz.code_hash(pkg)
+            for rel in ("README.md", "deploy/config.example.json", "examples/succeed/TASK.md"):
+                with open(os.path.join(pkg, rel), "a") as f:
+                    _ = f.write("typo\n")
+            self.assertEqual(pyz.code_hash(pkg), base)
+            for rel in ("template/TASK.md", "common.py"):
+                with open(os.path.join(pkg, rel), "a") as f:
+                    _ = f.write("\n")
+                changed = pyz.code_hash(pkg)
+                self.assertNotEqual(changed, base, rel)
+                base = changed
