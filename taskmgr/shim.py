@@ -13,7 +13,15 @@ from typing import cast
 
 from . import gpu, procutil
 from .common import TaskmgrError, utcnow_iso
-from .monitor import STOP_OUTCOME, GroupStopper, mark_unknown, set_stopping
+from .monitor import (
+    STOP_OUTCOME,
+    GroupStopper,
+    end_cancelled,
+    may_have_started,
+    record_unconfirmed,
+    requested_stop,
+    set_stopping,
+)
 from .records import ErrorInfo, Job, RemoteConfig, Runner, TaskEnvironment, TaskSpec
 from .store import Store, end_without_result, finalize_run, load_task
 
@@ -30,15 +38,20 @@ def _crash_point(name: str) -> None:
         os._exit(99)
 
 
-def build_env(cfg: RemoteConfig, task: TaskSpec, job: Job, workdir: str) -> dict[str, str]:
-    """Entry-process environment, built in the order of Section 3.2."""
+def build_env(
+    cfg: RemoteConfig, task: TaskSpec, job: Job, workdir: str, busy_code: int | None
+) -> dict[str, str]:
+    """Entry-process environment, built in the order of Section 3.2.
+
+    TASKMGR_GPU_BUSY_EXIT_CODE is the configured gpu_busy_exit_code; it is not set when
+    the server turned that convention off."""
     try:
         pw = pwd.getpwuid(os.getuid())
         home, user = pw.pw_dir, pw.pw_name
     except KeyError:
         home, user = os.environ.get("HOME", "/"), os.environ.get("USER", "")
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "USER": user, "LANG": "C.UTF-8"}
-    base_env: dict[str, str] = cfg.get("base_env") or {}
+    base_env: dict[str, str] = cfg["base_env"] or {}
     env.update({str(k): str(v) for k, v in base_env.items()})
     environment: TaskEnvironment = task.get("environment") or {}
     venv = environment.get("venv")
@@ -58,6 +71,8 @@ def build_env(cfg: RemoteConfig, task: TaskSpec, job: Job, workdir: str) -> dict
             "TASKMGR_RESULT_FILE": os.path.join(workdir, "result.json"),
         }
     )
+    if busy_code is not None:
+        env["TASKMGR_GPU_BUSY_EXIT_CODE"] = str(busy_code)
     return env
 
 
@@ -143,33 +158,13 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
     workdir = os.path.join(jobdir, "workdir")
     if not (requeued and os.path.isdir(workdir)):
         workdir = prepare_workdir(jobdir)
-    env = build_env(cfg, task, job, workdir)
+    env = build_env(cfg, task, job, workdir, store.gpu_busy_exit_code)
     path, errors = prestart_checks(task, job, env, workdir)
     if job.get("cancel_requested"):
         errors = []  # cancelled before start: do not run, end as cancelled below
     if errors or job.get("cancel_requested"):
-        with store.state_lock():
-            jobdir, job = store.load_job(jobid)
-            runner.update(
-                {"final": True, "ended_at": utcnow_iso(), "return_code": None, "signal": None}
-            )
-            if job.get("cancel_requested"):
-                # running -> stopping -> cancelled; nothing was started, so the stop is
-                # confirmed immediately.
-                _ = set_stopping(store, jobid, "cancel")
-                jobdir, job = store.load_job(jobid)
-                runner["status"] = "cancelled"
-                jobdir = end_without_result(store, jobdir, job, "cancelled", None, runner)
-            else:
-                err: ErrorInfo = {
-                    "kind": "setup",
-                    "message": "; ".join(errors),
-                    "details": [*errors],
-                }
-                runner["status"] = "failed"
-                runner["error"] = err
-                jobdir = end_without_result(store, jobdir, job, "failed", err, runner)
-            store.write_runner(jobdir, runner)
+        err: ErrorInfo = {"kind": "setup", "message": "; ".join(errors), "details": [*errors]}
+        end_before_launch(store, jobid, runner, err)
         log("pre-start check failed: %s" % errors)
         return 0
 
@@ -188,6 +183,23 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
         separator = "--- taskmgr: relaunch #%d after GPU busy ---" % runner.get(
             "gpu_busy_retries", 0
         )
+
+
+def end_before_launch(store: Store, jobid: str, runner: Runner, error: ErrorInfo) -> None:
+    """End a run whose entry was never started: cancelled if a cancel was requested (the
+    stop is confirmed at once), else failed with `error`."""
+    with store.state_lock():
+        jobdir, job = store.load_job(jobid)
+        runner.update(
+            {"final": True, "ended_at": utcnow_iso(), "return_code": None, "signal": None}
+        )
+        if job.get("cancel_requested"):
+            _ = end_cancelled(store, jobid, runner)
+            return
+        runner["status"] = "failed"
+        runner["error"] = error
+        jobdir = end_without_result(store, jobdir, job, "failed", error, runner)
+        store.write_runner(jobdir, runner)
 
 
 def launch(
@@ -230,6 +242,7 @@ def launch(
             _ = os.dup2(out_fd, 1)
             _ = os.dup2(err_fd, 2)
             os.chdir(workdir)
+            procutil.default_signals()
             os.execve(path, argv, env)
         except BaseException as e:  # noqa: BLE001 - must never return into the shim
             try:
@@ -301,8 +314,8 @@ def wait_for_gpu(store: Store, jobid: str, jobdir: str, runner: Runner, cfg: Rem
     while honoring cancel, and return True to relaunch. False: the job was finalized
     (cancelled) or is no longer ours to run."""
     code = runner.get("return_code")
-    interval = float(cfg.get("gpu_retry_interval_seconds", 1))
-    poll = float(cfg.get("control_poll_seconds", 2))
+    interval = float(cfg["gpu_retry_interval_seconds"])
+    poll = float(cfg["control_poll_seconds"])
     retries = runner.get("gpu_busy_retries", 0) + 1
     runner.update(
         {"status": "waiting_gpu", "gpu_busy_retries": retries, "last_gpu_busy_at": utcnow_iso()}
@@ -327,8 +340,7 @@ def wait_for_gpu(store: Store, jobid: str, jobdir: str, runner: Runner, cfg: Rem
                 # Nothing is running, so the stop is confirmed at once:
                 # running -> stopping -> cancelled.
                 log("cancel requested while waiting for the GPU")
-                _ = set_stopping(store, jobid, "cancel")
-                job = finalize_run(store, jobid, status="cancelled")
+                job = end_cancelled(store, jobid)
                 log("finalized: %s" % job["state"])
                 return False
         if now >= deadline:
@@ -353,10 +365,10 @@ def supervise(
     """
     t0 = time.monotonic()
     timeout = task.get("timeout_seconds")
-    poll = float(cfg.get("control_poll_seconds", 2))
+    poll = float(cfg["control_poll_seconds"])
     busy_code = store.gpu_busy_exit_code
-    retry_interval = float(cfg.get("gpu_retry_interval_seconds", 1))
-    grace, confirm = cfg.get("stop_grace_seconds", 30), cfg.get("kill_confirm_seconds", 10)
+    retry_interval = float(cfg["gpu_retry_interval_seconds"])
+    grace, confirm = cfg["stop_grace_seconds"], cfg["kill_confirm_seconds"]
     # cast: reap() (a closure) sets exit_status, so the checker must not narrow it to None.
     exit_status: int | None = cast("int | None", None)
     stopper: GroupStopper | None = None
@@ -392,64 +404,54 @@ def supervise(
         log("entry exited rc=%s signal=%s" % (runner.get("return_code"), runner.get("signal")))
         _crash_point("after_exit_recorded")
 
+    # One loop for both stops: a requested one (cancel, timeout, a stop reason in job.json)
+    # while the entry runs, and the leftover cleanup after it exited (Section 10.4 step 2).
     while True:
         reap()
         if stopper is None:
-            if exit_status is not None:
-                break
             now = time.monotonic()
-            if now - last_poll >= poll:
+            if exit_status is not None:
+                members = procutil.group_members(pid, min_start, jobid)
+                if not members:
+                    break
+                log("leftover processes %s; running stop procedure" % members)
+                warnings.append("leftover_processes")
+                runner["warnings"] = warnings
+                store.write_runner(jobdir, runner)  # survives a shim crash during cleanup
+                stop_reason = "leftover"
+            elif now - last_poll >= poll:
                 last_poll = now
                 _, job = store.load_job(jobid)
                 if job.get("pending_reason") is not None and now - t0 >= retry_interval:
                     # A relaunch that has kept running for one retry interval got its GPU;
                     # clearing earlier would make the display flicker on every retry.
                     _ = set_waiting(store, jobid, None)
-                if job.get("cancel_requested"):
-                    stop_reason = "cancel"
-                elif job["state"] == "stopping" and job.get("stop_reason"):
-                    stop_reason = job["stop_reason"]
-            if stop_reason is None and timeout and now - t0 >= timeout:
+                stop_reason = requested_stop(job, now - t0, timeout)
+            elif timeout and now - t0 >= timeout:
                 stop_reason = "timeout"
             if stop_reason:
-                log("stopping process group %d: %s" % (pid, stop_reason))
+                if stop_reason != "leftover":
+                    log("stopping process group %d: %s" % (pid, stop_reason))
                 _ = set_stopping(store, jobid, stop_reason)
-                stopper = GroupStopper(pid, min_start, grace, confirm, reap)
+                stopper = GroupStopper(pid, min_start, jobid, grace, confirm, reap)
                 stopper.start()
         else:
             r = stopper.step()
             if r == "stopped":
                 break
             if r == "unconfirmed":
-                unconfirmed(store, jobid, jobdir, runner, stop_reason, stopper.alive)
+                record_unconfirmed(store, jobid, jobdir, runner, stop_reason, stopper.alive)
+                log("stop unconfirmed, job is unknown; alive=%s" % stopper.alive)
                 return "done"
         time.sleep(0.1)
 
-    if stop_reason is None:
-        # Section 10.4 step 2: leftover processes in the group.
-        members = procutil.group_members(pid, min_start)
-        if members:
-            log("leftover processes %s; running stop procedure" % members)
-            warnings.append("leftover_processes")
-            runner["warnings"] = warnings
-            store.write_runner(jobdir, runner)  # survives a shim crash during cleanup
-            _ = set_stopping(store, jobid, "leftover")
-            stopper = GroupStopper(pid, min_start, grace, confirm)
-            stopper.start()
-            while True:
-                r = stopper.step()
-                if r == "stopped":
-                    break
-                if r == "unconfirmed":
-                    runner["warnings"] = warnings
-                    unconfirmed(store, jobid, jobdir, runner, "leftover", stopper.alive)
-                    return "done"
-                time.sleep(0.1)
     if exit_status is None:
         _, st = os.waitpid(pid, 0)
         exit_status = st
         record_exit(st)
-    if stop_reason is None and busy_code is not None and runner.get("return_code") == busy_code:
+    # A leftover cleanup is no stop of the entry: its "GPU busy" exit still counts.
+    exited_busy = busy_code is not None and runner.get("return_code") == busy_code
+    if exited_busy and stop_reason not in STOP_OUTCOME:
         return "gpu_busy"
     _crash_point("before_finalize")
     status = STOP_OUTCOME.get(stop_reason) if stop_reason else None
@@ -458,24 +460,24 @@ def supervise(
     return "done"
 
 
-def unconfirmed(
-    store: Store,
-    jobid: str,
-    jobdir: str,
-    runner: Runner,
-    reason: str | None,
-    alive: list[int],
-) -> None:
-    runner["stop_unconfirmed_reason"] = reason
-    store.write_runner(jobdir, runner)
-    _ = mark_unknown(
-        store,
-        jobid,
-        "stop_unconfirmed",
-        "processes still alive after SIGKILL",
-        {"alive_pids": alive},
-    )
-    log("stop unconfirmed, job is unknown; alive=%s" % alive)
+def fail_unstarted(store: Store, jobid: str, e: Exception) -> None:
+    """The shim failed before it started the entry: end the run as failed (kind
+    shim_error) instead of leaving it to recovery, which would count an interruption
+    and run the job again. A run that may have started is left to recovery."""
+    with store.state_lock():
+        jobdir, job = store.load_job(jobid)
+        runner, _ = store.read_runner(jobdir)
+        if (
+            job["state"] not in ("running", "stopping")
+            or runner is None
+            or runner.get("final")
+            or may_have_started(runner)
+            or runner.get("shim_pid") not in (None, os.getpid())
+        ):
+            return
+        msg = "the run supervisor failed before starting the entry: %s" % e
+        end_before_launch(store, jobid, runner, {"kind": "shim_error", "message": msg})
+    log("run ended as failed (shim_error)")
 
 
 def main(store: Store, jobid: str, lock_fd: int) -> int:
@@ -486,4 +488,8 @@ def main(store: Store, jobid: str, lock_fd: int) -> int:
         import traceback
 
         log("shim error: %s\n%s" % (e, traceback.format_exc()))
+        try:
+            fail_unstarted(store, jobid, e)
+        except Exception as e2:  # noqa: BLE001 - recovery handles the run instead
+            log("cannot record the shim error: %s" % e2)
         return 1

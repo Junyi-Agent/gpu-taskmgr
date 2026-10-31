@@ -481,3 +481,50 @@ class RecoveryTest(Env):
         job = self.wait_state(u, "cancelled", timeout=20)
         self.assertEqual(job["state"], "cancelled")
         self.assertFalse(pid_alive(proc.pid))
+
+    def test_group_members_skip_processes_of_other_jobs(self) -> None:
+        # After the recorded group is gone its pgid can be reused by a new session, e.g.
+        # another job's task: only processes tagged with this jobid (or untagged ones of
+        # the recorded leader's group) count.
+        mine, other = "a" * 16, "b" * 16
+        env = {k: v for k, v in os.environ.items() if k != "TASKMGR_JOBID"}
+        tagged = subprocess.Popen(
+            ["sleep", "30"], env=dict(env, TASKMGR_JOBID=other), start_new_session=True
+        )
+        untagged = subprocess.Popen(["sleep", "30"], env=env, start_new_session=True)
+        for p in (tagged, untagged):
+            self.addCleanup(p.wait)
+            self.addCleanup(kill_quiet, p.pid)
+        st = cast(int, procutil.start_time(tagged.pid))
+        self.assertEqual(procutil.group_members(tagged.pid, st, other), [tagged.pid])
+        self.assertEqual(procutil.group_members(tagged.pid, st, mine), [])
+        self.assertEqual(procutil.group_members(tagged.pid, st), [tagged.pid])
+        ust = cast(int, procutil.start_time(untagged.pid))
+        # Untagged (a task may clear its environment): counts while the recorded leader
+        # holds the pgid ...
+        self.assertEqual(procutil.group_members(untagged.pid, ust, mine), [untagged.pid])
+        # ... but not once the pid belongs to a newer process than the recorded leader.
+        self.assertEqual(procutil.group_members(untagged.pid, ust - 1, mine), [])
+
+    def test_job_that_cannot_be_finalized_does_not_block_others(self) -> None:
+        # The shim and the task of `a` die while the daemon is down, and finalizing `a`
+        # fails every time (result.json cannot be written). Recovery must not crash the
+        # daemon: `a` ends unknown after a few attempts and `b` is still scheduled.
+        _ = self.start_daemon()
+        gate = os.path.join(self.tmp, "go")
+        a = self.submit(
+            self.make_pkg(script="while [ ! -f %s ]; do sleep 0.05; done; exit 0" % gate)
+        )
+        _ = self.wait_for(lambda: "started pid=" in self.shim_log(a), 10, "entry release")
+        self.stop_daemon()
+        r = self.kill_shim(a)
+        kill_quiet(self.num(r, "leader_pid"), group=True)
+        _ = self.wait_for(lambda: not pid_alive(self.num(r, "leader_pid")), 10, "task death")
+        os.makedirs(os.path.join(self.job_dir(a), "workdir", "result.json", "blocker"))
+        b = self.submit(self.make_pkg())
+        _ = self.start_daemon()
+        _ = self.wait_state(b, "succeeded", timeout=20)
+        job = self.wait_state(a, "unknown", timeout=20)
+        self.assertEqual(self.get(job, "error", "kind"), "recovery_error")
+        self.assertIn("failed 3 times", self.text(job, "error", "message"))
+        self.assertIsNone(self.daemons["s1"][-1].poll())  # the daemon keeps running

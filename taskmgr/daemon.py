@@ -5,11 +5,21 @@ import os
 import signal
 import sys
 import time
+import traceback
+from collections.abc import Callable
 from types import FrameType
 from typing import TextIO
 
-from .common import CODE_ROOT, STATE_DIRS, TERMINAL_STATES, try_flock_fd, utcnow_iso
-from .monitor import Takeover, assess, may_have_started
+from . import procutil
+from .common import (
+    CODE_ROOT,
+    GPU_HOLDING_STATES,
+    STATE_DIRS,
+    TERMINAL_STATES,
+    try_flock_fd,
+    utcnow_iso,
+)
+from .monitor import Takeover, assess, mark_unknown, may_have_started
 from .records import ErrorInfo, Job, Runner
 from .store import (
     Store,
@@ -21,6 +31,8 @@ from .store import (
 )
 
 INCOMING_MAX_AGE = 3600
+# Consecutive errors while recovering or tracking one job before it is marked unknown.
+MAX_JOB_ERRORS = 3
 
 
 _log_file: TextIO | None = None
@@ -41,6 +53,40 @@ class Daemon:
         self.takeovers: dict[str, Takeover] = {}  # jobid -> Takeover
         self.stop: bool = False
         self._daemon_lock_fd: int | None = None
+        self.job_errors: dict[str, int] = {}  # jobid -> consecutive errors
+        self.given_up: set[str] = set()  # could not even be marked unknown; skipped
+
+    def guarded(self, jobid: str, what: str, fn: Callable[[str], object]) -> None:
+        """Run fn(jobid); an error there must not stop the other jobs or scheduling.
+
+        After MAX_JOB_ERRORS consecutive errors the job is marked unknown (kind
+        recovery_error; its GPUs stay held until an operator resolves it) and no longer
+        tracked. A job that cannot even be marked unknown is skipped until a restart.
+        """
+        try:
+            _ = fn(jobid)
+        except Exception as e:  # noqa: BLE001
+            n = self.job_errors.get(jobid, 0) + 1
+            self.job_errors[jobid] = n
+            log(
+                "%s of %s failed (%d/%d): %s\n%s"
+                % (what, jobid, n, MAX_JOB_ERRORS, e, traceback.format_exc())
+            )
+            if n < MAX_JOB_ERRORS:
+                return
+            _ = self.job_errors.pop(jobid, None)
+            tk = self.takeovers.pop(jobid, None)
+            if tk is not None:
+                tk.close()
+            msg = "%s failed %d times: %s" % (what, n, e)
+            try:
+                _ = mark_unknown(self.store, jobid, "recovery_error", msg)
+                log("marked %s unknown: %s" % (jobid, msg))
+            except Exception as e2:  # noqa: BLE001
+                self.given_up.add(jobid)
+                log("cannot mark %s unknown (%s); skipping it until restart" % (jobid, e2))
+        else:
+            _ = self.job_errors.pop(jobid, None)
 
     # -- startup ------------------------------------------------------------
     def acquire_instance_lock(self) -> bool:
@@ -86,9 +132,9 @@ class Daemon:
                     log("repairing location of %s -> %s" % (jid, want))
                     _ = st.save_job(jobdir, job)
                 if job["state"] in ("running", "stopping"):
-                    self.check_run(jid)
+                    self.guarded(jid, "recovery", self.check_run)
                 elif job["state"] in TERMINAL_STATES and has_run(job):
-                    self.repair_terminal(jid)
+                    self.guarded(jid, "result repair", self.repair_terminal)
 
     def repair_terminal(self, jobid: str) -> None:
         jobdir, _ = self.store.load_job(jobid)
@@ -123,7 +169,7 @@ class Daemon:
             held: dict[str, str] = {}  # uuid -> state of the holder
             cpu_active = 0
             for _, job in jobs:
-                if job["state"] in ("running", "stopping", "unknown"):
+                if job["state"] in GPU_HOLDING_STATES:
                     if job.get("gpus"):
                         for g in job["gpus"]:
                             held[g["uuid"]] = job["state"]
@@ -134,7 +180,7 @@ class Daemon:
                 key=lambda e: (e[1].get("enqueue_seq", 0), e[1]["jobid"]),
             )
             reserved: set[str] = set()
-            max_cpu = cfg.get("max_cpu_jobs")
+            max_cpu = cfg["max_cpu_jobs"]
             for jobdir, job in queued:
                 uuids = [g["uuid"] for g in job.get("gpus", [])]
                 if not uuids:
@@ -259,6 +305,7 @@ class Daemon:
                 _ = os.dup2(log_fd, 2)
                 os.set_inheritable(lock_fd, True)
                 os.chdir("/")
+                procutil.default_signals()
                 os.execve(exe, argv, env)
             except BaseException as e:  # noqa: BLE001
                 try:
@@ -286,14 +333,19 @@ class Daemon:
         """Detect dead shims while running; same rules as startup recovery."""
         with self.store.state_lock():
             for _, job in list(self.store.iter_jobs(active=True)):
-                if job["state"] in ("running", "stopping") and job["jobid"] not in self.takeovers:
-                    self.check_run(job["jobid"])
+                jid = job["jobid"]
+                if (
+                    job["state"] in ("running", "stopping")
+                    and jid not in self.takeovers
+                    and jid not in self.given_up
+                ):
+                    self.guarded(jid, "health check", self.check_run)
 
     def tick_takeovers(self) -> None:
         for jid, tk in list(self.takeovers.items()):
-            tk.tick()
+            self.guarded(jid, "takeover", lambda j: self.takeovers[j].tick())
             if tk.done:
-                del self.takeovers[jid]
+                _ = self.takeovers.pop(jid, None)
 
     def run(self) -> int:
         st = self.store
@@ -309,28 +361,28 @@ class Daemon:
         _ = signal.signal(signal.SIGINT, self._on_signal)
         _ = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         log("starting; root=%s" % st.root)
-        self.clean_incoming()
-        self.recover()
-        interval = min(
-            float(st.config.get("scheduler_poll_seconds", 1)),
-            float(st.config.get("control_poll_seconds", 2)),
-        )
+        self._step("incoming cleanup", self.clean_incoming)
+        self._step("recovery", self.recover)
+        control_poll = float(st.config["control_poll_seconds"])
+        interval = min(float(st.config["scheduler_poll_seconds"]), control_poll)
         last_health = 0.0
         while not self.stop:
-            try:
-                self.tick_takeovers()
-                now = time.monotonic()
-                if now - last_health >= float(st.config.get("control_poll_seconds", 2)):
-                    last_health = now
-                    self.health_check()
-                self.schedule_pass()
-            except Exception as e:  # noqa: BLE001 - keep the daemon alive
-                import traceback
-
-                log("loop error: %s\n%s" % (e, traceback.format_exc()))
+            self._step("takeover tracking", self.tick_takeovers)
+            now = time.monotonic()
+            if now - last_health >= control_poll:
+                last_health = now
+                self._step("health check", self.health_check)
+            self._step("scheduling", self.schedule_pass)
             self._sleep(interval)
         log("stopping (running shims and tasks are left alone)")
         return 0
+
+    def _step(self, what: str, fn: Callable[[], None]) -> None:
+        """Run one phase of the loop; an error is logged and the next phase still runs."""
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001 - keep the daemon alive
+            log("%s error: %s\n%s" % (what, e, traceback.format_exc()))
 
     def _sleep(self, seconds: float) -> None:
         end = time.monotonic() + seconds

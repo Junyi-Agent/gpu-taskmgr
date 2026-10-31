@@ -78,6 +78,7 @@ class ExecTest(Env):
         self.assertEqual(env["CUDA_DEVICE_ORDER"], "PCI_BUS_ID")
         self.assertEqual(env["TASKMGR_JOBID"], j)
         self.assertEqual(env["TASKMGR_TASK_ID"], "AA-01")
+        self.assertEqual(env["TASKMGR_GPU_BUSY_EXIT_CODE"], "75")
         self.assertNotIn("TASKMGR_ATTEMPT", env)
         # While running, the job lives in in-progress/; afterwards in done/.
         wd = os.path.join(self.root(), "in-progress", j, "workdir")
@@ -252,6 +253,36 @@ class ExecTest(Env):
         self.assertEqual(self.get(job, "error", "kind"), "shim_start_failed")
         self.assertIsNone(self.get(self.result(j), "_taskmgr", "return_code"))
 
+    def test_shim_failure_before_launch_fails_the_job(self) -> None:
+        # The shim cannot prepare the run (its workdir already exists): the job fails with
+        # shim_error and is not treated as an interruption that runs it again.
+        self.stop_daemon()
+        j = self.submit(self.make_pkg())
+        os.makedirs(os.path.join(self.job_dir(j), "workdir"))
+        _ = self.start_daemon()
+        job = self.wait_state(j, "failed")
+        self.assertEqual(self.get(job, "error", "kind"), "shim_error")
+        self.assertIn("workdir already exists", self.text(job, "error", "message"))
+        self.assertEqual((job["auto_restarts"], job["retried_as"]), (0, []))
+        self.assertEqual(self.get(self.result(j), "_taskmgr", "status"), "failed")
+        self.assertEqual(self.get(self.runner(j), "status"), "failed")
+        time.sleep(1)
+        self.assertEqual(self.jobids(), {j})
+
+    def test_entry_starts_with_default_signal_dispositions(self) -> None:
+        # Python ignores SIGPIPE and SIGXFSZ and the shim ignores SIGHUP; ignored signals
+        # survive exec, so the entry must get them back at their defaults.
+        script = "grep -E '^Sig(Ign|Blk):' /proc/self/status; yes | head -n 1; " + OK_RESULT
+        j = self.submit(self.make_pkg(script=script))
+        _ = self.wait_state(j, "succeeded")
+        with open(os.path.join(self.job_dir(j), "stdout.log")) as f:
+            out = f.read().splitlines()
+        self.assertIn("SigIgn:\t0000000000000000", out)
+        self.assertIn("SigBlk:\t0000000000000000", out)
+        self.assertIn("y", out)
+        with open(os.path.join(self.job_dir(j), "stderr.log")) as f:
+            self.assertEqual(f.read(), "")  # no "yes: standard output: Broken pipe"
+
     def test_timeout_with_term_and_kill(self) -> None:
         polite = self.submit(self.make_pkg(script="sleep 60", timeout=1))
         stubborn = self.submit(
@@ -295,6 +326,18 @@ class ExecTest(Env):
         self.assertFalse(pid_alive(child))
         self.assertIn("leftover_processes", self.arr(self.result(j), "_taskmgr", "warnings"))
         self.assertEqual(self.get(self.result(j), "_taskmgr", "return_code"), 0)
+
+    def test_leftover_process_without_job_tag_is_cleaned(self) -> None:
+        # A child started with an empty environment has no TASKMGR_JOBID; it is still in
+        # the group of the recorded leader and must be stopped.
+        marker = os.path.join(self.tmp, "child.pid")
+        script = "env -i sleep 300 & echo $! > %s; exit 0" % marker
+        j = self.submit(self.make_pkg(script=script))
+        _ = self.wait_state(j, "invalid_result", timeout=20)
+        with open(marker) as f:
+            child = int(f.read())
+        self.assertFalse(pid_alive(child))
+        self.assertIn("leftover_processes", self.arr(self.result(j), "_taskmgr", "warnings"))
 
     def test_retry_creates_new_job_and_keeps_the_old_one(self) -> None:
         counter = os.path.join(self.tmp, "count")

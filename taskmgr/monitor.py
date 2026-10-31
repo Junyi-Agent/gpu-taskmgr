@@ -11,9 +11,9 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Literal, TypedDict, cast
 
 from . import procutil
-from .common import TERMINAL_STATES, try_flock_fd, try_read_json, utcnow_iso
+from .common import TERMINAL_STATES, try_flock_fd, utcnow_iso
 from .records import Job, JsonDict, JsonValue, Runner
-from .store import Store, finalize_run, interrupt_run, load_task
+from .store import Store, end_without_result, finalize_run, interrupt_run, load_task
 
 STOP_OUTCOME = {"cancel": "cancelled", "timeout": "timed_out"}
 
@@ -59,12 +59,14 @@ class GroupStopper:
         self,
         pgid: int,
         min_start: int,
+        jobid: str,
         grace: float,
         confirm: float,
         reap: Callable[[], object] | None = None,
     ) -> None:
         self.pgid: int = pgid
         self.min_start: int = min_start
+        self.jobid: str = jobid
         self.grace: float = float(grace)
         self.confirm: float = float(confirm)
         self.reap: Callable[[], object] | None = reap
@@ -90,7 +92,7 @@ class GroupStopper:
         """Advance; returns None (in progress), "stopped" or "unconfirmed"."""
         if self.reap:
             _ = self.reap()
-        self.alive = procutil.group_members(self.pgid, self.min_start)
+        self.alive = procutil.group_members(self.pgid, self.min_start, self.jobid)
         if not self.alive:
             return "stopped"
         now = time.monotonic()
@@ -114,6 +116,60 @@ def set_stopping(store: Store, jobid: str, reason: str) -> bool:
             job["stop_reason"] = reason
             _ = store.save_job(jobdir, job)
         return True
+
+
+def requested_stop(job: Job, elapsed: float | None, timeout: float | None) -> str | None:
+    """The reason to stop a running entry now, if any: a cancel request, a stop reason
+    already recorded in job.json, or timeout_seconds exceeded (`elapsed` since the start)."""
+    if job.get("cancel_requested"):
+        return "cancel"
+    if job["state"] == "stopping" and job.get("stop_reason"):
+        return job["stop_reason"]
+    if timeout and elapsed is not None and elapsed >= timeout:
+        return "timeout"
+    return None
+
+
+def end_cancelled(store: Store, jobid: str, runner: Runner | None = None) -> Job:
+    """End a cancelled job when nothing of it runs, so the stop is confirmed at once:
+    running -> stopping -> cancelled.
+
+    With `runner` (the in-memory record of a run whose entry never started) the job ends
+    without a normal exit and the record is written; without it the run is finalized.
+    """
+    _ = set_stopping(store, jobid, "cancel")
+    if runner is None:
+        return finalize_run(store, jobid, status="cancelled")
+    with store.state_lock():
+        jobdir, job = store.load_job(jobid)
+        runner["status"] = "cancelled"
+        jobdir = end_without_result(store, jobdir, job, "cancelled", None, runner)
+        store.write_runner(jobdir, runner)
+        return job
+
+
+def record_unconfirmed(
+    store: Store,
+    jobid: str,
+    jobdir: str,
+    runner: Runner | None,
+    reason: str | None,
+    alive: list[int],
+) -> None:
+    """The stop procedure could not confirm the group gone after SIGKILL: note the stop
+    reason in runner.json (read from disk when `runner` is None) and mark the job unknown."""
+    if runner is None:
+        runner, _ = store.read_runner(jobdir)
+    if runner is not None:
+        runner["stop_unconfirmed_reason"] = reason
+        store.write_runner(jobdir, runner)
+    _ = mark_unknown(
+        store,
+        jobid,
+        "stop_unconfirmed",
+        "processes still alive after SIGKILL",
+        {"alive_pids": alive},
+    )
 
 
 def mark_unknown(
@@ -175,8 +231,8 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
     """The shim died between a "GPU busy" exit and the relaunch (process group gone).
 
     The entry did no work, so the same job goes back to queued (keeping its jobid and
-    enqueue_seq; not an interruption, `auto_restarts` is unchanged): the workdir is removed
-    and runner.json is moved aside as runner.prev-N.json. A requested cancel ends the job
+    enqueue_seq; not an interruption, `auto_restarts` is unchanged): the workdir is kept
+    for the next dispatch and runner.json is moved aside as runner.prev-N.json. A requested cancel ends the job
     as cancelled instead. Returns None when the run record does not show such an exit or
     the job is not running/stopping (an unknown job is never queued again).
     """
@@ -190,8 +246,7 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
         ):
             return None
         if job.get("cancel_requested"):
-            _ = set_stopping(store, jobid, "cancel")
-            return finalize_run(store, jobid, status="cancelled")
+            return end_cancelled(store, jobid)
         # The workdir stays: the next dispatch of this same job reuses it (GPU contract).
         # job.json first: a crash before the rename leaves a queued job whose runner.json
         # shows the busy exit, which dispatch recognizes and sets aside as well.
@@ -310,7 +365,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             return {"decision": "interrupted", "state": j["state"]}
         pgid, leader_start = _group_identity(runner)
         try:
-            members = procutil.group_members(pgid, leader_start)
+            members = procutil.group_members(pgid, leader_start, jobid)
         except procutil.ProcUnavailable as e:
             if not resolve:
                 _ = mark_unknown(store, jobid, "undeterminable", "cannot read /proc: %s" % e)
@@ -397,9 +452,9 @@ class Takeover:
         self.warnings: list[str] = []
         self.done: bool = False
         cfg = store.config
-        self.poll: float = float(cfg.get("control_poll_seconds", 2))
-        self.grace: float = cfg.get("stop_grace_seconds", 30)
-        self.confirm: float = cfg.get("kill_confirm_seconds", 10)
+        self.poll: float = float(cfg["control_poll_seconds"])
+        self.grace: float = cfg["stop_grace_seconds"]
+        self.confirm: float = cfg["kill_confirm_seconds"]
         self._note()
         if self.exited:
             if self.stop_reason in (None, "leftover"):
@@ -423,7 +478,7 @@ class Takeover:
         self.stop_reason = reason
         if reason in STOP_OUTCOME:
             _ = set_stopping(self.store, self.jobid, reason)
-        self.stopper = GroupStopper(self.pgid, self.min_start, self.grace, self.confirm)
+        self.stopper = GroupStopper(self.pgid, self.min_start, self.jobid, self.grace, self.confirm)
         self.stopper.start()
 
     def close(self) -> None:
@@ -437,7 +492,7 @@ class Takeover:
             return None
         try:
             if self.stopper is None:
-                if not procutil.group_members(self.pgid, self.min_start):
+                if not procutil.group_members(self.pgid, self.min_start, self.jobid):
                     _ = finish_stopped(self.store, self.jobid, None, self.exited, self.warnings)
                     return self.close()
                 now = time.monotonic()
@@ -446,14 +501,10 @@ class Takeover:
                     _, job = self.store.load_job(self.jobid)
                     if job["state"] not in ("running", "stopping"):
                         return self.close()
-                    if job.get("cancel_requested"):
-                        self._begin_stop("cancel")
-                    elif (
-                        self.timeout
-                        and self.started_epoch
-                        and time.time() - self.started_epoch >= self.timeout
-                    ):
-                        self._begin_stop("timeout")
+                    elapsed = time.time() - self.started_epoch if self.started_epoch else None
+                    reason = requested_stop(job, elapsed, self.timeout)
+                    if reason:
+                        self._begin_stop(reason)
                 return None
             r = self.stopper.step()
             if r == "stopped":
@@ -462,27 +513,15 @@ class Takeover:
                 )
                 self.close()
             elif r == "unconfirmed":
-                self._record_unconfirmed()
+                record_unconfirmed(
+                    self.store,
+                    self.jobid,
+                    self._jobdir(),
+                    None,
+                    self.stop_reason,
+                    self.stopper.alive,
+                )
                 self.close()
         except procutil.ProcUnavailable as e:
             _ = mark_unknown(self.store, self.jobid, "undeterminable", "cannot read /proc: %s" % e)
             self.close()
-
-    def _record_unconfirmed(self) -> None:
-        jobdir = self._jobdir()
-        runner, _ = self.store.read_runner(jobdir)
-        if runner is not None:
-            runner["stop_unconfirmed_reason"] = self.stop_reason
-            self.store.write_runner(jobdir, runner)
-        _ = mark_unknown(
-            self.store,
-            self.jobid,
-            "stop_unconfirmed",
-            "processes still alive after SIGKILL",
-            {"alive_pids": self.stopper.alive if self.stopper else []},
-        )
-
-
-def runner_status_snapshot(jobdir: str) -> JsonValue:
-    runner, _ = try_read_json(os.path.join(jobdir, "runner.json"))
-    return runner
