@@ -5,7 +5,8 @@ import os
 import time
 from typing import cast
 
-from taskmgr.records import JsonValue, override
+from taskmgr.common import override
+from taskmgr.records import JsonValue
 from taskmgr.tests.helpers import GPUS, OK_RESULT, Env, pid_alive
 
 PY_RESULT = (

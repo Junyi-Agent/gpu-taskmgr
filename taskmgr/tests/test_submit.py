@@ -237,3 +237,39 @@ class SubmitTest(Env):
         self.assertEqual(p.returncode, 0)
         jobid = self.text(cast(JsonValue, json.loads(out)), "jobid")
         _ = self.wait_state(jobid, "succeeded")
+
+    def test_receive_stops_reading_an_oversized_upload(self) -> None:
+        self.set_config(max_package_bytes=1000)
+        blob = os.path.join(self.tmp, "blob.bin")
+        with open(blob, "wb") as f:
+            _ = f.write(os.urandom(3 << 20))  # incompressible: the archive stays > 2 MiB
+        with open(blob, "rb") as f:
+            rc, out, _ = self.remote("receive", stdin=f)
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.get(out, "error", "code"), "package_too_large")
+        self.assertIn("upload exceeds", self.text(out, "error", "message"))
+        self.assertEqual(os.listdir(os.path.join(self.root(), "incoming")), [])
+
+    def test_retry_links_the_read_only_package(self) -> None:
+        old = self.submit(self.make_pkg())
+        _ = self.ok("cancel", old, "--host", "s1")  # queued -> cancelled, no daemon needed
+        new = self.text(self.ok("retry", old, "--host", "s1"), "jobid")
+        self.assertEqual(self.job(new)["retry_of"], old)
+        self.assertEqual(self.job(old)["retried_as"], [new])
+        for rel in ("package.tar.gz", os.path.join("package", "task.json")):
+            a = os.stat(os.path.join(self.job_dir(old), rel))
+            b = os.stat(os.path.join(self.job_dir(new), rel))
+            self.assertEqual((a.st_ino, a.st_dev), (b.st_ino, b.st_dev), rel)
+        st = os.stat(os.path.join(self.job_dir(new), "package", "task.json"))
+        self.assertEqual(st.st_mode & 0o222, 0)
+        self.assertEqual(os.listdir(os.path.join(self.root(), "incoming")), [])
+        # Removing a staging copy leaves the shared files read-only.
+        from taskmgr.store import remove_tree, stage_package
+
+        updir = os.path.join(self.root(), "incoming", "probe")
+        os.mkdir(updir)
+        stage_package(self.job_dir(new), updir)
+        remove_tree(updir)
+        self.assertFalse(os.path.exists(updir))
+        st = os.stat(os.path.join(self.job_dir(new), "package", "task.json"))
+        self.assertEqual(st.st_mode & 0o222, 0)

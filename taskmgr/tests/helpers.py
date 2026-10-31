@@ -21,8 +21,8 @@ REMOTE = os.path.join(REPO, "bin", "taskmgr-remote")
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-from taskmgr.common import STATE_DIRS  # noqa: E402
-from taskmgr.records import Job, JsonDict, JsonValue, Runner, Server, override  # noqa: E402
+from taskmgr.common import STATE_DIRS, override  # noqa: E402
+from taskmgr.records import Job, JsonDict, JsonValue, Runner, Server  # noqa: E402
 
 T = TypeVar("T")
 

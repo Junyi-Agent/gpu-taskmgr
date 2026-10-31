@@ -1,5 +1,6 @@
 """Job discovery, status lookup across servers, --wait, logs and fetch (Sections 14, 15, 16)."""
 
+import json
 import os
 import re
 import shutil
@@ -7,9 +8,13 @@ import subprocess
 import sys
 import threading
 import time
+from typing import cast
+from unittest import mock
 
-from taskmgr.records import Server
-from taskmgr.tests.helpers import TASK, Env
+from taskmgr.common import DEFAULT_REMOTE_CONFIG, TaskmgrError, override
+from taskmgr.records import JsonDict, JsonValue, Server
+from taskmgr.store import Store, end_without_result, finalize_run
+from taskmgr.tests.helpers import FAST_CONFIG, TASK, Env
 
 
 class QueryTest(Env):
@@ -408,3 +413,199 @@ class QueryTest(Env):
         self.assertEqual(rc, 0, err)
         self.assertTrue(self.get(out, "partial"))
         self.assertIn("incomplete", err)
+
+    def test_ssh_keepalive_options(self) -> None:
+        from taskmgr.transport import Remote
+
+        entry: Server = {
+            "name": "gpu1",
+            "transport": "ssh",
+            "remote_root": "/r",
+            "remote_command": "taskmgr-remote",
+        }
+        argv = Remote(entry).ssh_argv()
+        self.assertIn("ServerAliveInterval=15", argv)
+        self.assertIn("ServerAliveCountMax=3", argv)
+        entry["ssh"] = {"options": ["-o", "ServerAliveInterval=5"]}
+        argv = Remote(entry).ssh_argv()
+        self.assertEqual(
+            [a for a in argv if "ServerAlive" in a],
+            ["ServerAliveInterval=5", "ServerAliveCountMax=3"],
+        )
+
+    def test_single_server_calls_time_out_by_default(self) -> None:
+        from taskmgr.transport import ConnError, Remote
+
+        self.server("s2")["remote_command"] = "sh -c 'sleep 60' sh"
+        start = time.monotonic()
+        with (
+            mock.patch.dict(os.environ, {"TASKMGR_QUERY_TIMEOUT": "1"}),
+            self.assertRaises(ConnError) as cm,
+        ):
+            _ = Remote(self.server("s2")).call(["status", "0123456789abcdef"])
+        self.assertLess(time.monotonic() - start, 15)
+        self.assertIn("no answer within 1s", cm.exception.message)
+
+    def test_remote_without_reply_or_with_a_malformed_error(self) -> None:
+        from taskmgr.transport import ConnError, Remote, query_all
+
+        self.server("s2")["remote_command"] = "sh -c 'echo boom >&2; exit 3' sh"
+        with self.assertRaises(ConnError) as cm:  # outcome unknown, like a lost connection
+            _ = Remote(self.server("s2")).call(["jobs"])
+        self.assertEqual(cm.exception.code, "remote_error")
+        self.assertIn("boom", cm.exception.message)
+        self.server("s3")["remote_command"] = (
+            'sh -c \'echo "{\\"error\\": 5, \\"protocol_version\\": 2}"\' sh'
+        )
+        results, errors = query_all(self.machines, ["jobs"])
+        self.assertEqual(list(results), ["s1"])
+        self.assertEqual(
+            [(e["host"], e["code"]) for e in errors],
+            [("s2", "remote_error"), ("s3", "remote_error")],
+        )
+        self.assertIn("malformed", errors[1]["error"])
+
+    def test_ssh_failure_detection_for_scripts(self) -> None:
+        from taskmgr.transport import looks_like_ssh_failure
+
+        self.assertTrue(
+            looks_like_ssh_failure("ssh: connect to host x port 22: Connection refused")
+        )
+        self.assertTrue(looks_like_ssh_failure("Permission denied (publickey).\n"))
+        self.assertFalse(looks_like_ssh_failure(""))
+        self.assertFalse(looks_like_ssh_failure("my script failed\n"))
+
+    def test_bad_machine_lists(self) -> None:
+        from taskmgr.transport import load_machines
+
+        home = os.path.join(self.tmp, "h2")
+        os.makedirs(os.path.join(home, "machines.json"))  # unreadable: a directory
+        with self.assertRaises(TaskmgrError) as cm:
+            _ = load_machines(home)
+        self.assertEqual(cm.exception.code, "bad_machines")
+        os.rmdir(os.path.join(home, "machines.json"))
+        names: list[JsonValue] = [["a"], 5]
+        for name in names:
+            entry: JsonDict = {"name": name, "remote_root": "/r", "remote_command": "x"}
+            with open(os.path.join(home, "machines.json"), "w") as f:
+                json.dump({"servers": [entry]}, f)
+            with self.assertRaises(TaskmgrError) as cm:
+                _ = load_machines(home)
+            self.assertEqual(cm.exception.code, "bad_machines")
+
+
+class StoreTest(Env):
+    """Store-level behaviour, exercised in-process on a server root."""
+
+    def store(self) -> Store:
+        return Store(self.root())
+
+    def test_a_job_moving_back_to_queue_is_not_missed(self) -> None:
+        a = self.submit(self.make_pkg())
+        b = self.submit(self.make_pkg())
+        in_progress = os.path.join(self.root(), "in-progress")
+        os.rename(self.job_dir(b), os.path.join(in_progress, b))
+        st = self.store()
+        it = st.iter_jobs()
+        first = next(it)  # queue/ has been listed
+        # b goes back to queue/ (a "GPU busy" re-queue) before in-progress/ is listed.
+        os.rename(os.path.join(in_progress, b), os.path.join(self.root(), "queue", b))
+        seen = {first[1]["jobid"]} | {j["jobid"] for _, j in it}
+        self.assertEqual(seen, {a, b})
+        self.assertEqual({j["jobid"] for _, j in st.iter_jobs(active=True)}, {a, b})
+
+    def test_lookup_confirms_a_miss_under_the_state_lock(self) -> None:
+        a = self.submit(self.make_pkg())
+
+        class Racy(Store):
+            misses: int = 1
+            locked_scans: int = 0
+
+            @override
+            def _scan_job_dir(self, jobid: str) -> str | None:
+                if self._lock_depth:
+                    self.locked_scans += 1
+                if self.misses:  # the directory was between two places
+                    self.misses -= 1
+                    return None
+                return super()._scan_job_dir(jobid)
+
+        st = Racy(self.root())
+        jd, job = st.load_job(a)
+        self.assertEqual((jd, job["jobid"], st.locked_scans), (self.job_dir(a), a, 1))
+        self.assertIsNone(st.find_job_dir("0123456789abcdef"))
+
+    def test_corrupt_counter_continues_after_the_highest_seq(self) -> None:
+        a = self.submit(self.make_pkg())
+        b = self.submit(self.make_pkg())
+        with open(os.path.join(self.root(), "locks", "counters.json"), "w") as f:
+            _ = f.write("{not json")
+        c = self.submit(self.make_pkg())
+        self.assertEqual([self.job(j)["enqueue_seq"] for j in (a, b, c)], [1, 2, 3])
+        os.unlink(os.path.join(self.root(), "locks", "counters.json"))
+        d = self.submit(self.make_pkg())
+        self.assertEqual(self.job(d)["enqueue_seq"], 4)
+
+    def test_config_types_are_checked(self) -> None:
+        self.set_config(gpu_busy_exit_code=None, stop_grace_seconds=0.5, max_cpu_jobs=2)
+        self.assertEqual(self.store().config["max_cpu_jobs"], 2)
+        defaults = cast(JsonDict, cast(object, DEFAULT_REMOTE_CONFIG))
+        bad: list[JsonDict] = [
+            {"max_cpu_jobs": []},
+            {"max_auto_restarts": True},
+            {"stop_grace_seconds": "1"},
+            {"base_env": {"A": 1}},
+            {"max_auto_restarts": None},
+        ]
+        for kw in bad:
+            self.set_config("s1", **kw)
+            with self.assertRaises(TaskmgrError) as cm:
+                _ = self.store().config
+            self.assertEqual(cm.exception.code, "bad_config", kw)
+            self.set_config("s1", **{k: FAST_CONFIG.get(k, defaults[k]) for k in kw})
+        for text in ("[]", "0"):
+            with open(os.path.join(self.root(), "config.json"), "w") as f:
+                _ = f.write(text)
+            with self.assertRaises(TaskmgrError) as cm:
+                _ = self.store().config
+            self.assertEqual(cm.exception.code, "bad_config", text)
+
+    def _as_dispatched(self, jobid: str, state: str, where: str) -> str:
+        """Rewrite a queued job as dispatched and in `state`, with a non-final run record."""
+        jd = self.job_dir(jobid)
+        job: dict[str, object] = dict(self.job(jobid))
+        job.update({"state": state, "dispatched_at": "2026-10-29T08:00:00Z"})
+        with open(os.path.join(jd, "job.json"), "w") as f:
+            json.dump(job, f)
+        runner = {"jobid": jobid, "final": False, "exited": True, "return_code": 0}
+        with open(os.path.join(jd, "runner.json"), "w") as f:
+            json.dump(runner, f)
+        new = os.path.join(self.root(), where, jobid)
+        if new != jd:
+            os.rename(jd, new)
+        return new
+
+    def test_finalize_writes_nothing_for_a_queued_or_terminal_job(self) -> None:
+        for state, where in (("queued", "queue"), ("cancelled", "done")):
+            j = self.submit(self.make_pkg())
+            jd = self._as_dispatched(j, state, where)
+            job = finalize_run(self.store(), j)
+            self.assertEqual(job["state"], state)
+            self.assertFalse(self.runner(j).get("final"), state)
+            self.assertFalse(os.path.exists(os.path.join(jd, "workdir", "result.json")), state)
+
+    def test_end_without_result_recognizes_its_own_block(self) -> None:
+        j = self.submit(self.make_pkg())
+        jd = self._as_dispatched(j, "running", "in-progress")
+        os.makedirs(os.path.join(jd, "workdir"))
+        earlier = {"outputs": {}, "_taskmgr": {"final": True, "jobid": j, "status": "failed"}}
+        with open(os.path.join(jd, "workdir", "result.json"), "w") as f:
+            json.dump(earlier, f)
+        st = self.store()
+        with st.state_lock():
+            jd, job = st.load_job(j)
+            runner, _ = st.read_runner(jd)
+            assert runner is not None
+            _ = end_without_result(st, jd, job, "failed", None, runner)
+        self.assertEqual(self.job(j)["state"], "failed")
+        self.assertEqual(self.get(self.result(j), "_taskmgr", "warnings"), [])

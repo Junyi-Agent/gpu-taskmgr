@@ -22,7 +22,8 @@ import zipfile
 from typing import cast
 
 from taskmgr import hostsetup, pyz
-from taskmgr.records import JsonDict, JsonValue, Server, override
+from taskmgr.common import override
+from taskmgr.records import JsonDict, JsonValue, Server
 from taskmgr.tests.helpers import REMOTE, REPO, TASK, Env, kill_quiet, pid_alive
 from taskmgr.transport import Remote
 
