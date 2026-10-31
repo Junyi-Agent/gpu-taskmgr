@@ -9,17 +9,17 @@ Interface used by taskmgr.py:
 
 import argparse
 import concurrent.futures
-import json
 import os
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol, cast
 
-from .common import TaskmgrError, atomic_write_bytes, flocked, read_json
-from .hostsetup import AddHostArgs, Declined, NonInteractive, Ui, add_host
+from .common import TaskmgrError
+from .hostsetup import STEP_COLORS, AddHostArgs, add_host, destination
+from .prompt import Declined, NonInteractive, Ui
 from .records import JsonValue, Server
 from .textout import BOLD, GREEN, RED, YELLOW, CmdResult, hint, message, render_table
-from .transport import Remote, load_machines
+from .transport import Remote, edit_machines, load_machines
 
 HELP = [
     ("add", "set up or update a server and add it to the machine list"),
@@ -30,13 +30,6 @@ HELP = [
     ("ping", "check that servers answer"),
 ]
 PING_TIMEOUT = 60.0
-STEP_COLORS = {
-    "ok": GREEN,
-    "changed": "1;32",  # bold green: done, and something was changed
-    "skipped": YELLOW,
-    "declined": YELLOW,
-    "failed": RED,
-}
 
 
 class HostArgs(AddHostArgs, Protocol):
@@ -148,20 +141,6 @@ def run(args: HostArgs, home: str) -> CmdResult:
 # list
 
 
-def destination(s: Server) -> str:
-    """user@host[:port] of an ssh entry; "local" for the test-only local transport."""
-    if s.get("transport", "ssh") == "local":
-        return "local"
-    ssh = s.get("ssh") or {}
-    dest = ssh.get("host", "")
-    user, port = ssh.get("user"), ssh.get("port")
-    if user:
-        dest = "%s@%s" % (user, dest)
-    if port:
-        dest += ":%d" % port
-    return dest
-
-
 def host_list(home: str) -> CmdResult:
     servers = load_machines(home)
     return {
@@ -190,21 +169,14 @@ def _find(servers: list[Server], name: str) -> Server:
     raise TaskmgrError("unknown_host", "host %r is not in the machine list" % name, host=name)
 
 
-def edit_machines(home: str, name: str, edit: Callable[[list[JsonValue]], None]) -> None:
-    """Change the "servers" array of machines.json under machines.lock and write it back
-    atomically; `name` must be in it."""
-    path = os.path.join(home, "machines.json")
-    with flocked(os.path.join(home, "machines.lock")):
-        data = read_json(path)
-        servers = data.get("servers") if isinstance(data, dict) else data
-        if not isinstance(servers, list):
-            raise TaskmgrError("bad_machines", '%s must contain a "servers" array' % path)
-        if not any(isinstance(s, dict) and s.get("name") == name for s in servers):
-            raise TaskmgrError(
-                "unknown_host", "host %r is not in the machine list" % name, host=name
-            )
-        edit(servers)
-        atomic_write_bytes(path, (json.dumps(data, indent=2) + "\n").encode())
+def _is(s: JsonValue, name: str) -> bool:
+    return isinstance(s, dict) and s.get("name") == name
+
+
+def _must_have(servers: list[JsonValue], name: str) -> None:
+    """The entry may have been removed since load_machines read the file."""
+    if not any(_is(s, name) for s in servers):
+        raise TaskmgrError("unknown_host", "host %r is not in the machine list" % name, host=name)
 
 
 def host_set_enabled(name: str, enabled: bool, home: str) -> CmdResult:
@@ -213,12 +185,13 @@ def host_set_enabled(name: str, enabled: bool, home: str) -> CmdResult:
     changed = _find(load_machines(home), name).get("enabled", True) != enabled
 
     def set_flag(servers: list[JsonValue]) -> None:
+        _must_have(servers, name)
         for s in servers:
             if isinstance(s, dict) and s.get("name") == name:
                 s["enabled"] = enabled
 
     if changed:
-        edit_machines(home, name, set_flag)
+        edit_machines(home, set_flag)
     return {"host": name, "enabled": enabled, "changed": changed, "machines": path}, 0
 
 
@@ -239,9 +212,10 @@ def host_remove(name: str, yes: bool, home: str) -> CmdResult:
         return {"host": name, "removed": False, "machines": path}, 2
 
     def drop(servers: list[JsonValue]) -> None:
-        servers[:] = [s for s in servers if not (isinstance(s, dict) and s.get("name") == name)]
+        _must_have(servers, name)
+        servers[:] = [s for s in servers if not _is(s, name)]
 
-    edit_machines(home, name, drop)
+    edit_machines(home, drop)
     return {
         "host": name,
         "removed": True,
