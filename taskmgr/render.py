@@ -45,20 +45,17 @@ def display_state(job: JsonDict) -> str:
 
 
 def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
-    """`task jobs` table: one row per job, oldest submission first."""
-    table = sorted(
+    """`task jobs` table: one row per job, in the given order."""
+    table = [
         (
-            (
-                _str(j.get("jobid"), "-"),
-                _str(j.get("task_id"), "-"),
-                _str(j.get("submitted_at"), "-"),
-                _str(j.get("host"), "-"),
-                display_state(j),
-            )
-            for j in jobs
-        ),
-        key=lambda r: (r[2], r[3], r[0]),
-    )
+            _str(j.get("jobid"), "-"),
+            _str(j.get("task_id"), "-"),
+            _str(j.get("submitted_at"), "-"),
+            _str(j.get("host"), "-"),
+            display_state(j),
+        )
+        for j in jobs
+    ]
     return render_table(JOBS_COLUMNS, table, color)
 
 

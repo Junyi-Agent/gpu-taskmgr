@@ -16,7 +16,7 @@ task validate AA-01/                   # 退出码 0 校验通过；1 列出所�
 task submit AA-01/                     # 在启用的服务器之间轮询
 task submit --host nebius-h200-2 AA-01.tar.gz
 task submit --host nebius-h200-2 --submission-key tune-aa01-v3 AA-01/   # 幂等重试
-task jobs [--host H] [--state STATE]     # STATE：queued、running、stopping、unknown 或某个终态
+task jobs [--host H] [--state STATE] [-n N]   # STATE：queued、running、stopping、unknown 或某个终态；N 默认 10
 task status <jobid> [--host H]
 task status <jobid> [--host H] --wait [--poll-interval 5] [--retry-timeout 300] [--timeout S]
 task logs    <jobid> [--host H] [--stream stdout|stderr|shim] [--follow]
@@ -85,7 +85,9 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 - running 作业的入口进程因 GPU 被其他进程占用而退出 75、正在等待重新启动时，STATE 显示为
   `pending (gpu busy)`（见 [[docs/task-package.zh-CN]] 的 GPU 约定）。它的状态仍是 `running`；
   `--detail` 和 `task status` 在 `pending_reason` 中给出原因。
-- 按提交时间（UTC）排序。所有显示 STATE 的命令中，同一状态颜色相同：queued 和 `pending (gpu busy)` 黄、
+- `task jobs` 列出所查询的全部服务器合计最近提交的 10 个作业；`-n N`（正整数）修改数量。
+  `--host` 和 `--state` 先过滤，`-n` 统计过滤后剩下的作业。`--detail` 返回同样的作业。
+- 按提交时间（UTC）排序，最新的在最后。所有显示 STATE 的命令中，同一状态颜色相同：queued 和 `pending (gpu busy)` 黄、
   running 青、stopping 品红、unknown 粗体品红、succeeded 绿、failed / invalid_result / timed_out
   红、cancelled 灰。
 - `--state` 只接受作业状态（`pending (gpu busy)` 只是显示，不是状态；请用 `--state running`）；
@@ -161,11 +163,12 @@ jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key �
 - `task host remove NAME` 从机器列表删除一台服务器，不改动服务器本身。
 - `task host disable NAME` 把一台服务器标为禁用，例如它宕机时：轮询提交跳过它，向所有服务器发出的
   查询（`jobs`、按 jobid 查找、`whoami`、`version`）也不再问它，因此不用等它超时。输出会列出被跳过的
-  服务器（stderr 上 `skipped: disabled, not queried: NAME`；JSON 中的 `"skipped"`）。`--host NAME`
-  仍然可以访问它，`task host ping` 仍会检查它，服务器本身不做任何改动。`task host enable NAME`
+  服务器（stderr 上 `skipped: disabled, not queried: NAME`；JSON 中的 `"skipped"`）。不带 NAME 的
+  `task host ping` 也跳过它。`--host NAME` 和 `task host ping NAME` 仍然可以访问它，服务器本身不做任何改动。`task host enable NAME`
   重新启用。两者都只修改 `machines.json` 中的 `enabled`。
-- `task host ping [NAME]` 调用每台（或指定的一台）服务器，显示是否有响应、往返耗时和已安装的代码
-  版本；有服务器没响应时退出码为 2。
+- `task host ping [NAME]` 调用每台已启用的服务器（或指定的一台，无论是否禁用），显示是否有响应、
+  往返耗时和已安装的代码版本；有服务器没响应时退出码为 2。禁用的服务器列为
+  `skipped: disabled, not pinged: NAME`（JSON 中的 `"skipped"`）。
 
 ## whoami、update、version
 

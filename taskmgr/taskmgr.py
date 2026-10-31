@@ -286,7 +286,9 @@ def report_partial(out: Mapping[str, object], what: str) -> None:
 def cmd_jobs(args: Args) -> CmdResult:
     rargs = ["jobs"] + (["--state", args.state] if args.state else [])
     replies, out, code = query_hosts(load_machines(home_dir(args)), args.host, rargs)
-    out["jobs"] = [{"host": h, **_obj(j)} for h, r in replies for j in _arr(r.get("jobs", []))]
+    jobs = [{"host": h, **_obj(j)} for h, r in replies for j in _arr(r.get("jobs", []))]
+    jobs.sort(key=lambda j: (str(j.get("submitted_at")), str(j["host"]), str(j.get("jobid"))))
+    out["jobs"] = jobs[-args.limit :]
     report_partial(out, "its jobs are not listed")
     return out, code
 

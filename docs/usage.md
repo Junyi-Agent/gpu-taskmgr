@@ -16,7 +16,7 @@ task validate AA-01/                   # exit 0 valid, 1 with all errors, 2 bad 
 task submit AA-01/                     # round-robin over enabled servers
 task submit --host nebius-h200-2 AA-01.tar.gz
 task submit --host nebius-h200-2 --submission-key tune-aa01-v3 AA-01/   # idempotent retry
-task jobs [--host H] [--state STATE]     # STATE: queued, running, stopping, unknown or a terminal state
+task jobs [--host H] [--state STATE] [-n N]   # STATE: queued, running, stopping, unknown or a terminal state; N: default 10
 task status <jobid> [--host H]
 task status <jobid> [--host H] --wait [--poll-interval 5] [--retry-timeout 300] [--timeout S]
 task logs    <jobid> [--host H] [--stream stdout|stderr|shim] [--follow]
@@ -90,7 +90,10 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
   which waits to be started again, shows STATE `pending (gpu busy)` (see
   [[docs/task-package]], GPU contract). Its state is still `running`; `--detail` and
   `task status` show the reason in `pending_reason`.
-- Rows are sorted by submission time (UTC). STATE has the same color in every command that
+- `task jobs` lists the 10 most recently submitted jobs over all queried servers together;
+  `-n N` (a positive integer) changes the count. `--host` and `--state` filter first, so
+  `-n` counts the jobs that remain. `--detail` returns the same jobs.
+- Rows are sorted by submission time (UTC), newest last. STATE has the same color in every command that
   shows it: queued and `pending (gpu busy)` yellow, running cyan, stopping magenta, unknown bold
   magenta, succeeded green, failed / invalid_result / timed_out red, cancelled gray.
 - `--state` takes a job state only (`pending (gpu busy)` is a display, not a state; use
@@ -179,11 +182,13 @@ exit 0 if every step is `ok` or `changed`, otherwise 2. The steps are described 
   submits skip it, and the queries over every server (`jobs`, the jobid lookup, `whoami`,
   `version`) do not ask it, so they do not wait for its timeout. Output names the skipped
   servers (`skipped: disabled, not queried: NAME` on stderr; `"skipped"` in the JSON).
-  `--host NAME` still reaches it, `task host ping` still pings it, and nothing changes on
-  the server. `task host enable NAME` turns it back on. Both only change `enabled` in
+  `task host ping` without NAME skips it too. `--host NAME` and `task host ping NAME` still
+  reach it, and nothing changes on the server. `task host enable NAME` turns it back on. Both only change `enabled` in
   `machines.json`.
-- `task host ping [NAME]` calls every server (or one) and shows whether it answers, the
-  round-trip time and the installed code version; exit 2 if one did not answer.
+- `task host ping [NAME]` calls every enabled server (or the named one, disabled or not) and
+  shows whether it answers, the round-trip time and the installed code version; exit 2 if
+  one did not answer. Disabled servers are listed as `skipped: disabled, not pinged: NAME`
+  (`"skipped"` in the JSON).
 
 ## whoami, update, version
 

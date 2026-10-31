@@ -174,12 +174,13 @@ under `machines.lock`, like `remove`). A disabled server is skipped by round-rob
 and by the queries over every server (`jobs`, the jobid lookup, `whoami`, `version`);
 `--host NAME` still reaches it. See [[docs/usage]].
 
-`task host ping` runs `taskmgr-remote version` on each server in parallel and prints one row
+`task host ping` runs `taskmgr-remote version` on each enabled server in parallel and prints one row
 per server: `ok` or `unreachable`, the round-trip time, `protocol_version`, the installed
 code version (`none` when the server runs a checkout that `task host add` did not install),
 and the user and hostname the remote side runs as. The error of each unreachable server
 follows the table. Exit code 0 when every pinged server answered, otherwise 2. Disabled
-servers are pinged too.
+servers are skipped and named after the table; `task host ping NAME` pings one even when it
+is disabled.
 
 `task host remove NAME` removes the entry from `machines.json` (rewritten atomically under
 `machines.lock`; other entries are kept). It changes nothing on the server: code, service,

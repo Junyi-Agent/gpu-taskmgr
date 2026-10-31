@@ -986,6 +986,21 @@ class HostCmdsTest(Env):
         rc, obj, _ = self.task("host", "ping", "nope")
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "unknown_host")
+        # A disabled server is skipped (so its timeout is not waited for), unless named.
+        _ = self.ok("host", "disable", "s2")
+        obj = self.ok("host", "ping")
+        self.assertEqual([self.text(r, "host") for r in self.objs(obj, "hosts")], ["s1"])
+        self.assertEqual(self.get(obj, "skipped"), ["s2"])
+        rc, out, _ = self.task("host", "ping", text=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("skipped: disabled, not pinged: s2", self.text(out))
+        rc, obj, _ = self.task("host", "ping", "s2")
+        self.assertEqual(rc, 2)
+        self.assertEqual([r["reachable"] for r in self.objs(obj, "hosts")], [False])
+        _ = self.ok("host", "disable", "s1")
+        rc, out, _ = self.task("host", "ping", text=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(self.text(out).startswith("skipped: disabled, not pinged: s1, s2"))
 
 
 class AddHostUnitTest(unittest.TestCase):

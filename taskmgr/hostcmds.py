@@ -108,8 +108,8 @@ def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) 
         help=helps["disable"],
         description="Mark a server disabled in the machine list, e.g. while it is down: "
         + "round-robin submits skip it and the queries over every server (jobs, the jobid "
-        + "lookup, whoami, version) do not wait for it. `--host NAME` still reaches it and "
-        + "`task host ping` still pings it. Nothing changes on the server; its jobs keep "
+        + "lookup, whoami, version, host ping) do not wait for it. `--host NAME` and "
+        + "`task host ping NAME` still reach it. Nothing changes on the server; its jobs keep "
         + "running.",
     )
     _ = h.add_argument("name", help="name in the machine list")
@@ -117,7 +117,8 @@ def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) 
         "ping",
         parents=[common],
         help=helps["ping"],
-        description="Run `taskmgr-remote version` on each server (in parallel) and report "
+        description="Run `taskmgr-remote version` on each enabled server (in parallel), or on "
+        + "the named one even if it is disabled, and report "
         + "whether it answers, the round-trip time and the installed code version. "
         + "Exit 0 when every pinged server answered, 2 otherwise.",
     )
@@ -253,14 +254,18 @@ def _ping_one(server: Server) -> dict[str, object]:
 
 def host_ping(name: str | None, home: str) -> CmdResult:
     servers = load_machines(home)
+    skipped: list[str] = []
     if name is not None:
         servers = [_find(servers, name)]
+    else:
+        skipped = [s["name"] for s in servers if not s.get("enabled", True)]
+        servers = [s for s in servers if s.get("enabled", True)]
     rows: list[dict[str, object]] = []
     if servers:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(servers))) as ex:
             rows = list(ex.map(_ping_one, servers))
     ok = all(r["reachable"] for r in rows)
-    return {"hosts": rows, "complete": ok}, (0 if ok else 2)
+    return {"hosts": rows, "skipped": skipped, "complete": ok}, (0 if ok else 2)
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +359,17 @@ def text_remove(out: Mapping[str, object], color: bool) -> str:
 
 def text_ping(out: Mapping[str, object], color: bool) -> str:
     hosts = _rows(out, "hosts")
+    raw = out.get("skipped")
+    skipped = [str(n) for n in cast(list[object], raw)] if isinstance(raw, list) else []
+    note = (
+        message("skipped", YELLOW, "disabled, not pinged: %s" % ", ".join(skipped), color)
+        + hint("`task host ping NAME` pings a disabled server", color)
+        if skipped
+        else ""
+    )
     if not hosts:
+        if skipped:
+            return note
         return message("empty", YELLOW, "no servers in the machine list", color)
     rows = [
         [
@@ -377,4 +392,4 @@ def text_ping(out: Mapping[str, object], color: bool) -> str:
     for h in hosts:
         if not h.get("reachable"):
             text += message("unreachable", RED, "%s: %s" % (h.get("host"), h.get("error")), color)
-    return text
+    return text + note

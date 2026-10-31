@@ -30,6 +30,7 @@ class Args(argparse.Namespace):
     host: str | None
     submission_key: str | None
     state: str | None
+    limit: int
     jobid: str
     wait: bool
     poll_interval: float
@@ -159,6 +160,17 @@ def sentence(text: str) -> str:
     if not text:
         return text
     return text[0].upper() + text[1:] + ("" if text.endswith(".") else ".")
+
+
+def positive_int(text: str) -> int:
+    """argparse type: an integer >= 1."""
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer, got %r" % text)
+    return value
 
 
 class Parser(argparse.ArgumentParser):
@@ -305,6 +317,14 @@ def build_parser(commands: Sequence[Command]) -> argparse.ArgumentParser:
         choices=ALL_STATES,
         metavar="STATE",
         help="only jobs in this state: %s" % ", ".join(ALL_STATES),
+    )
+    _ = s.add_argument(
+        "-n",
+        dest="limit",
+        type=positive_int,
+        default=10,
+        metavar="N",
+        help="show the N most recently submitted jobs, over all servers (default 10)",
     )
     s = add("status")
     _ = s.add_argument("jobid", help=jobid_help)

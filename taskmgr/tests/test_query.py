@@ -125,6 +125,32 @@ class QueryTest(Env):
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "all_hosts_failed")
 
+    def test_jobs_limit(self) -> None:
+        oldest = self.submit(self.make_pkg(task_id="AA-01"), host="s1")
+        time.sleep(1.1)  # submitted_at has 1 s resolution; make the order unambiguous
+        pkg = self.make_pkg(task_id="BB-02")
+        newer = [self.submit(pkg, host="s1" if i % 2 else "s3") for i in range(10)]
+
+        def ids(*args: str) -> list[object]:
+            return [j["jobid"] for j in self.objs(self.ok("jobs", *args), "jobs")]
+
+        # The limit counts jobs over all servers, not per server.
+        self.assertEqual(sorted(map(str, ids())), sorted(newer))
+        self.assertEqual(ids("-n", "11")[0], oldest)
+        self.assertEqual(len(ids("-n", "100")), 11)
+        self.assertEqual(len(ids("-n", "3")), 3)
+        self.assertEqual(len(ids("--host", "s1", "-n", "6")), 6)
+        rc, out, _ = self.task("jobs", "-n", "2", text=True)
+        assert isinstance(out, str)
+        self.assertEqual((rc, len(out.splitlines())), (0, 3))
+        # --state filters first, so an old job in that state is still found.
+        _ = self.ok("cancel", oldest, "--host", "s1")
+        self.assertEqual(ids("--state", "cancelled", "-n", "1"), [oldest])
+        for bad in ("0", "-1", "x"):
+            rc, _, err = self.task("jobs", "-n", bad, text=True)
+            self.assertEqual(rc, 2)
+            self.assertIn("positive integer", err)
+
     def test_jobs_table(self) -> None:
         a = self.submit(self.make_pkg(task_id="AA-01"), host="s1")  # s1 has no daemon: stays queued
         time.sleep(1.1)  # submitted_at has 1 s resolution; make the order unambiguous

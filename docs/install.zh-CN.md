@@ -159,10 +159,10 @@ task host remove gpu1         # 询问 [y/N]；--yes 跳过询问
 下原子地重写文件）。禁用的服务器不参与轮询提交，也不参与向所有服务器发出的查询（`jobs`、按 jobid
 查找、`whoami`、`version`）；`--host NAME` 仍然可以访问它。见 [[docs/usage.zh-CN]]。
 
-`task host ping` 在各服务器上并行执行 `taskmgr-remote version`，每台服务器输出一行：`ok` 或
+`task host ping` 在各台已启用的服务器上并行执行 `taskmgr-remote version`，每台服务器输出一行：`ok` 或
 `unreachable`、往返时间、`protocol_version`、已安装的代码版本（服务器运行的不是
 `task host add` 安装的代码时显示 `none`），以及远端运行时的用户名和主机名。无法连接的服务器的
-错误信息列在表格之后。所有被检查的服务器都有应答时退出码为 0，否则为 2。已禁用的服务器也会被检查。
+错误信息列在表格之后。所有被检查的服务器都有应答时退出码为 0，否则为 2。已禁用的服务器被跳过，名字列在表格之后；`task host ping NAME` 即使该服务器已禁用也会检查它。
 
 `task host remove NAME` 把条目从 `machines.json` 中删除（在 `machines.lock` 下原子地重写文件；
 其他条目保持不变）。它不改动服务器：代码、服务、`remote_root` 及其中的作业都保留，
