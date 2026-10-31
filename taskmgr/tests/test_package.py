@@ -8,6 +8,7 @@ import time
 from typing import TypedDict, cast
 
 from taskmgr import package
+from taskmgr.common import TaskmgrError
 from taskmgr.records import JsonDict, JsonValue
 from taskmgr.tests.helpers import Env
 
@@ -134,6 +135,9 @@ class PackageTest(Env):
             ({"argv": ["../outside.sh"]}, "entry"),
             ({"env": {"CUDA_VISIBLE_DEVICES": "0"}}, "env"),
             ({"env": {"TASKMGR_X": "0"}}, "env"),
+            ({"env": {"A-B": "0"}}, "env"),
+            ({"env": {"1X": "0"}}, "env"),
+            ({"env": {"": "0"}}, "env"),
             ({"gpus": [0, 0]}, "gpu"),
             ({"gpus": ["MIG-abc"]}, "gpu"),
             ({"extra": {"timeout_seconds": 0}}, "schema"),
@@ -282,6 +286,114 @@ class PackageTest(Env):
         self.assertEqual((rc, self.get(out, "errors", 0, "code")), (1, "bad_archive"))
         rc, out, _ = self.task("validate", "--", "\n")
         self.assertEqual(rc, 2)
+
+    def test_extract_never_writes_through_links(self) -> None:
+        def extract(entries: list[TarEntry], skip: bool = False) -> tuple[str, list[str]]:
+            n = len(os.listdir(self.tmp))
+            path = os.path.join(self.tmp, "x-%d.tar.gz" % n)
+            write_tar(path, [(dict(kw), data) for kw, data in entries])  # write_tar pops
+            dest = os.path.join(self.tmp, "x-%d" % n, "d")
+            skipped = package.safe_extract(path, dest, skip_unsafe=skip)
+            return dest, [s["path"] for s in skipped]
+
+        def outside(dest: str) -> list[str]:
+            return sorted(set(os.listdir(os.path.dirname(dest))) - {"d"})
+
+        link = tarfile.SYMTYPE
+        # Chained links that pass the lexical check are refused when created.
+        chain: list[TarEntry] = [
+            ({"name": "x", "type": link, "linkname": "."}, None),
+            ({"name": "y", "type": link, "linkname": "x/x/../../F"}, None),
+            ({"name": "y", "mode": 0o644}, b"through the link"),
+        ]
+        with self.assertRaisesRegex(TaskmgrError, "resolves outside"):
+            _ = extract(chain)
+        dest, skipped = extract(chain, skip=True)
+        self.assertEqual(skipped, ["y"])
+        self.assertEqual(outside(dest), [])
+        with open(os.path.join(dest, "y"), "rb") as f:  # the file, not a link
+            self.assertEqual(f.read(), b"through the link")
+        # A later link redirects an earlier one: y -> a/../F escapes once a -> . exists.
+        dest, skipped = extract(
+            [
+                ({"name": "y", "type": link, "linkname": "a/../F"}, None),
+                ({"name": "a", "type": link, "linkname": "."}, None),
+            ],
+            skip=True,
+        )
+        self.assertEqual(skipped, ["y"])
+        self.assertFalse(os.path.lexists(os.path.join(dest, "y")))
+        # Names differing only in case are one file on macOS: the second is a duplicate,
+        # so "Y" is never opened through the link "y".
+        dest, skipped = extract(
+            [
+                ({"name": "t", "mode": 0o644}, b"t"),
+                ({"name": "y", "type": link, "linkname": "t"}, None),
+                ({"name": "Y", "mode": 0o644}, b"evil"),
+                ({"name": "Y", "type": tarfile.DIRTYPE, "mode": 0o755}, None),
+            ],
+            skip=True,
+        )
+        self.assertEqual(skipped, ["Y", "Y"])
+        with open(os.path.join(dest, "t"), "rb") as f:
+            self.assertEqual(f.read(), b"t")
+        # A path that already exists (here a directory made for a/b) is never reused.
+        dest, skipped = extract(
+            [({"name": "a/b", "mode": 0o644}, b"b"), ({"name": "a", "mode": 0o644}, b"a")],
+            skip=True,
+        )
+        self.assertEqual(skipped, ["a"])
+        self.assertTrue(os.path.isfile(os.path.join(dest, "a", "b")))
+
+    def test_pack_and_hash_skip_excluded_files(self) -> None:
+        kept = {"run.py": "x", "uv.lock": "k", "sub/result.json": "r", "sub/m.py": "m"}
+        junk = {
+            "__pycache__/run.cpython-310.pyc": "j",
+            "sub/__pycache__/m.pyc": "j",
+            "sub/old.pyc": "j",
+            ".git/HEAD": "j",
+            "result.json": "j",
+            "result.json.lock": "j",
+            "progress.json.lock": "j",
+            ".tmp-abc": "j",
+            "sub/.DS_Store": "j",
+        }
+        pkg = self.make_pkg(files=kept)
+        h = package.content_hash(pkg)
+        for rel, content in junk.items():
+            os.makedirs(os.path.join(pkg, os.path.dirname(rel)), exist_ok=True)
+            with open(os.path.join(pkg, rel), "w") as f:
+                _ = f.write(content)
+            self.assertTrue(package.is_excluded(rel), rel)
+        os.symlink("/etc/passwd", os.path.join(pkg, ".git", "abs"))  # never packed
+        self.assertEqual(package.content_hash(pkg), h)
+        archive = os.path.join(self.tmp, "p.tgz")
+        package.pack_dir(pkg, archive)
+        with tarfile.open(archive) as t:
+            names = {m.name for m in t.getmembers() if m.isfile()}
+        self.assertEqual(names, set(kept) | {"task.json", "TASK.md", "progress.json"})
+        self.assertEqual(self.task("validate", pkg)[0], 0)
+        self.assertEqual(self.task("validate", archive)[0], 0)
+
+    def test_validate_checks_size_and_entry_exec_bit(self) -> None:
+        pkg = self.make_pkg(argv=["./bin/run.sh"], files={"bin/run.sh": "#!/bin/sh\n"})
+        rc, out, _ = self.task("validate", pkg)
+        self.assertEqual(rc, 1)
+        self.assertIn("not executable", self.text(out, "errors", 0, "message"))
+        os.chmod(os.path.join(pkg, "bin", "run.sh"), 0o755)
+        self.assertEqual(self.task("validate", pkg)[0], 0)
+        # An entry under an excluded path would not be packed.
+        pkg = self.make_pkg(argv=["./.git/run.sh"], files={".git/run.sh": "#!/bin/sh\n"})
+        os.chmod(os.path.join(pkg, ".git", "run.sh"), 0o755)
+        rc, out, _ = self.task("validate", pkg)
+        self.assertIn("not a file in the package", self.text(out, "errors", 0, "message"))
+        pkg = self.make_pkg(files={"big.bin": "x" * 5000, "__pycache__/c.pyc": "y" * 5000})
+        self.assertEqual(package.validate_dir(pkg, max_bytes=None)[0], [])
+        self.assertEqual(package.validate_dir(pkg)[0], [])
+        errors, _ = package.validate_dir(pkg, max_bytes=6000)  # excluded files do not count
+        self.assertEqual(errors, [])
+        errors, _ = package.validate_dir(pkg, max_bytes=4000)
+        self.assertEqual([e["code"] for e in errors], ["package_too_large"])
 
     def test_regexes_reject_trailing_newline(self) -> None:
         from taskmgr.common import SUBMISSION_KEY_RE, TASK_ID_RE

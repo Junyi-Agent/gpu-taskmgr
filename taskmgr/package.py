@@ -6,17 +6,47 @@ import io
 import json
 import os
 import posixpath
+import re
 import shutil
 import stat
 import tarfile
 from typing import IO, TypeGuard, cast
 
-from .common import SCHEMA_VERSION, TASK_ID_RE, TaskmgrError, parse_utc_iso
+from .common import (
+    DEFAULT_REMOTE_CONFIG,
+    SCHEMA_VERSION,
+    TASK_ID_RE,
+    TaskmgrError,
+    parse_utc_iso,
+)
 from .records import JsonDict, JsonValue, Problem, SkippedEntry, TaskSpec
 
 REQUIRED_FILES = ("task.json", "TASK.md", "progress.json")
 PLACEHOLDER = "<REQUIRED"
-RESERVED_ENV = ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "VIRTUAL_ENV")
+RESERVED_ENV = ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "VIRTUAL_ENV")  # and TASKMGR_*
+ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+DEFAULT_MAX_PACKAGE_BYTES: int | None = DEFAULT_REMOTE_CONFIG["max_package_bytes"]
+
+# Never packed or hashed: caches, VCS data, editor junk and files a run leaves behind.
+EXCLUDED_NAMES = ("__pycache__", ".git", ".DS_Store")
+EXCLUDED_SUFFIXES = (".pyc", ".json.lock")  # .json.lock: taskmgr_task.py flock files
+EXCLUDED_PREFIXES = (".tmp-",)  # in-flight atomic writes
+EXCLUDED_ROOT_PREFIXES = ("result.json",)  # runner output (result.json, result.json.lock)
+
+
+def is_excluded(rel: str) -> bool:
+    """True if a package-relative POSIX path is left out of packing and the content hash.
+
+    A path is excluded when any component is excluded, so callers may prune whole
+    directories. `task init` copies the template with a subset of these rules.
+    """
+    parts = rel.split("/")
+    if parts[0].startswith(EXCLUDED_ROOT_PREFIXES):
+        return True
+    return any(
+        p in EXCLUDED_NAMES or p.endswith(EXCLUDED_SUFFIXES) or p.startswith(EXCLUDED_PREFIXES)
+        for p in parts
+    )
 
 
 def _err(errors: list[Problem], code: str, message: str, path: str | None = None) -> None:
@@ -35,6 +65,15 @@ def _link_resolves_inside(root: str, link: str) -> bool:
     real_root = os.path.realpath(root)
     real = os.path.realpath(link)
     return real == real_root or real.startswith(real_root + os.sep)
+
+
+def entry_argv(task: object) -> list[object] | None:
+    """task.json entry.argv when it is a list, else None (not further checked)."""
+    if not isinstance(task, dict):
+        return None
+    entry = cast(JsonDict, task).get("entry")
+    argv = cast(JsonDict, entry).get("argv") if isinstance(entry, dict) else None
+    return cast("list[object]", argv) if isinstance(argv, list) else None
 
 
 def _inside(rel: str) -> bool:
@@ -63,9 +102,8 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
             "task_id %r does not match ^[A-Z]{2}-[0-9]{2,4}$" % (tid,),
             "task.json",
         )
-    entry = task.get("entry")
-    argv = entry.get("argv") if isinstance(entry, dict) else None
-    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv) and argv[0]):
+    argv = entry_argv(task)
+    if not (argv and all(isinstance(a, str) for a in argv) and argv[0]):
         _err(errors, "schema", "entry.argv must be a non-empty array of strings", "task.json")
     gpus = task.get("gpus")
     if not isinstance(gpus, list):
@@ -119,6 +157,13 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
             _err(errors, "schema", "env must be an object of strings", "task.json")
         else:
             for k, v in env.items():
+                if not ENV_NAME_RE.match(k):
+                    _err(
+                        errors,
+                        "env",
+                        "env name %r must match ^[A-Za-z_][A-Za-z0-9_]*$" % k,
+                        "task.json",
+                    )
                 if not isinstance(v, str):
                     _err(errors, "schema", "env value for %s must be a string" % k, "task.json")
                 if k in RESERVED_ENV or k.startswith("TASKMGR_"):
@@ -167,29 +212,36 @@ def check_progress_json(p: object, errors: list[Problem], path: str = "progress.
 # Validation
 
 
-def scan_tree(root: str, errors: list[Problem]) -> None:
-    """Check every entry for unsafe symlinks and special files (Section 2.4)."""
-    for dirpath, dirnames, filenames in os.walk(root):
-        for name in sorted(dirnames + filenames):
-            full = os.path.join(dirpath, name)
-            rel = os.path.relpath(full, root).replace(os.sep, "/")
-            st = os.lstat(full)
-            if stat.S_ISLNK(st.st_mode):
-                target = os.readlink(full)
-                if target.startswith("/"):
-                    _err(errors, "symlink", "absolute symlink -> %s" % target, rel)
-                elif not _inside(
-                    posixpath.join(posixpath.dirname(rel), target)
-                ) or not _link_resolves_inside(root, full):
-                    _err(
-                        errors, "symlink", "symlink points outside the package -> %s" % target, rel
-                    )
-            elif not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
-                _err(errors, "special_file", "special files are not allowed", rel)
+def scan_tree(root: str, errors: list[Problem]) -> int:
+    """Check every packed entry for unsafe symlinks and special files (Section 2.4).
+
+    Returns the total size of the packed regular files.
+    """
+    total = 0
+    for rel, full in _sorted_entries(root, exclude=True):
+        st = os.lstat(full)
+        if stat.S_ISREG(st.st_mode):
+            total += st.st_size
+        if stat.S_ISLNK(st.st_mode):
+            target = os.readlink(full)
+            if target.startswith("/"):
+                _err(errors, "symlink", "absolute symlink -> %s" % target, rel)
+            elif not _inside(
+                posixpath.join(posixpath.dirname(rel), target)
+            ) or not _link_resolves_inside(root, full):
+                _err(errors, "symlink", "symlink points outside the package -> %s" % target, rel)
+        elif not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+            _err(errors, "special_file", "special files are not allowed", rel)
+    return total
 
 
-def validate_dir(root: str) -> tuple[list[Problem], TaskSpec | None]:
+def validate_dir(
+    root: str, max_bytes: int | None = DEFAULT_MAX_PACKAGE_BYTES
+) -> tuple[list[Problem], TaskSpec | None]:
     """Validate an extracted task package. Returns (errors, task_or_None).
+
+    max_bytes caps the total size of the packed regular files (None: no cap); the default
+    is the server default max_package_bytes, so `task validate` catches oversized packages.
 
     The task is the parsed task.json whenever it is a JSON object; it only matches
     TaskSpec when errors is empty, so callers must check errors before using it.
@@ -229,35 +281,32 @@ def validate_dir(root: str) -> tuple[list[Problem], TaskSpec | None]:
             _err(errors, "json", "progress.json is not valid JSON: %s" % e, "progress.json")
         else:
             check_progress_json(prog, errors)
-    if isinstance(task, dict):
-        entry = task.get("entry")
-        argv = entry.get("argv") if isinstance(entry, dict) else None
-        if (
-            isinstance(argv, list)
-            and argv
-            and isinstance(argv[0], str)
-            and "/" in argv[0]
-            and not argv[0].startswith("/")
+    argv = entry_argv(task)
+    if argv and isinstance(argv[0], str) and "/" in argv[0] and not argv[0].startswith("/"):
+        a0 = argv[0]
+        real = os.path.realpath(os.path.join(root, a0))
+        rroot = os.path.realpath(root)
+        if not _inside(a0):
+            why = "points outside the package"
+        elif not (
+            real.startswith(rroot + os.sep)
+            and os.path.isfile(real)
+            and not is_excluded(os.path.relpath(real, rroot).replace(os.sep, "/"))
         ):
-            a0 = argv[0]
-            if not _inside(a0):
-                _err(
-                    errors,
-                    "entry",
-                    "entry argv[0] points outside the package: %s" % a0,
-                    "task.json",
-                )
-            else:
-                real = os.path.realpath(os.path.join(root, a0))
-                rroot = os.path.realpath(root)
-                if not (real.startswith(rroot + os.sep) and os.path.isfile(real)):
-                    _err(
-                        errors,
-                        "entry",
-                        "entry argv[0] is not a file in the package: %s" % a0,
-                        "task.json",
-                    )
-    scan_tree(root, errors)
+            why = "is not a file in the package"
+        elif not os.access(real, os.X_OK):  # the shim checks the same before starting it
+            why = "is not executable (chmod +x, or run it through an interpreter)"
+        else:
+            why = None
+        if why:
+            _err(errors, "entry", "entry argv[0] %s: %s" % (why, a0), "task.json")
+    total = scan_tree(root, errors)
+    if max_bytes is not None and total > max_bytes:
+        _err(
+            errors,
+            "package_too_large",
+            "package files total %d bytes, over max_package_bytes (%d)" % (total, max_bytes),
+        )
     # Converted via object: a JsonDict and a TypedDict do not overlap for the checker.
     return errors, (cast(TaskSpec, cast(object, task)) if isinstance(task, dict) else None)
 
@@ -266,25 +315,34 @@ def validate_dir(root: str) -> tuple[list[Problem], TaskSpec | None]:
 # Packing and hashing
 
 
-def _sorted_entries(root: str) -> list[tuple[str, str]]:
+def _sorted_entries(root: str, exclude: bool = False) -> list[tuple[str, str]]:
+    """(relative POSIX path, full path) of every entry below root, sorted by path.
+
+    With exclude, entries matching is_excluded() are left out (directories are pruned).
+    """
     out: list[tuple[str, str]] = []
     for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        prefix = "" if rel_dir == "." else rel_dir + "/"
+        if exclude:
+            dirnames[:] = [d for d in dirnames if not is_excluded(prefix + d)]
         dirnames.sort()
         for name in dirnames + filenames:
-            full = os.path.join(dirpath, name)
-            out.append((os.path.relpath(full, root).replace(os.sep, "/"), full))
+            if exclude and is_excluded(prefix + name):
+                continue
+            out.append((prefix + name, os.path.join(dirpath, name)))
     out.sort(key=lambda e: e[0])
     return out
 
 
 def pack_dir(root: str, dest: str) -> None:
-    """Deterministically pack a directory into a tar.gz (Section 5.1)."""
+    """Deterministically pack a directory into a tar.gz (Section 5.1), minus is_excluded()."""
     with (
         open(dest, "wb") as raw,
         gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz,
         tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar,
     ):
-        for rel, full in _sorted_entries(root):
+        for rel, full in _sorted_entries(root, exclude=True):
             st = os.lstat(full)
             ti = tarfile.TarInfo(rel)
             ti.mtime = 0
@@ -308,9 +366,12 @@ def pack_dir(root: str, dest: str) -> None:
 
 
 def content_hash(root: str) -> str:
-    """Normalized content hash over regular files and symlinks (Section 6.1)."""
+    """Normalized content hash over regular files and symlinks (Section 6.1).
+
+    Covers exactly what pack_dir packs: entries matching is_excluded() are left out.
+    """
     manifest = io.StringIO()
-    for rel, full in _sorted_entries(root):
+    for rel, full in _sorted_entries(root, exclude=True):
         st = os.lstat(full)
         if stat.S_ISLNK(st.st_mode):
             digest = hashlib.sha256(os.readlink(full).encode()).hexdigest()
@@ -352,7 +413,7 @@ def safe_extract(
     os.makedirs(dest, exist_ok=True)
     skipped: list[SkippedEntry] = []
     total = 0
-    seen: set[str] = set()
+    seen: set[str] = set()  # case-folded: "Y" and "y" are one file on macOS
 
     def reject(name: str, why: str) -> None:
         if skip_unsafe:
@@ -380,16 +441,24 @@ def safe_extract(
             if ".." in parts:
                 reject(m.name, "path contains ..")
                 continue
-            if name in seen:
+            key = name.casefold()
+            if key in seen:
                 reject(m.name, "duplicate entry")
                 continue
             target = os.path.join(dest, *parts)
-            # Never write through a symlink created by an earlier entry.
+            # Never write through a symlink created by an earlier entry: every existing
+            # parent must be a real directory (lstat also sees "y" when asked for "Y" on a
+            # case-insensitive file system), and files and links are created with O_EXCL
+            # semantics below, so an existing path is never followed or reused.
             cur = dest
             bad_parent = False
             for p in parts[:-1]:
                 cur = os.path.join(cur, p)
-                if os.path.islink(cur) or (os.path.exists(cur) and not os.path.isdir(cur)):
+                try:
+                    pst = os.lstat(cur)
+                except FileNotFoundError:
+                    break  # this and deeper parents are created below
+                if not stat.S_ISDIR(pst.st_mode):
                     bad_parent = True
                     break
             if bad_parent:
@@ -413,10 +482,26 @@ def safe_extract(
                     reject(m.name, "symlink points outside the package")
                     continue
                 os.makedirs(os.path.dirname(target), exist_ok=True)
-                os.symlink(ln, target)
+                try:
+                    os.symlink(ln, target)
+                except FileExistsError:
+                    reject(m.name, "path already exists")
+                    continue
+                # Chains such as x -> . and y -> x/x/../../F pass the lexical check.
+                if not _link_resolves_inside(dest, target):
+                    os.unlink(target)
+                    reject(m.name, "symlink resolves outside the package")
+                    continue
                 links.append((m.name, target))
             elif m.isdir():
-                os.makedirs(target, exist_ok=True)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                try:
+                    os.mkdir(target)
+                except FileExistsError:
+                    pass  # created as the parent of an earlier entry
+                if not stat.S_ISDIR(os.lstat(target).st_mode):
+                    reject(m.name, "path already exists and is not a directory")
+                    continue
                 os.chmod(target, (m.mode & 0o777) | 0o700)
             elif m.isreg():
                 total += m.size
@@ -430,22 +515,33 @@ def safe_extract(
                 if src is None:
                     reject(m.name, "unreadable regular file")
                     continue
-                with open(target, "wb") as out:
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                try:
+                    fd = os.open(target, flags, 0o600)
+                except FileExistsError:
+                    reject(m.name, "path already exists")
+                    continue
+                with os.fdopen(fd, "wb") as out:
                     shutil.copyfileobj(src, out)
-                os.chmod(target, (m.mode & 0o777) | 0o600)
+                    os.fchmod(out.fileno(), (m.mode & 0o777) | 0o600)
             else:
                 reject(m.name, "unsupported entry type")
                 continue
-            seen.add(name)
+            seen.add(key)
     except (tarfile.TarError, EOFError, OSError, gzip.BadGzipFile) as e:
         raise TaskmgrError("bad_archive", "cannot read archive: %s" % e) from e
     finally:
         tar.close()
-    # Chains such as x -> . and y -> x/.. pass the lexical check; check physical targets.
-    for name, target in links:
-        if not _link_resolves_inside(dest, target):
-            os.unlink(target)
-            reject(name, "symlink resolves outside the package")
+    # A later link can redirect an earlier one (y -> a/../F, then a -> .). Nothing was
+    # written through a link above; now drop every link that escapes, until none does.
+    changed = True
+    while changed:
+        changed = False
+        for name, target in links:
+            if os.path.islink(target) and not _link_resolves_inside(dest, target):
+                os.unlink(target)
+                changed = True
+                reject(name, "symlink resolves outside the package")
     return skipped
 
 
@@ -463,6 +559,27 @@ def package_root(extracted: str) -> str:
         ):
             return only
     return extracted
+
+
+class _FixedSize:
+    """Read exactly `size` bytes from a file a running task may still be changing.
+
+    Bytes past `size` are left out; a file that shrank (or fails to read) is padded with
+    NULs, so the tar header written before the data always stays correct.
+    """
+
+    def __init__(self, f: IO[bytes], size: int) -> None:
+        self.f: IO[bytes] = f
+        self.left: int = size
+
+    def read(self, n: int = -1) -> bytes:
+        n = self.left if n < 0 else min(n, self.left)
+        try:
+            data = self.f.read(n)
+        except OSError:
+            data = b""
+        self.left -= n
+        return data + b"\0" * (n - len(data))
 
 
 def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> None:
@@ -485,13 +602,16 @@ def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> None:
             ):
                 continue
             ti = tar.gettarinfo(full, arcname=arc)
-            data = None
+            f = None
             if ti.isreg() or ti.islnk():
-                with open(full, "rb") as f:  # a running task may still be writing it
-                    data = f.read()
+                f = open(full, "rb")  # noqa: SIM115 -- closed below; a task may be writing it
                 ti.type = tarfile.REGTYPE  # never emit hard links
                 ti.linkname = ""
-                ti.size = len(data)
+                ti.size = os.fstat(f.fileno()).st_size
         except OSError:
             continue  # vanished while walking a running job
-        tar.addfile(ti, io.BytesIO(data) if data is not None else None)
+        if f is None:
+            tar.addfile(ti)
+            continue
+        with f:  # streamed: a large file is never read into memory whole
+            tar.addfile(ti, cast(IO[bytes], cast(object, _FixedSize(f, ti.size))))
