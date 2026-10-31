@@ -115,7 +115,8 @@ def cmd_receive(store: Store, args: Args) -> int:
             ack = _dedup_ack(store, key, chash)
         if ack:
             return emit(ack)
-        errors, task = package.validate_dir(root)
+        # Extraction already enforced this server's max_package_bytes.
+        errors, task = package.validate_dir(root, max_bytes=None)
         if errors:
             raise TaskmgrError(
                 "invalid_package",

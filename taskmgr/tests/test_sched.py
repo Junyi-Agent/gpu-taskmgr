@@ -27,7 +27,7 @@ class SchedTest(Env):
         _ = self.start_daemon()
         _ = self.wait_state(a, "running")
         _ = self.wait_state(c, "running")  # disjoint GPU: concurrent
-        time.sleep(1)
+        _ = self.wait_scheduler_passes(2)
         self.assertEqual(self.job(b)["state"], "queued")
         self.release("a")
         _ = self.wait_state(a, "succeeded")
@@ -45,7 +45,7 @@ class SchedTest(Env):
         small = self.submit(self.make_pkg(script=self.gate("small"), gpus=[1]))
         other = self.submit(self.make_pkg(script=self.gate("other"), gpus=[2]))
         _ = self.wait_state(other, "running")  # unrelated GPU is unaffected
-        time.sleep(1)
+        _ = self.wait_scheduler_passes(2)
         # GPU 1 is idle but reserved for the earlier multi-GPU job.
         self.assertEqual(self.job(small)["state"], "queued")
         self.assertEqual(self.job(big)["state"], "queued")
@@ -73,7 +73,7 @@ class SchedTest(Env):
         small = self.submit(self.make_pkg(gpus=[1]))
         _ = self.start_daemon()
         _ = self.wait_state(small, "succeeded")
-        time.sleep(1)
+        _ = self.wait_scheduler_passes(2)
         self.assertEqual(self.job(big)["state"], "queued")
         self.assertEqual(self.job(u)["state"], "unknown")
 
@@ -102,7 +102,7 @@ class SchedTest(Env):
         _ = self.start_daemon()
         _ = self.wait_state(a, "running")
         _ = self.wait_state(g, "running")  # CPU cap does not affect GPU jobs
-        time.sleep(1)
+        _ = self.wait_scheduler_passes(2, gpus=[3])
         self.assertEqual(self.job(b)["state"], "queued")
         self.release("a")
         _ = self.wait_state(b, "running")

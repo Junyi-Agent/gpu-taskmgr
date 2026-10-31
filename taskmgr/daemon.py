@@ -14,7 +14,6 @@ from . import procutil
 from .common import (
     CODE_ROOT,
     GPU_HOLDING_STATES,
-    STATE_DIRS,
     TERMINAL_STATES,
     try_flock_fd,
     utcnow_iso,
@@ -127,7 +126,7 @@ class Daemon:
             for jobdir, job in list(st.iter_jobs()):
                 jid = job["jobid"]
                 # Directory follows state; job.json wins.
-                want = st.path(STATE_DIRS.get(job["state"], "in-progress"), jid)
+                want = st.dir_for(job["state"], jid)
                 if os.path.abspath(jobdir) != want:
                     log("repairing location of %s -> %s" % (jid, want))
                     _ = st.save_job(jobdir, job)

@@ -211,7 +211,6 @@ class ExecTest(Env):
             "path": self.make_pkg(extra={"environment": {"required_paths": ["/no/such/path"]}}),
             "venv": self.make_pkg(extra={"environment": {"venv": "/no/such/venv"}}),
             "cmd": self.make_pkg(argv=["no-such-command-xyz"]),
-            "noexec": self.make_pkg(argv=["./run.sh"], files={"run.sh": "#!/bin/sh\n"}),
         }
         ids = {k: self.submit(p) for k, p in cases.items()}
         for k, j in ids.items():

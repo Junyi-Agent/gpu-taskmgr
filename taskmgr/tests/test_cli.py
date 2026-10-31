@@ -91,6 +91,11 @@ class CliTest(Env):
             self.assertTrue(err_line.startswith("error: "), argv)
             self.assertEqual(hint_line, "hint: " + hint, argv)
 
+    def test_removed_attempt_option_is_a_usage_error(self) -> None:
+        rc, out, err = self.plain("logs", "0123456789abcdef", "--attempt", "1")
+        self.assertEqual((rc, out), (2, ""))
+        self.assertIn("--attempt", err)
+
     def test_validate_and_init_text(self) -> None:
         target = os.path.join(self.tmp, "AA-01")
         rc, out, _ = self.plain("init", "AA-01", "--output", target)
