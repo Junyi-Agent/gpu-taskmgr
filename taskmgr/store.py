@@ -8,8 +8,9 @@ import secrets
 import shutil
 import socket
 import stat
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
-from typing import cast
+import types
+from collections.abc import Callable, Generator, Iterable, Iterator
+from typing import cast, get_args, get_origin
 
 from .common import (
     DEFAULT_REMOTE_CONFIG,
@@ -27,6 +28,7 @@ from .common import (
 )
 from .records import (
     ErrorInfo,
+    GpuDecl,
     Job,
     JsonDict,
     JsonValue,
@@ -35,6 +37,28 @@ from .records import (
     TaskmgrMeta,
     TaskSpec,
 )
+
+# The job directories of jobs that are not terminal (done/ grows without bound).
+ACTIVE_JOB_DIRS = ("queue", "in-progress")
+
+
+def _type_ok(value: object, tp: object) -> bool:
+    """Whether a JSON value matches a RemoteConfig annotation (an int is a valid float)."""
+    origin: object = get_origin(tp)
+    args: tuple[object, ...] = get_args(tp)
+    if origin is types.UnionType:  # records.py writes unions as X | Y
+        return any(_type_ok(value, a) for a in args)
+    if tp is type(None):
+        return value is None
+    if tp is int or tp is float:
+        ok = (int,) if tp is int else (int, float)
+        return isinstance(value, ok) and not isinstance(value, bool)
+    if origin is dict:
+        return isinstance(value, dict) and all(
+            _type_ok(k, args[0]) and _type_ok(v, args[1])
+            for k, v in cast(dict[object, object], value).items()
+        )
+    return isinstance(tp, type) and isinstance(value, tp)
 
 
 class Store:
@@ -63,8 +87,14 @@ class Store:
                 raise TaskmgrError("bad_config", "config.json is %s" % err)
             if isinstance(obj, dict):
                 cfg.update(obj)
-            elif obj:
+            elif err is None:
                 raise TaskmgrError("bad_config", "config.json is not a JSON object")
+            for key, tp in cast(dict[str, object], RemoteConfig.__annotations__).items():
+                if not _type_ok(cfg.get(key), tp):
+                    raise TaskmgrError(
+                        "bad_config",
+                        "config.json: %s has the wrong type: %r" % (key, cfg.get(key)),
+                    )
             self._config = cast(RemoteConfig, cast(object, cfg))
         return self._config
 
@@ -89,37 +119,62 @@ class Store:
             os.close(fd)
 
     # -- jobs ---------------------------------------------------------------
-    def find_job_dir(self, jobid: object) -> str | None:
-        if not isinstance(jobid, str) or not JOBID_RE.match(jobid):
-            return None
+    def dir_for(self, state: str, jobid: str) -> str:
+        """Where the directory of a job in `state` lives (in-progress/ for an unknown state)."""
+        return self.path(STATE_DIRS.get(state, "in-progress"), jobid)
+
+    def _scan_job_dir(self, jobid: str) -> str | None:
         for d in JOB_DIRS:
             p = self.path(d, jobid)
             if os.path.isdir(p):
                 return p
         return None
 
-    def load_job(self, jobid: str) -> tuple[str, Job]:
-        jd = self.find_job_dir(jobid)
-        if jd is None:
-            raise TaskmgrError("not_found", "job %s not found" % jobid)
-        job, err = try_read_json(os.path.join(jd, "job.json"))
-        if job is None:
-            raise TaskmgrError("corrupt_job", "job.json of %s is %s" % (jobid, err))
-        return jd, cast(Job, cast(object, job))
+    def find_job_dir(self, jobid: object) -> str | None:
+        """The job's directory, or None. Without the state lock a scan can miss a directory
+        that moves backwards (in-progress/ -> queue/) meanwhile; every move happens under
+        the lock, so a miss is confirmed by a second scan under it."""
+        if not isinstance(jobid, str) or not JOBID_RE.match(jobid):
+            return None
+        found = self._scan_job_dir(jobid)
+        if found is None and not self._lock_depth:
+            with self.state_lock():
+                found = self._scan_job_dir(jobid)
+        return found
 
-    def iter_jobs(self) -> Iterator[tuple[str, Job]]:
-        """Yield (dir, job) for every job; skips unreadable records."""
-        for d in JOB_DIRS:
+    def load_job(self, jobid: str) -> tuple[str, Job]:
+        for again in (False, True):
+            jd = self.find_job_dir(jobid)
+            if jd is None:
+                raise TaskmgrError("not_found", "job %s not found" % jobid)
+            job, err = try_read_json(os.path.join(jd, "job.json"))
+            if job is not None:
+                return jd, cast(Job, cast(object, job))
+            if again or err != "missing":  # "missing": the directory moved; look again
+                raise TaskmgrError("corrupt_job", "job.json of %s is %s" % (jobid, err))
+        raise AssertionError("unreachable")
+
+    def iter_jobs(self, active: bool = False) -> Iterator[tuple[str, Job]]:
+        """Yield (dir, job) for every job (active: only queue/ and in-progress/); skips
+        unreadable records. Without the state lock a job that moves meanwhile can show up
+        twice; queue/ is listed again at the end so one moved back from in-progress/
+        (a "GPU busy" re-queue) is not missed."""
+        seen: set[str] = set()
+        dirs = ACTIVE_JOB_DIRS if active else JOB_DIRS
+        if not self._lock_depth:
+            dirs += ("queue",)
+        for i, d in enumerate(dirs):
             base = self.path(d)
             try:
                 names = sorted(os.listdir(base))
             except FileNotFoundError:
                 continue
             for name in names:
-                if not JOBID_RE.match(name):
+                if not JOBID_RE.match(name) or (i and d == "queue" and name in seen):
                     continue
                 job, _ = try_read_json(os.path.join(base, name, "job.json"))
                 if isinstance(job, dict):
+                    seen.add(name)
                     yield os.path.join(base, name), cast(Job, cast(object, job))
 
     def save_job(self, jobdir: str, job: Job) -> str:
@@ -127,7 +182,7 @@ class Store:
         assert self._lock_depth, "state lock required"
         job["updated_at"] = utcnow_iso()
         atomic_write_json(os.path.join(jobdir, "job.json"), job)
-        want = self.path(STATE_DIRS[job["state"]], job["jobid"])
+        want = self.dir_for(job["state"], job["jobid"])
         if os.path.abspath(jobdir) != want:
             os.rename(jobdir, want)
             fsync_dir(os.path.dirname(jobdir))
@@ -144,9 +199,13 @@ class Store:
     def next_seq(self) -> int:
         assert self._lock_depth
         p = self.path("locks", "counters.json")
-        raw = read_json(p, {}) or {}
+        raw, _ = try_read_json(p)
         c: JsonDict = raw if isinstance(raw, dict) else {}
-        seq = int(cast("int | float | str", c.get("next_enqueue_seq", 1)))
+        seq = c.get("next_enqueue_seq")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+            # Missing or corrupt counter: continue after the highest sequence number in use.
+            used: list[object] = [j.get("enqueue_seq") for _, j in self.iter_jobs()]
+            seq = max((n for n in used if isinstance(n, int)), default=0) + 1
         c["next_enqueue_seq"] = seq + 1
         atomic_write_json(p, c)
         return seq
@@ -297,49 +356,61 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
     return obj, verrs, warnings
 
 
-def final_job_dir(jobdir: str, status: str) -> str:
-    """Where the job directory lives once the job is in `status` (done/ for terminal)."""
-    root = os.path.dirname(os.path.dirname(os.path.abspath(jobdir)))
-    return os.path.join(root, STATE_DIRS.get(status, "in-progress"), os.path.basename(jobdir))
+def meta_block(
+    job: Job,
+    status: str,
+    error: ErrorInfo | None,
+    validation_errors: Iterable[str] = (),
+    warnings: Iterable[str] = (),
+    runner: Runner | None = None,
+) -> TaskmgrMeta:
+    """The `_taskmgr` keys every result.json has; `build_meta` adds those of a run."""
+    run: Runner = runner or {"jobid": job["jobid"]}
+    return {
+        "jobid": job["jobid"],
+        "task_id": job.get("task_id"),
+        "retry_of": job.get("retry_of"),
+        "gpus": job.get("gpus", []),
+        "status": status,
+        "return_code": run.get("return_code"),
+        "signal": run.get("signal"),
+        "validation_errors": list(validation_errors),
+        "error": error,
+        "warnings": list(warnings),
+        "final": True,
+    }
 
 
 def build_meta(
+    store: Store,
     job: Job,
     runner: Runner,
-    jobdir: str,
     status: str,
     validation_errors: Iterable[str],
     error: ErrorInfo | None,
     warnings: Iterable[str],
 ) -> TaskmgrMeta:
-    jobdir = final_job_dir(jobdir, status)
+    jobdir = store.dir_for(status, job["jobid"])  # where the job lives once it is `status`
     workdir = os.path.join(jobdir, "workdir")
-    return {
-        "jobid": job["jobid"],
-        "task_id": job.get("task_id"),
-        "retry_of": job.get("retry_of"),
-        "host": socket.gethostname(),
-        "gpus": job.get("gpus", []),
-        "status": status,
-        "return_code": runner.get("return_code"),
-        "signal": runner.get("signal"),
-        "started_at": runner.get("started_at"),
-        "ended_at": runner.get("ended_at"),
-        "validation_errors": list(validation_errors),
-        "error": error,
-        "warnings": list(warnings),
-        "paths": {
-            "job_dir": jobdir,
-            "workdir": workdir,
-            "stdout": os.path.join(jobdir, "stdout.log"),
-            "stderr": os.path.join(jobdir, "stderr.log"),
-            "shim_log": os.path.join(jobdir, "shim.log"),
-            "progress": os.path.join(workdir, "progress.json"),
-            "result": os.path.join(workdir, "result.json"),
-            "artifacts": os.path.join(workdir, "artifacts"),
-        },
-        "final": True,
-    }
+    meta = meta_block(job, status, error, validation_errors, warnings, runner)
+    meta.update(
+        {
+            "host": socket.gethostname(),
+            "started_at": runner.get("started_at"),
+            "ended_at": runner.get("ended_at"),
+            "paths": {
+                "job_dir": jobdir,
+                "workdir": workdir,
+                "stdout": os.path.join(jobdir, "stdout.log"),
+                "stderr": os.path.join(jobdir, "stderr.log"),
+                "shim_log": os.path.join(jobdir, "shim.log"),
+                "progress": os.path.join(workdir, "progress.json"),
+                "result": os.path.join(workdir, "result.json"),
+                "artifacts": os.path.join(workdir, "artifacts"),
+            },
+        }
+    )
+    return meta
 
 
 def write_result(jobdir: str, business: JsonDict, meta: TaskmgrMeta) -> None:
@@ -353,6 +424,11 @@ def write_result(jobdir: str, business: JsonDict, meta: TaskmgrMeta) -> None:
     atomic_write_json(os.path.join(workdir, "result.json"), res)
 
 
+def _settled(job: Job) -> bool:
+    """Terminal, or queued again: nothing may finalize or interrupt the job's run."""
+    return job["state"] in TERMINAL_STATES or job["state"] == "queued"
+
+
 def finalize_run(
     store: Store,
     jobid: str,
@@ -360,20 +436,20 @@ def finalize_run(
     status: str | None = None,
     error: ErrorInfo | None = None,
     warnings: Iterable[str] = (),
-    run_status: str | None = None,
-    job_extra: Mapping[str, JsonValue] | None = None,
 ) -> Job:
     """Finish a run whose process group is confirmed gone (Section 10.4 steps 3-5).
 
     status None derives the state from return code, signal and the result
-    (Section 11). Idempotent: a job that is already terminal (or queued) is left
-    untouched apart from repairing result.json.
+    (Section 11). Idempotent: a job that is already terminal is left untouched apart
+    from repairing result.json; a queued job (sent back by a "GPU busy" exit) is left
+    untouched. The state is checked before anything is written.
     """
-    jobdir, job = store.load_job(jobid)
+    with store.state_lock():
+        jobdir, job = store.load_job(jobid)
+    if job["state"] == "queued":
+        return job
     raw_runner, _ = store.read_runner(jobdir)
     runner: Runner = raw_runner or {"jobid": jobid}
-    task = load_task(jobdir)
-    warns = list(runner.get("warnings", [])) + list(warnings)
     tm: object = runner.get("taskmgr")
     if runner.get("final") and isinstance(tm, dict):
         meta = tm
@@ -381,7 +457,11 @@ def finalize_run(
             business, _, _ = read_task_result(os.path.join(jobdir, "workdir"), own=jobid)
             write_result(jobdir, business, meta)
         status = meta["status"]
+    elif _settled(job):
+        return job
     else:
+        task = load_task(jobdir)
+        warns = list(runner.get("warnings", [])) + list(warnings)
         business, verrs, w2 = read_task_result(os.path.join(jobdir, "workdir"), own=jobid)
         warns += w2
         verrs = verrs or validate_outputs(business, task)
@@ -404,12 +484,12 @@ def finalize_run(
         # Persist the step 2-3 findings first so a crash here does not lose them.
         runner["warnings"] = warns
         store.write_runner(jobdir, runner)
-        meta = build_meta(job, runner, jobdir, status, verrs, error, warns)
+        meta = build_meta(store, job, runner, status, verrs, error, warns)
         write_result(jobdir, business, meta)
         runner.update(
             {
                 "final": True,
-                "status": run_status or status,
+                "status": status,
                 "taskmgr": meta,
                 "finalized_at": utcnow_iso(),
             }
@@ -417,14 +497,12 @@ def finalize_run(
         store.write_runner(jobdir, runner)
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
-        if job["state"] in TERMINAL_STATES or job["state"] == "queued":
+        if _settled(job):
             return job
         job["state"] = status
         job["error"] = meta.get("error")
         job["ended_at"] = runner.get("ended_at") or utcnow_iso()
         _ = job.pop("pending_reason", None)
-        if job_extra:
-            cast(dict[str, object], cast(object, job)).update(job_extra)
         _ = store.save_job(jobdir, job)
     return job
 
@@ -436,6 +514,22 @@ def result_complete(jobdir: str) -> bool:
     return meta is not None and meta.get("final") is True and "status" in meta
 
 
+def mark_run_interrupted(store: Store, jobdir: str, jobid: str, reason: str) -> Runner:
+    """Make the run record final with status "interrupted" (its processes are gone)."""
+    raw_runner, _ = store.read_runner(jobdir)
+    runner: Runner = raw_runner or {"jobid": jobid}
+    runner.update(
+        {
+            "final": True,
+            "status": "interrupted",
+            "interrupted_reason": reason,
+            "ended_at": runner.get("ended_at") or utcnow_iso(),
+        }
+    )
+    store.write_runner(jobdir, runner)
+    return runner
+
+
 def interrupt_run(store: Store, jobid: str, reason: str) -> Job:
     """Section 12.2 step 5: mark the run interrupted, then cancel / fail / re-run.
 
@@ -445,19 +539,9 @@ def interrupt_run(store: Store, jobid: str, reason: str) -> Job:
     """
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
-        if job["state"] in TERMINAL_STATES or job["state"] == "queued":
+        if _settled(job):
             return job
-        raw_runner, _ = store.read_runner(jobdir)
-        runner: Runner = raw_runner or {"jobid": jobid}
-        runner.update(
-            {
-                "final": True,
-                "status": "interrupted",
-                "interrupted_reason": reason,
-                "ended_at": runner.get("ended_at") or utcnow_iso(),
-            }
-        )
-        store.write_runner(jobdir, runner)
+        runner = mark_run_interrupted(store, jobdir, jobid, reason)
         maxr = int(store.config.get("max_auto_restarts", 2))
         restarts = job.get("auto_restarts", 0)
         if job.get("cancel_requested"):
@@ -494,57 +578,147 @@ def interrupt_run(store: Store, jobid: str, reason: str) -> Job:
         return job
 
 
-def clone_job(store: Store, old_jobdir: str, old: Job, *, automatic: bool) -> Job:
-    """Create a new queued job that runs the same package again. Needs the state lock.
+def new_job_record(
+    jobid: str,
+    task_id: str,
+    enqueue_seq: int,
+    content_hash: str,
+    submission_key: str,
+    gpus: list[GpuDecl],
+    auto_restarts: int = 0,
+    retry_of: str | None = None,
+) -> Job:
+    """job.json of a job that has just been queued (a submission or a retry)."""
+    now = utcnow_iso()
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "jobid": jobid,
+        "task_id": task_id,
+        "state": "queued",
+        "submitted_at": now,
+        "updated_at": now,
+        "enqueue_seq": enqueue_seq,
+        "content_hash": content_hash,
+        "submission_key": submission_key,
+        "gpus": gpus,
+        "cancel_requested": False,
+        "auto_restarts": auto_restarts,
+        "dispatched_at": None,
+        "retry_of": retry_of,
+        "retried_as": [],
+        "stop_reason": None,
+        "error": None,
+    }
 
-    `task retry` (automatic=False) puts the new job at the back of the queue; an
-    automatic re-run after an interruption keeps the original queue position and counts
-    the restart. The new job is built under incoming/ and renamed into queue/, like a
-    submission; then the old job records the new jobid in `retried_as` and is saved.
-    """
-    store.ensure_layout()
-    jobid = store.new_jobid()  # asserts the state lock
-    updir = store.path("incoming", "retry-%s" % jobid)
+
+# ---------------------------------------------------------------------------
+# Staging: a new job directory is built under incoming/, then renamed into queue/
+
+
+@contextlib.contextmanager
+def staging_dir(store: Store, prefix: str) -> Generator[str, None, None]:
+    """A new directory incoming/<prefix>-<random>, flocked while in use (which keeps the
+    daemon's clean_incoming away) and removed on exit unless it was enqueued."""
+    updir = store.path("incoming", "%s-%s" % (prefix, secrets.token_hex(6)))
     os.mkdir(updir)
     lock_fd = os.open(updir, os.O_RDONLY)
-    fcntl.flock(lock_fd, fcntl.LOCK_EX)  # keeps clean_incoming away while copying
     try:
-        _ = shutil.copy2(
-            os.path.join(old_jobdir, "package.tar.gz"), os.path.join(updir, "package.tar.gz")
-        )
-        _ = shutil.copytree(
-            os.path.join(old_jobdir, "package"), os.path.join(updir, "package"), symlinks=True
-        )
-        make_read_only(os.path.join(updir, "package"))
-        os.sync()  # package/ is the source of the run: durable before the job is visible
-        now = utcnow_iso()
-        job: Job = {
-            "schema_version": SCHEMA_VERSION,
-            "jobid": jobid,
-            "task_id": old["task_id"],
-            "state": "queued",
-            "submitted_at": now,
-            "updated_at": now,
-            "enqueue_seq": old["enqueue_seq"] if automatic else store.next_seq(),
-            "content_hash": old["content_hash"],
-            "submission_key": old["submission_key"],
-            "gpus": old["gpus"],
-            "cancel_requested": False,
-            "auto_restarts": old.get("auto_restarts", 0) + 1 if automatic else 0,
-            "dispatched_at": None,
-            "retry_of": old["jobid"],
-            "retried_as": [],
-            "stop_reason": None,
-            "error": None,
-        }
-        atomic_write_json(os.path.join(updir, "job.json"), job)
-        os.rename(updir, store.path("queue", jobid))
-        fsync_dir(store.path("incoming"))
-        fsync_dir(store.path("queue"))
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield updir
     finally:
         os.close(lock_fd)
         if os.path.exists(updir):
             remove_tree(updir)
+
+
+def sync_tree(root: str) -> None:
+    """fsync every regular file and directory under root (root included)."""
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for f in filenames:
+            p = os.path.join(dirpath, f)
+            if os.path.islink(p):
+                continue
+            fd = os.open(p, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        fsync_dir(dirpath)
+
+
+def _link_or_copy(src: str, dst: str) -> None:
+    try:
+        os.link(src, dst)
+    except OSError:
+        _ = shutil.copy2(src, dst)
+
+
+def link_tree(src: str, dst: str) -> None:
+    """Recreate src at the new path dst: directories (same modes) and symlinks are
+    created, regular files hard-linked (copied where linking fails). Only for content
+    that is never modified, such as a job's package: a link shares the file."""
+    made: list[tuple[str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(src):
+        rel = os.path.relpath(dirpath, src)
+        target = dst if rel == "." else os.path.join(dst, rel)
+        os.mkdir(target, 0o700)
+        made.append((dirpath, target))
+        for name in dirnames + filenames:
+            s, t = os.path.join(dirpath, name), os.path.join(target, name)
+            if os.path.islink(s):
+                os.symlink(os.readlink(s), t)
+            elif name in filenames:
+                _link_or_copy(s, t)
+    for s, t in reversed(made):
+        os.chmod(t, stat.S_IMODE(os.lstat(s).st_mode))
+
+
+def stage_package(src_jobdir: str, updir: str) -> None:
+    """Put the package of an existing job into a staging directory, durably."""
+    _link_or_copy(os.path.join(src_jobdir, "package.tar.gz"), os.path.join(updir, "package.tar.gz"))
+    pkg = os.path.join(updir, "package")
+    link_tree(os.path.join(src_jobdir, "package"), pkg)
+    make_read_only(pkg)
+    sync_tree(updir)  # package/ is the source of the run: durable before the job is visible
+
+
+def enqueue_staged(store: Store, updir: str, job: Job) -> None:
+    """Write job.json into a staging directory and rename it into queue/. Needs the lock."""
+    atomic_write_json(os.path.join(updir, "job.json"), job)
+    os.rename(updir, store.path("queue", job["jobid"]))
+    fsync_dir(store.path("incoming"))
+    fsync_dir(store.path("queue"))
+
+
+def clone_job(
+    store: Store, old_jobdir: str, old: Job, *, automatic: bool, staged: str | None = None
+) -> Job:
+    """Create a new queued job that runs the same package again. Needs the state lock.
+
+    `task retry` (automatic=False) puts the new job at the back of the queue; an
+    automatic re-run after an interruption keeps the original queue position and counts
+    the restart. The new job is built in a staging directory and renamed into queue/,
+    like a submission; then the old job records the new jobid in `retried_as` and is
+    saved. `staged` is a directory `stage_package` filled before the lock was taken;
+    without one the package is staged here (hard links, so cheap under the lock).
+    """
+    if staged is None:
+        store.ensure_layout()
+        with staging_dir(store, "retry") as updir:
+            stage_package(old_jobdir, updir)
+            return clone_job(store, old_jobdir, old, automatic=automatic, staged=updir)
+    jobid = store.new_jobid()  # asserts the state lock
+    job = new_job_record(
+        jobid,
+        old["task_id"],
+        old["enqueue_seq"] if automatic else store.next_seq(),
+        old["content_hash"],
+        old["submission_key"],
+        old["gpus"],
+        auto_restarts=old.get("auto_restarts", 0) + 1 if automatic else 0,
+        retry_of=old["jobid"],
+    )
+    enqueue_staged(store, staged, job)
     old["retried_as"] = old.get("retried_as", []) + [jobid]
     _ = store.save_job(old_jobdir, old)
     return job
@@ -564,9 +738,9 @@ def end_without_result(
     that never ran (runner None) has no run files and gets none.
     """
     if runner is not None:
-        business, _, w = read_task_result(os.path.join(jobdir, "workdir"))
+        business, _, w = read_task_result(os.path.join(jobdir, "workdir"), own=job["jobid"])
         meta = build_meta(
-            job, runner, jobdir, state, [], error, list(runner.get("warnings", [])) + w
+            store, job, runner, state, [], error, list(runner.get("warnings", [])) + w
         )
         write_result(jobdir, business, meta)
         if not runner.get("taskmgr"):
@@ -589,12 +763,15 @@ def make_read_only(root: str) -> None:
 
 
 def remove_tree(path: str) -> None:
-    """rmtree that also handles read-only package copies."""
+    """rmtree that also handles read-only package copies. Only directories are made
+    writable: a package file may be a hard link shared with another job's package."""
+    for dirpath, _dirnames, _filenames in os.walk(path):
+        with contextlib.suppress(OSError):
+            os.chmod(dirpath, 0o700)
 
     def onerror(func: Callable[[str], object], p: str, _exc: object) -> None:
         try:
             os.chmod(os.path.dirname(p), 0o700)
-            os.chmod(p, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
             _ = func(p)
         except OSError:
             pass

@@ -31,12 +31,13 @@ from .common import (
     code_is_zipapp,
     copy_package_tree,
     flocked,
+    override,
     read_code_file,
     read_json,
     utcnow_iso,
 )
 from .pyz import code_version as local_code_version
-from .records import JsonDict, JsonValue, Problem, Server, TaskSpec, override
+from .records import JsonDict, JsonValue, Problem, Server, TaskSpec
 from .textout import (
     BOLD,
     CYAN,

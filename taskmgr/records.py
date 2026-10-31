@@ -5,18 +5,10 @@ class plus a `total=False` subclass. Values parsed from JSON are `JsonValue` unt
 are checked or cast to one of the records below.
 """
 
-from typing import TYPE_CHECKING, TypeAlias, TypedDict
+from typing import TypeAlias, TypedDict
 
 JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 JsonDict: TypeAlias = dict[str, JsonValue]
-
-if TYPE_CHECKING:
-    from typing_extensions import override
-else:  # runtime stays stdlib-only; typing.override only exists from Python 3.12
-
-    def override(func):
-        return func
-
 
 __all__ = [
     "ErrorInfo",
@@ -39,7 +31,6 @@ __all__ = [
     "TaskmgrMeta",
     "TakeoverNote",
     "UnknownNote",
-    "override",
 ]
 
 

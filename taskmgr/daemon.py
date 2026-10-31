@@ -119,7 +119,7 @@ class Daemon:
         st = self.store
         cfg = st.config
         with st.state_lock():
-            jobs = list(st.iter_jobs())
+            jobs = list(st.iter_jobs(active=True))
             held: dict[str, str] = {}  # uuid -> state of the holder
             cpu_active = 0
             for _, job in jobs:
@@ -285,7 +285,7 @@ class Daemon:
     def health_check(self) -> None:
         """Detect dead shims while running; same rules as startup recovery."""
         with self.store.state_lock():
-            for _, job in list(self.store.iter_jobs()):
+            for _, job in list(self.store.iter_jobs(active=True)):
                 if job["state"] in ("running", "stopping") and job["jobid"] not in self.takeovers:
                     self.check_run(job["jobid"])
 

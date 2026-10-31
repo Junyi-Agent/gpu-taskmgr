@@ -11,11 +11,19 @@ import shutil
 import tempfile
 import zipfile
 from collections.abc import Generator, Sequence
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from .records import JsonDict as JsonDict
 from .records import JsonValue as JsonValue
 from .records import RemoteConfig
+
+if TYPE_CHECKING:
+    from typing_extensions import override as override
+else:  # runtime stays stdlib-only; typing.override only exists from Python 3.12
+
+    def override(func):
+        return func
+
 
 PROTOCOL_VERSION = 2
 

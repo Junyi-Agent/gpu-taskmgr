@@ -24,9 +24,29 @@ class HostError(TypedDict):
 # ssh gives up connecting after this many seconds (a machine entry's own
 # `-o ConnectTimeout=N` wins).
 CONNECT_TIMEOUT = 10
-# A query to every server (jobs, the jobid lookup, whoami, version) waits at most this long
-# for each server; TASKMGR_QUERY_TIMEOUT overrides it.
+# ssh drops a connection whose server stopped answering after about
+# SERVER_ALIVE_INTERVAL * SERVER_ALIVE_COUNT_MAX seconds (a machine entry's own
+# `-o ServerAliveInterval=N` / `-o ServerAliveCountMax=N` wins).
+SERVER_ALIVE_INTERVAL = 15
+SERVER_ALIVE_COUNT_MAX = 3
+# A JSON subcommand without an upload (jobs, status, cancel, retry, resolve, version...)
+# waits at most this long for each server; TASKMGR_QUERY_TIMEOUT overrides it.
 QUERY_TIMEOUT = 30.0
+# stderr lines by which ssh (not the remote command) reports a failed connection.
+SSH_FAILURE_MARKERS = (
+    "ssh:",
+    "connection closed by",
+    "connection reset by",
+    "connection refused",
+    "connection timed out",
+    "could not resolve hostname",
+    "host key verification failed",
+    "permission denied (",
+    "kex_exchange_identification",
+    "timeout, server",
+    "client_loop:",
+    "broken pipe",
+)
 
 
 def query_timeout() -> float:
@@ -42,9 +62,27 @@ def ssh_error(stderr: str) -> str:
     return err if err.startswith("ssh: ") else "ssh: " + err
 
 
+def looks_like_ssh_failure(stderr: str) -> bool:
+    low = stderr.lower()
+    return any(m in low for m in SSH_FAILURE_MARKERS)
+
+
 class ConnError(TaskmgrError):
+    """The server could not be reached, or did not answer in time: the outcome of the
+    command is unknown."""
+
+    def __init__(
+        self, message: str, host: str | None = None, code: str = "connection_error"
+    ) -> None:
+        super().__init__(code, message, 2, host)
+
+
+class NoReplyError(ConnError):
+    """The server was reached but the remote command gave no JSON reply (it crashed):
+    as with a lost connection, whether it did its work is unknown."""
+
     def __init__(self, message: str, host: str | None = None) -> None:
-        super().__init__("connection_error", message, 2, host)
+        super().__init__(message, host, "remote_error")
 
 
 def json_obj(v: JsonValue) -> JsonDict:
@@ -60,7 +98,10 @@ def json_str(v: JsonValue, default: str) -> str:
 
 def remote_error(reply: JsonDict, host: str, with_details: bool) -> TaskmgrError:
     """Turn a remote {"error": {...}} reply into a TaskmgrError."""
-    e = json_obj(reply["error"])
+    raw = reply["error"]
+    if not isinstance(raw, dict):
+        return TaskmgrError("remote_error", "malformed error reply: %r" % (raw,), 2, host)
+    e = raw
     details = e.get("details") if with_details else None
     return TaskmgrError(
         json_str(e.get("code", "remote_error"), "remote_error"),
@@ -77,6 +118,8 @@ def load_machines(home: str) -> list[Server]:
         data = read_json(path)
     except ValueError as e:
         raise TaskmgrError("bad_machines", "%s is not valid JSON: %s" % (path, e)) from e
+    except OSError as e:
+        raise TaskmgrError("bad_machines", "cannot read %s: %s" % (path, e)) from e
     if data is None:
         raise TaskmgrError(
             "no_machines",
@@ -88,7 +131,7 @@ def load_machines(home: str) -> list[Server]:
     names: set[object] = set()
     for entry in servers:
         s = entry if isinstance(entry, dict) else None
-        if s is None or not s.get("name") or s["name"] in names:
+        if s is None or not isinstance(s.get("name"), str) or not s["name"] or s["name"] in names:
             raise TaskmgrError("bad_machines", "every server needs a unique name: %r" % (entry,))
         names.add(s["name"])
         if s.get("transport", "ssh") not in ("ssh", "local"):
@@ -133,8 +176,13 @@ class Remote:
             cmd += ["-i", os.path.expanduser(identity_file)]
         options = list(ssh.get("options") or [])
         cmd += options
-        if not any("connecttimeout" in o.lower() for o in options):
-            cmd += ["-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT]
+        for name, value in (
+            ("ConnectTimeout", CONNECT_TIMEOUT),
+            ("ServerAliveInterval", SERVER_ALIVE_INTERVAL),
+            ("ServerAliveCountMax", SERVER_ALIVE_COUNT_MAX),
+        ):
+            if not any(name.lower() in o.lower() for o in options):
+                cmd += ["-o", "%s=%d" % (name, value)]
         host = ssh.get("host") or self.name
         user = ssh.get("user")
         cmd += ["%s@%s" % (user, host) if user else host]
@@ -177,7 +225,9 @@ class Remote:
     ) -> tuple[int, str, str]:
         """Run a shell script on the server: (exit code, stdout, stderr).
 
-        Raises ConnError when the server cannot be reached (ssh exit 255) or on timeout.
+        Raises ConnError when the server cannot be reached or on timeout. Exit code 255
+        is ssh's for a failed connection, but a script may exit 255 too: it counts as a
+        connection failure only when stderr reads like ssh's.
         """
         self._inject()
         try:
@@ -194,7 +244,7 @@ class Remote:
             raise ConnError("cannot run transport: %s" % e, self.name) from e
         out = p.stdout.decode(errors="replace")
         err = p.stderr.decode(errors="replace")
-        if self._is_conn_failure(p.returncode):
+        if self._is_conn_failure(p.returncode) and looks_like_ssh_failure(err):
             raise ConnError(ssh_error(err), self.name)
         return p.returncode, out, err
 
@@ -207,8 +257,13 @@ class Remote:
         stdin_path: str | None = None,
         timeout: float | None = None,
     ) -> JsonDict:
-        """Run a JSON subcommand and return its object; raise TaskmgrError/ConnError."""
+        """Run a JSON subcommand and return its object; raise TaskmgrError/ConnError.
+
+        timeout None: no limit for an upload (stdin_path), else query_timeout().
+        """
         self._inject()
+        if timeout is None and stdin_path is None:
+            timeout = query_timeout()
         upload = open(stdin_path, "rb") if stdin_path else None
         try:
             p = subprocess.run(
@@ -237,7 +292,7 @@ class Remote:
                     pass
                 break
         if not isinstance(obj, dict):
-            raise ConnError(
+            raise NoReplyError(
                 "no valid JSON from remote (exit %d): %s" % (p.returncode, err[-2000:]), self.name
             )
         reply = obj

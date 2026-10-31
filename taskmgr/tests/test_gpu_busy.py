@@ -13,7 +13,8 @@ from types import ModuleType
 from typing import cast
 from unittest import mock
 
-from taskmgr.records import JsonDict, JsonValue, override
+from taskmgr.common import override
+from taskmgr.records import JsonDict, JsonValue
 from taskmgr.tests.helpers import GPUS, OK_RESULT, REPO, Env, kill_quiet, pid_alive
 
 TEMPLATE = os.path.join(REPO, "taskmgr", "template")

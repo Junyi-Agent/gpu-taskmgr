@@ -7,12 +7,10 @@ Every subcommand except `logs`, `fetch`, `serve` and `shim` prints one JSON obje
 """
 
 import argparse
-import fcntl
 import getpass
 import json
 import os
 import secrets
-import shutil
 import socket
 import sys
 import tarfile
@@ -32,11 +30,9 @@ from .common import (
     TERMINAL_STATES,
     TaskmgrError,
     atomic_write_json,
-    fsync_dir,
     read_code_file,
     read_json,
     try_read_json,
-    utcnow_iso,
 )
 from .gpu import resolve_declarations
 from .monitor import assess, identity_of
@@ -45,10 +41,17 @@ from .store import (
     Store,
     clone_job,
     end_without_result,
+    enqueue_staged,
     has_run,
     job_summary,
     make_read_only,
+    mark_run_interrupted,
+    meta_block,
+    new_job_record,
     remove_tree,
+    stage_package,
+    staging_dir,
+    sync_tree,
 )
 
 
@@ -95,18 +98,11 @@ def cmd_receive(store: Store, args: Args) -> int:
         raise TaskmgrError(
             "bad_submission_key", "submission key must match ^[A-Za-z0-9._-]{1,128}$"
         )
-    updir = store.path(
-        "incoming", "up-%s-%s" % (time.strftime("%Y%m%d%H%M%S"), secrets.token_hex(6))
-    )
-    os.mkdir(updir)
-    lock_fd = os.open(updir, os.O_RDONLY)
-    fcntl.flock(lock_fd, fcntl.LOCK_EX)  # held for the whole upload and reception
-    try:
+    # Flocked for the whole upload and reception.
+    with staging_dir(store, "up-%s" % time.strftime("%Y%m%d%H%M%S")) as updir:
         tar_path = os.path.join(updir, "package.tar.gz")
         with open(tar_path, "wb") as f:
-            shutil.copyfileobj(sys.stdin.buffer, f, 1 << 20)
-            f.flush()
-            os.fsync(f.fileno())
+            receive_upload(sys.stdin.buffer, f, store.config.get("max_package_bytes"))
         if os.environ.get("TASKMGR_TEST_RECEIVE_PAUSE"):  # test-only: hold the upload open
             time.sleep(float(os.environ["TASKMGR_TEST_RECEIVE_PAUSE"]))
         ext = os.path.join(updir, "extract")
@@ -133,42 +129,24 @@ def cmd_receive(store: Store, args: Args) -> int:
         if os.path.exists(ext):
             remove_tree(ext)
         make_read_only(pkg)
-        os.sync()  # package/ is the source of the run: durable before the ACK
+        sync_tree(updir)  # package/ is the source of the run: durable before the ACK
         with store.state_lock():
             ack = _dedup_ack(store, key, chash)
             if ack:
                 return emit(ack)
-            kpath = store.path("submission-keys", key + ".json")
             jobid = store.new_jobid()
-            now = utcnow_iso()
-            job: Job = {
-                "schema_version": SCHEMA_VERSION,
-                "jobid": jobid,
-                "task_id": task["task_id"],
-                "state": "queued",
-                "submitted_at": now,
-                "updated_at": now,
-                "enqueue_seq": store.next_seq(),
-                "content_hash": chash,
-                "submission_key": key,
-                "gpus": gpus,
-                "cancel_requested": False,
-                "auto_restarts": 0,
-                "dispatched_at": None,
-                "retry_of": None,
-                "retried_as": [],
-                "stop_reason": None,
-                "error": None,
-            }
-            atomic_write_json(os.path.join(updir, "job.json"), job)
+            job = new_job_record(jobid, task["task_id"], store.next_seq(), chash, key, gpus)
             # The key mapping is written first; a mapping whose job does not exist is stale.
             atomic_write_json(
-                kpath,
-                {"submission_key": key, "jobid": jobid, "content_hash": chash, "created_at": now},
+                store.path("submission-keys", key + ".json"),
+                {
+                    "submission_key": key,
+                    "jobid": jobid,
+                    "content_hash": chash,
+                    "created_at": job["submitted_at"],
+                },
             )
-            os.rename(updir, store.path("queue", jobid))
-            fsync_dir(store.path("incoming"))
-            fsync_dir(store.path("queue"))
+            enqueue_staged(store, updir, job)
         return emit(
             {
                 "ok": True,
@@ -180,10 +158,28 @@ def cmd_receive(store: Store, args: Args) -> int:
                 "state": "queued",
             }
         )
-    finally:
-        os.close(lock_fd)
-        if os.path.exists(updir):
-            remove_tree(updir)
+
+
+def receive_upload(src: IO[bytes], dst: IO[bytes], max_bytes: int | None) -> None:
+    """Copy the uploaded archive to dst (then fsync it), refusing one that is clearly
+    too large before it fills the disk. The limit applies to the extracted size, so a
+    compressed archive of incompressible files may be a little larger: allow 1/16 more
+    plus 1 MiB of tar and gzip overhead; safe_extract enforces the exact limit."""
+    cap = None if max_bytes is None else max_bytes + max_bytes // 16 + (1 << 20)
+    total = 0
+    while True:
+        chunk = src.read(1 << 20)
+        if not chunk:
+            break
+        total += len(chunk)
+        if cap is not None and total > cap:
+            raise TaskmgrError(
+                "package_too_large",
+                "upload exceeds %d bytes (max_package_bytes %d)" % (cap, max_bytes or 0),
+            )
+        _ = dst.write(chunk)
+    dst.flush()
+    os.fsync(dst.fileno())
 
 
 def _dedup_ack(store: Store, key: str, chash: str) -> dict[str, object] | None:
@@ -228,34 +224,17 @@ def cmd_jobs(store: Store, args: Args) -> int:
 
 
 def synthesized_result(job: Job) -> dict[str, object]:
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "_taskmgr": {
-            "jobid": job["jobid"],
-            "task_id": job.get("task_id"),
-            "retry_of": job.get("retry_of"),
-            "status": job["state"],
-            "return_code": None,
-            "signal": None,
-            "error": job.get("error"),
-            "gpus": job.get("gpus", []),
-            "validation_errors": [],
-            "warnings": [],
-            "note": "the job ended without running",
-            "final": True,
-        },
-    }
+    meta = meta_block(job, job["state"], job.get("error"))
+    meta["note"] = "the job ended without running"
+    return {"schema_version": SCHEMA_VERSION, "_taskmgr": meta}
 
 
 def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, object]:
-    jd = store.find_job_dir(jobid)
-    if jd is None:
-        return {"found": False, "jobid": jobid}
     try:
-        jd, job = store.load_job(jobid)
-    except TaskmgrError:
-        if _retry:  # the directory moved between lookup and read
-            return job_status(store, jobid, False)
+        jd, job = store.load_job(jobid)  # also follows a directory that moves meanwhile
+    except TaskmgrError as e:
+        if e.code == "not_found":
+            return {"found": False, "jobid": jobid}
         raise
     terminal = job["state"] in TERMINAL_STATES
     ran = has_run(job)
@@ -332,18 +311,26 @@ def cmd_cancel(store: Store, args: Args) -> int:
 
 
 def cmd_retry(store: Store, args: Args) -> int:
-    with store.state_lock():
-        jd, job = store.load_job(args.jobid)
-        if job["state"] == "unknown":
-            raise TaskmgrError(
-                "resolve_required", "job %s is unknown; run `task resolve` first" % args.jobid
-            )
-        if job["state"] not in TERMINAL_STATES:
-            raise TaskmgrError(
-                "not_terminal",
-                "job %s is %s; only terminal jobs can be retried" % (args.jobid, job["state"]),
-            )
-        new = clone_job(store, jd, job, automatic=False)
+    # The package never changes: stage its copy before taking the state lock.
+    with staging_dir(store, "retry") as updir:
+        jd, _ = store.load_job(args.jobid)
+        try:
+            stage_package(jd, updir)
+            staged: str | None = updir
+        except OSError:  # the job directory moved (the job was still running)
+            staged = None
+        with store.state_lock():
+            jd, job = store.load_job(args.jobid)
+            if job["state"] == "unknown":
+                raise TaskmgrError(
+                    "resolve_required", "job %s is unknown; run `task resolve` first" % args.jobid
+                )
+            if job["state"] not in TERMINAL_STATES:
+                raise TaskmgrError(
+                    "not_terminal",
+                    "job %s is %s; only terminal jobs can be retried" % (args.jobid, job["state"]),
+                )
+            new = clone_job(store, jd, job, automatic=False, staged=staged)
     return emit(
         {
             "jobid": new["jobid"],
@@ -369,17 +356,7 @@ def cmd_resolve(store: Store, args: Args) -> int:
                 )
             runner: Runner | None = None
             if has_run(job):
-                runner, _ = store.read_runner(jd)
-                runner = runner if runner is not None else {"jobid": job["jobid"]}
-                runner.update(
-                    {
-                        "final": True,
-                        "status": "interrupted",
-                        "interrupted_reason": "operator_marked_stopped",
-                        "ended_at": runner.get("ended_at") or utcnow_iso(),
-                    }
-                )
-                store.write_runner(jd, runner)
+                runner = mark_run_interrupted(store, jd, job["jobid"], "operator_marked_stopped")
             if job.get("cancel_requested"):
                 _ = end_without_result(store, jd, job, "cancelled", None, runner)
             else:

@@ -6,7 +6,7 @@ import sys
 import zipfile
 
 from taskmgr import pyz
-from taskmgr.records import override
+from taskmgr.common import override
 from taskmgr.tests.helpers import REPO, TASK, Env
 
 
