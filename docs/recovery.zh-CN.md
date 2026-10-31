@@ -37,10 +37,20 @@ up: "[[taskmgr/README.zh-CN]]"
    6. 无法判断（`/proc` 不可读、记录损坏或不完整）→ `unknown`。
 5. 重跑：`runner.json` 标记为 `interrupted`；若 `cancel_requested` → cancelled；
    `auto_restarts` 已达 `max_auto_restarts` → `failed` / `too_many_interruptions`；否则作业以
-   `failed` 结束，`error.kind = "interrupted"`，并用它的包的副本新建一个作业（自动重试）：新作业
+   `failed` 结束，`error.kind = "interrupted"`，并用它的包新建一个作业（硬链接到同一批文件；自动重试）：新作业
    保留原 `enqueue_seq`，`auto_restarts` 加 1，`retry_of` 指向被中断的作业，被中断作业的
    `retried_as` 记下新 jobid。这一步中途崩溃时，会复用已经创建的重跑作业，不会再建第二个。
    `task status --wait` 会跟随这个重跑作业。
+
+有两种错误不走上面的规则：
+
+- `shim_error`：shim 在启动入口命令之前出错（抛出异常）。shim 自己把作业以 `failed` 结束（已请求
+  取消时为 `cancelled`）。这不算中断：不创建重跑作业，`auto_restarts` 不变。如果入口命令可能已经
+  启动，shim 把作业留给上面的检查处理。
+- `recovery_error`：守护进程对单个作业的处理（启动恢复、定期健康检查、接管的一次推进）出错时，记录
+  日志，其他作业照常处理。同一作业连续出错 3 次后，守护进程不再跟踪它，把它标记为 `unknown`，
+  `error.kind = "recovery_error"`；它继续占用 GPU，直到被处理（见下文）。连标记为 unknown 都失败的
+  作业，在守护进程重启前一直跳过。
 
 ## 手动处理 `unknown`
 

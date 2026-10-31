@@ -27,8 +27,12 @@ up: "[[taskmgr/README.zh-CN]]"
    `{"schema_version", "_taskmgr": {...}}`。
 7. `--wait --timeout` 超时后输出当前状态对象，并附带 `error`（`wait_timeout`），退出码 2。
    Ctrl-C 输出 `interrupted` 错误，退出码 2。
-8. 协议兼容指 `protocol_version` 整数相等（当前为 2；1 是基于 attempt 的旧协议）。ssh 退出码
-   255 视为连接失败；ssh 以 `BatchMode=yes` 运行。
+8. 协议兼容指 `protocol_version` 整数相等（当前为 2；1 是基于 attempt 的旧协议）。对
+   `taskmgr-remote` 子命令，ssh 退出码 255 视为连接失败。`task host add` 运行的 shell 脚本自己也
+   可能以 255 退出，所以只有 stderr 看起来像 ssh 的错误（`ssh:`、`connection refused`、
+   `permission denied (` 等）时，255 才算连接失败。ssh 以 `BatchMode=yes` 运行；机器条目没有设置时，
+   还会加上 `ConnectTimeout=10`、`ServerAliveInterval=15` 和 `ServerAliveCountMax=3`（服务器不再
+   响应约 45 秒后断开连接）。
 9. 入口退出后清理残留进程时，作业转为 `stopping`，`stop_reason: "leftover"`；停止得到确认后按
    真实退出码收尾，未得到确认则作业进入 `unknown`（与取消/超时相同）。
 10. `resolve` 时进程组仍有存活成员：如果 unknown 是因为检查无法判断（`/proc` 不可读、记录
@@ -74,5 +78,7 @@ up: "[[taskmgr/README.zh-CN]]"
 - 不支持断点续跑：自动重跑从原始任务包重新开始。
 - 不安装任何软件或环境；venv 和所需路径必须已存在于服务器上。`task host add` 只安装 taskmgr
   本身（代码、unit、`remote_root`）。
-- `task host add` 不对服务器加锁：不支持对同一台服务器同时执行两次。它以
+- 对同一服务器用户的两次 `task host add` 会串行化：从 `ssh` 步骤结束到整次运行结束，服务器上有
+  一个进程持有 `$XDG_RUNTIME_DIR/taskmgr-hostsetup-<uid>.lock`（没有 `XDG_RUNTIME_DIR` 时在
+  `/tmp/` 下），锁被占用时第二次运行失败。`task host add` 以
   `<remote_root>/taskmgr-remote.pyz` 内记录的代码版本为准。

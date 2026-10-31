@@ -41,11 +41,23 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
    6. undeterminable (`/proc` unreadable, record corrupt/incomplete) → `unknown`.
 5. Re-run: `runner.json` → `interrupted`; `cancel_requested` → cancelled;
    `auto_restarts` at `max_auto_restarts` → `failed` / `too_many_interruptions`; else the
-   job ends `failed` with `error.kind = "interrupted"` and a new job is created from copies
-   of its package (an automatic retry): it keeps the original `enqueue_seq`, has
+   job ends `failed` with `error.kind = "interrupted"` and a new job is created from its
+   package (hard links to the same files; an automatic retry): it keeps the original `enqueue_seq`, has
    `auto_restarts` + 1 and `retry_of` = the interrupted job, whose `retried_as` gets the new
    jobid. A crash in the middle of this step reuses the re-run job already created instead
    of creating a second one. `task status --wait` follows the re-run.
+
+Two errors end a job without these rules:
+
+- `shim_error`: the shim failed (an exception) before it started the entry. It ends the
+  job `failed` itself (`cancelled` if a cancel was requested). This is not an
+  interruption: no re-run is created and `auto_restarts` does not change. If the entry may
+  already have started, the shim leaves the job to the checks above.
+- `recovery_error`: an error in the daemon's per-job work (startup recovery, the
+  periodic health check, a takeover tick) is logged and the other jobs carry on. After 3
+  errors in a row for the same job the daemon stops tracking it and marks it `unknown`
+  with `error.kind = "recovery_error"`; it keeps its GPUs until resolved (below). A job
+  that cannot even be marked unknown is skipped until the daemon restarts.
 
 ## Resolving `unknown` manually
 

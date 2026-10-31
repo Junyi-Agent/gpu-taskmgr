@@ -18,8 +18,13 @@ User-facing details (commands, schemas, config defaults) are in [[taskmgr/README
 
 | Module | Role |
 | --- | --- |
-| `taskmgr/taskmgr.py` | local CLI entry (`task`) |
+| `taskmgr/taskmgr.py` | local CLI entry (`task`): the commands |
+| `taskmgr/cliparse.py` | the `task` command line: parsed arguments, command table, argparse with the `-h` layout |
+| `taskmgr/render.py` | text renderers of the `task` commands (the default output; `--detail` prints JSON) |
 | `taskmgr/hostsetup.py` | `task host add`: server setup and update over ssh, step by step (D18) |
+| `taskmgr/hostserver.py` | the parts of `task host add` that run on the server with its `python3` (probe, setup lock, pruning of old archives); read as text, not imported |
+| `taskmgr/hostlegacy.py` | step `old_code`: removal of code that older versions installed outside `remote_root` |
+| `taskmgr/prompt.py` | `[y/N]` confirmations for `task host add` and `task host remove` |
 | `taskmgr/transport.py` | machine list, `Remote` (ssh / test-only local transport, remote subcommands and shell scripts) |
 | `taskmgr/remote.py` | remote entry (`taskmgr-remote`): subcommands, `serve`, `shim` |
 | `taskmgr/daemon.py` | scheduler loop, shim spawn, startup recovery, dead-shim detection |
@@ -108,7 +113,9 @@ stopping → unknown, so the shim never goes running → unknown.
 - The upload takes a blocking flock on its own incoming directory.
 - `package/` files and directories are made read-only.
 - The local CLI treats ssh exit status 255 as a connection error and runs ssh with
-  `BatchMode=yes`. Ctrl-C during an upload is reported as an uncertain outcome, together
+  `BatchMode=yes`. For shell scripts (`task host add`), which may exit 255 themselves, 255
+  counts only when stderr reads like an ssh error. ssh also gets `ConnectTimeout=10`,
+  `ServerAliveInterval=15`, `ServerAliveCountMax=3` unless the machine entry sets them. Ctrl-C during an upload is reported as an uncertain outcome, together
   with the retry command.
 
 ## D9. Validation details (§2.4, §5.2)
@@ -353,7 +360,8 @@ remaining steps are `skipped`. Details: [[docs/install]].
 | `machines.json` is rewritten under `machines.lock` with `indent=2`, keeping the order of entries and keys; only the named entry changes | do not reorder or touch other entries |
 | `Remote` and the machine list moved from `taskmgr.py` to `transport.py`; `Remote` gained `ssh_argv`, `shell_argv`, `shell` | `hostsetup` and `taskmgr` both need them, and an import cycle is reported by the checker |
 
-Known limits: no lock against two concurrent `host add` runs for one server; files edited
+Known limits: (now: a per-user lock on the server serializes concurrent `host add` runs,
+and `--yes` refuses a `remote_root` switch that would leave data behind); files edited
 by hand on the server are not noticed while the installed version matches; the optional
 `task remove host` was not added.
 
@@ -367,4 +375,4 @@ User decisions 2026-10-31, superseding the code and path parts of D13 and D18:
 | `task host add` never builds the server code. It uploads a `taskmgr-remote.pyz` built by `python3 -m taskmgr.pyz -o dist` (default `dist/` of the checkout, or next to `task.pyz`; `--pyz FILE`), and fails the `code` step when the archive's code version differs from the running `task` | user: on a version mismatch the user rebuilds by hand; `host add` only uploads |
 | `--remote-root` is removed; `TASKMGR_REMOTE_ROOT` (read by `task host add` on the local machine) sets `remote_root`; without it an existing entry keeps its `remote_root` | user: an environment variable instead of the flag |
 | Everything on the server is in `remote_root`, default `~/.taskmgr-remote`: `config.json`, the job data, `versions/<version>.pyz`, the symlink `taskmgr-remote.pyz`, and `backups/<UTC time>/` for moved job directories | user: no separate `~/taskmgr-root` and `~/.taskmgr-remote` |
-| Data under `~/taskmgr-root` (older default) is not moved; a new entry gets a warning that names `TASKMGR_REMOTE_ROOT=~/taskmgr-root`. Step `old_code` also offers to delete the first zipapp layout (`~/taskmgr-remote.pyz`, `~/.taskmgr-remote/<version>.pyz` top-level files) | never move job data automatically |
+| Data under `~/taskmgr-root` (older default) is not moved; a new entry gets a warning that names `TASKMGR_REMOTE_ROOT=~/taskmgr-root` (now also a `[y/N]` question that `--yes` does not answer: with `--yes` the run fails, see [[docs/install]]). Step `old_code` also offers to delete the first zipapp layout (`~/taskmgr-remote.pyz`, `~/.taskmgr-remote/<version>.pyz` top-level files) | never move job data automatically |

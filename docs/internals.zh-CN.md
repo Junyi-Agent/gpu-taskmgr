@@ -35,11 +35,13 @@ up: "[[taskmgr/README.zh-CN]]"
   runner.prev-N.json  GPU 忙退出后作业重新排队时移到一边的运行记录
   shim.lock         shim 在整个生命周期内持有的 flock
   stdout.log  stderr.log  shim.log   重新启动时追加写入，不清空
-  workdir/          package/ 的全新副本（每次启动一份），加上 progress.json、result.json、artifacts/
+  workdir/          package/ 的副本（每个作业复制一次，GPU 忙后的重新启动继续使用），加上 progress.json、result.json、artifacts/
 ```
 
 一个作业最多运行一次。重试（`task retry`）或中断后的自动重跑都是一个新作业，有自己的 jobid 和
-目录：先在 `incoming/retry-<jobid>/` 下复制 `package.tar.gz` 和 `package/`，再重命名到 `queue/`。
+目录：在 `incoming/retry-<jobid>/` 下构建，再重命名到 `queue/`。它的 `package.tar.gz` 和
+`package/` 中的文件是旧作业对应文件的硬链接（无法链接时复制）；这些文件只读、从不修改，所以两个
+作业可以共用。删除作业目录时只把目录改为可写，不改共用的文件。
 
 `job.json`：
 
@@ -95,6 +97,8 @@ running --shim 在 GPU 忙退出和重新启动之间死亡--> queued（同一�
 queued --取消--> cancelled
 running --shim fork/exec 失败--> failed(shim_start_failed)
 running --启动前检查失败--> failed(setup)
+running --shim 在启动入口命令之前出错--> failed(shim_error)（已请求取消时为 cancelled）
+running/stopping --守护进程对该作业的恢复或接管连续失败 3 次--> unknown(recovery_error)
 running --发现取消请求 / 超时--> stopping --进程组已全部退出--> cancelled | timed_out
 stopping --SIGKILL 后仍有进程存活--> unknown
 running/stopping --重启恢复--> 见下文
@@ -130,8 +134,10 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
    解析且可执行，声明的 UUID 在 nvidia-smi 中可见）。检查失败 → `failed`，`error.kind=setup`，
    `return_code: null`。
 2. fork；子进程调用 `setsid()` 后阻塞在管道上。shim 写入身份记录（`boot_id`、shim 的 pid 和
-   启动时间、pgid、组长 pid 和启动时间、argv 哈希）并 fsync，然后放行子进程，子进程 exec 入口
-   命令。没有身份记录 ⇒ 入口命令从未执行。
+   启动时间、pgid、组长 pid 和启动时间、argv 哈希）并 fsync，然后放行子进程；子进程把所有被忽略
+   的信号恢复为默认处理、清空信号屏蔽字，再 exec 入口命令。没有身份记录 ⇒ 入口命令从未执行。shim
+   在这一步之前抛出异常时，作业以 `failed` 结束，`error.kind=shim_error`（已请求取消时为
+   `cancelled`）；这不算中断，不会重跑。入口命令可能已经启动之后的错误交给恢复流程处理。
 3. 轮询 `waitpid`，每隔 `control_poll_seconds` 重新读取 `job.json` 检查 `cancel_requested`，并
    执行 `timeout_seconds`（从本次启动开始计时）。
 4. 入口进程退出后：写入 `exited/return_code/signal/ended_at`；停止进程组中残留的进程（警告
@@ -141,7 +147,8 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
    `status: "waiting_gpu"`、`gpu_busy_retries` 加 1 和 `last_gpu_busy_at`（退出字段保留到下一次
    身份记录），设置 `job.json` 的 `pending_reason`（如果作业因清理残留进程处于
    `stopping`/`leftover`，改回 `running`），然后等待 `gpu_retry_interval_seconds`，期间每隔
-   `control_poll_seconds` 重新读取 `job.json`。等待期间收到取消请求时，作业 running → stopping →
+   `control_poll_seconds` 重新读取 `job.json`。入口进程从环境变量 `TASKMGR_GPU_BUSY_EXIT_CODE`
+   得知这个退出码（约定关闭时不设置）。等待期间收到取消请求时，作业 running → stopping →
    cancelled（此时没有进程在运行）。等待结束后保留 `workdir/` 原样（按 GPU 约定，GPU 忙的那次
    启动没有做任何工作；每次重试都重新复制包只会白白消耗 I/O），向
    `stdout.log` 和 `stderr.log` 追加一行 `--- taskmgr: relaunch #N after GPU busy ---`，再按第 2 步
@@ -154,3 +161,6 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 向进程组发送 SIGTERM → 等待 `stop_grace_seconds` → SIGKILL → 等待 `kill_confirm_seconds`。只有
 确认进程组中没有存活进程，才释放 GPU 并进入终态；否则作业变为 `unknown`，继续占用 GPU。进程组
 成员通过 `/proc` 判断：pgid 等于记录值，且启动时间不早于组长的启动时间；僵尸进程视为已退出。
+此外，`/proc/<pid>/environ` 中的 `TASKMGR_JOBID` 必须是本作业的：进程组全部退出后，它的 pgid
+可能被另一个作业新建的会话重新使用。读不到标记的进程（environ 不可读，或任务清空了环境变量）仍算
+成员，除非与 pgid 相同的那个 pid 现在属于记录的组长以外的进程；这时整个进程组都是新的。

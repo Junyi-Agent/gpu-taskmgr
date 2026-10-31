@@ -31,8 +31,13 @@ Other language: [[docs/assumptions.zh-CN]]
 7. `--wait --timeout` expiry prints the current status object plus an `error`
    (`wait_timeout`) and exits 2. Ctrl-C prints an `interrupted` error and exits 2.
 8. Protocol compatibility means equal integer `protocol_version` (currently 2; 1 was the
-   attempt-based protocol). ssh exit status 255 is treated as a connection failure; ssh runs
-   with `BatchMode=yes`.
+   attempt-based protocol). ssh exit status 255 is treated as a connection failure for
+   `taskmgr-remote` subcommands. For the shell scripts `task host add` runs, a script may
+   exit 255 itself, so 255 counts as a connection failure only when stderr reads like an
+   ssh error (`ssh:`, `connection refused`, `permission denied (`, ...). ssh runs with
+   `BatchMode=yes` and, unless the machine entry sets them, `ConnectTimeout=10`,
+   `ServerAliveInterval=15` and `ServerAliveCountMax=3` (a server that stops answering
+   drops the connection after about 45 s).
 9. Leftover cleanup after the entry exits moves the job to `stopping` with
    `stop_reason: "leftover"`; a confirmed stop finalizes from the real exit code, an
    unconfirmed one puts the job into `unknown` (same as cancel/timeout).
@@ -88,6 +93,8 @@ Other language: [[docs/assumptions.zh-CN]]
 - No checkpoint/resume: an automatic re-run starts from the original package.
 - No installation of software or environments; venvs and paths must exist on the server.
   `task host add` installs only taskmgr itself (code, unit, `remote_root`).
-- `task host add` does not lock the server: two runs for the same server at the same time
-  are not supported. It trusts the code version recorded inside `<remote_root>/taskmgr-remote.pyz`
+- Two `task host add` runs for the same server user are serialized: from the end of step
+  `ssh` to the end of the run a process on the server holds
+  `$XDG_RUNTIME_DIR/taskmgr-hostsetup-<uid>.lock` (`/tmp/...` without
+  `XDG_RUNTIME_DIR`), and a second run fails while it is held. `task host add` trusts the code version recorded inside `<remote_root>/taskmgr-remote.pyz`
   (an installed archive is never modified, see [[docs/install]]).

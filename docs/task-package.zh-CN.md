@@ -34,11 +34,12 @@ up: "[[taskmgr/README.zh-CN]]"
 
 - `task_id` 须匹配 `^[A-Z]{2}-[0-9]{2,4}$`。
 - `entry.argv[0]`：包含 `/` 时视为路径（相对路径指包内文件，相对作业的工作目录解析，必须
-  可执行）；否则视为命令名，在远程入口进程的 PATH 上查找。执行时不经过 shell；需要 shell 语法时
+  必须是包内的可执行文件）；否则视为命令名，在远程入口进程的 PATH 上查找。执行时不经过 shell；需要 shell 语法时
   使用 `["bash", "-c", "..."]`。
 - `gpus`：nvidia-smi 索引（PCI 总线顺序）或完整的 `GPU-...` UUID；`[]` 表示不用 GPU。MIG
   UUID 和重复项（包括索引和 UUID 指向同一块 GPU 的情况）会被拒绝。
-- `env` 不得设置 `CUDA_VISIBLE_DEVICES`、`CUDA_DEVICE_ORDER`、`VIRTUAL_ENV`、`TASKMGR_*`。
+- `env` 的变量名须匹配 `^[A-Za-z_][A-Za-z0-9_]*$`，值须为字符串。`env` 不得设置
+  `CUDA_VISIBLE_DEVICES`、`CUDA_DEVICE_ORDER`、`VIRTUAL_ENV`、`TASKMGR_*`。
 
 `progress.json`：`{"schema_version": 1, "stage": str, "updated_at": "UTC ISO 8601",
 "percent"?: 0..100, "message"?: str}`。只由任务写入。
@@ -61,10 +62,32 @@ up: "[[taskmgr/README.zh-CN]]"
 `result.json.corrupt`，并在 `validation_errors` 中报告；任务自己写的 `_taskmgr` 会被丢弃，并记录
 警告 `task_wrote_taskmgr`。
 
-`error.kind` 的取值：`setup`、`shim_start_failed`、`exit_code`、`signal`、`exit_code_lost`、
+`error.kind` 的取值：`setup`、`shim_start_failed`、`shim_error`（shim 在启动入口命令之前出错；
+作业以 `failed` 结束，不会重跑）、`exit_code`、`signal`、`exit_code_lost`、
 `interrupted`（运行被中断，已创建自动重跑作业）、
 `too_many_interruptions`、`operator_marked_stopped`、`stop_unconfirmed`（作业处于 unknown）、
-`record_incomplete` / `undeterminable`（恢复后处于 unknown）。
+`record_incomplete` / `undeterminable`（恢复后处于 unknown）、`recovery_error`（处于 unknown：
+守护进程对该作业的恢复或跟踪反复出错，见 [[docs/recovery.zh-CN]]）。
+
+## 打包与校验
+
+`task validate` 和 `task submit` 在本地检查任务包；上传后服务器会再检查一次。
+
+- 不打进归档、也不计入内容哈希的路径：任一路径分量名为 `__pycache__`、`.git` 或 `.DS_Store`，
+  以 `.pyc` 或 `.json.lock`（`taskmgr_task.py` 的锁文件）结尾，或以 `.tmp-` 开头（未完成的原子
+  写入）；另外，包根目录下以 `result.json` 开头的名字（本地试跑留下的 `result.json`、
+  `result.json.lock`）。
+- 大小：打包的普通文件总大小不得超过 `max_package_bytes`。本地检查用服务器默认值
+  （1073741824 字节），错误码 `package_too_large`。服务器解包时按它自己的 `max_package_bytes`
+  检查；上传数据超过上限加 1/16 再加 1 MiB 时，服务器直接停止接收。
+- 符号链接必须是相对路径，并且（包括经过其他链接后）解析到包内；特殊文件（FIFO、设备、socket）
+  会被拒绝。
+- 相对路径的 `entry.argv[0]` 必须指向包内一个不被排除在打包之外、带可执行位的普通文件（错误码
+  `entry`；用 `chmod +x` 修复，或通过解释器运行，例如 `["python", "run.py"]`）。
+- 解包归档时（服务器上，以及对 `.tar.gz` 运行 `task validate` 时）拒绝：绝对路径、`..`、重复条目
+  （不区分大小写比较）、硬链接、设备文件、FIFO，以及指向或解析到包外的符号链接。不会经由前面条目
+  创建的符号链接写文件，也不会覆盖已存在的文件。`task validate` 列出所有不安全的条目；服务器遇到
+  第一个就停止（`unsafe_package`）。
 
 ## 入口进程的环境
 
@@ -74,7 +97,8 @@ up: "[[taskmgr/README.zh-CN]]"
 3. `task.json` 中的 `env`。
 4. runner 设置：`CUDA_DEVICE_ORDER=PCI_BUS_ID`、`CUDA_VISIBLE_DEVICES=<按声明顺序的 UUID>`
    （`[]` 时为空字符串）、`TASKMGR_JOBID`、`TASKMGR_TASK_ID`、
-   `TASKMGR_WORKDIR`、`TASKMGR_PROGRESS_FILE`、`TASKMGR_RESULT_FILE`。
+   `TASKMGR_WORKDIR`、`TASKMGR_PROGRESS_FILE`、`TASKMGR_RESULT_FILE`，以及
+   `TASKMGR_GPU_BUSY_EXIT_CODE`（服务器的 `gpu_busy_exit_code`；为 `null` 时不设置）。
 
 stdin 接到 `/dev/null`；stdout/stderr 分别写入作业目录下的 `stdout.log` / `stderr.log`。
 
@@ -102,7 +126,8 @@ GPU 服务器运行在 Exclusive_Process 计算模式下，taskmgr 之外的进�
   `gpu_busy("GPU <i> (<uuid>) is held by another process ...")`；其他 CUDA 错误以及找不到
   `libcuda.so.1` 时抛出 `RuntimeError`（任务声明了 GPU，这属于环境问题）。应在耗时的 import 或编译
   之前调用。它的 `load` 参数用于在测试中替换库加载函数。
-- `taskmgr_task.gpu_busy(message="")` 把消息写到 stderr 并以 75 退出。你自己的 CUDA 代码遇到
-  "device busy/unavailable" 时调用它。
+- `taskmgr_task.gpu_busy(message="")` 把消息写到 stderr，并以 `taskmgr_task.gpu_busy_exit_code()`
+  退出：取 `TASKMGR_GPU_BUSY_EXIT_CODE` 的值；未设置或不是 1 到 255 的整数时用 75。你自己的 CUDA
+  代码遇到 "device busy/unavailable" 时调用它。
 - 如果 CUDA 工作在子进程中进行，不要在父进程里调用 `claim_gpu()`：在 exclusive-process 模式下，
   父进程的 context 会挡住子进程。让子进程退出 75，父进程再用 `gpu_busy()` 转发。

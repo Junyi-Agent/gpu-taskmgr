@@ -67,9 +67,10 @@ basedpyright 配置了 `pythonPlatform = "Linux"`，因为远程端用到 `/proc
   `object`。`pyproject.toml` 通过 `executionEnvironments` 的 `extraPaths` 让 `run.py` 旁边的
   `import taskmgr_task` 能被解析。
 - 只有在类型检查器无法用其他方式满足时才用 `# type: ignore` / `# pyright: ignore`，并写明规则名和
-  原因。目前的用处：`examples/multi-gpu/run.py` 中可选的 `torch` import，以及 `taskmgr.py` 遍历
+  原因。目前的用处：`examples/multi-gpu/run.py` 中可选的 `torch` import，以及 `cliparse.py` 遍历
   parser 打印帮助时用到的 `argparse._SubParsersAction` / `argparse._HelpAction`
-  （`reportPrivateUsage`）。
+  （`reportPrivateUsage`），还有 `hostsetup.py` 中的 `Remote._env`（持有 setup 锁的 ssh 进程需要与其他
+  远程调用相同的环境变量）。
 
 ## 测试
 

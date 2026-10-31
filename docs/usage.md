@@ -16,7 +16,7 @@ task validate AA-01/                   # exit 0 valid, 1 with all errors, 2 bad 
 task submit AA-01/                     # round-robin over enabled servers
 task submit --host nebius-h200-2 AA-01.tar.gz
 task submit --host nebius-h200-2 --submission-key tune-aa01-v3 AA-01/   # idempotent retry
-task jobs [--host H] [--state running]
+task jobs [--host H] [--state STATE]     # STATE: queued, running, stopping, unknown or a terminal state
 task status <jobid> [--host H]
 task status <jobid> [--host H] --wait [--poll-interval 5] [--retry-timeout 300] [--timeout S]
 task logs    <jobid> [--host H] [--stream stdout|stderr|shim] [--follow]
@@ -93,17 +93,25 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 - Rows are sorted by submission time (UTC). STATE has the same color in every command that
   shows it: queued and `pending (gpu busy)` yellow, running cyan, stopping magenta, unknown bold
   magenta, succeeded green, failed / invalid_result / timed_out red, cancelled gray.
-- Unreachable servers are reported on stderr (`warning: H unreachable, ...`); the exit code
-  rules are unchanged (0 if at least one server answered, 2 otherwise).
+- `--state` takes a job state only (`pending (gpu busy)` is a display, not a state; use
+  `--state running`); any other value is a usage error (exit 2).
+- Unreachable servers are reported on stderr (`warning: H unreachable, ...`), and so are
+  the disabled servers that were skipped; with `--detail` too. The exit code is 0 if at
+  least one server answered or the machine list is empty, 2 otherwise.
 - A server that is down does not hold the command up: ssh gives up connecting after 10 s
   (`ConnectTimeout=10`; an `-o ConnectTimeout=N` in the server's machine entry wins), and a
   query to every server (`jobs`, the jobid lookup, `whoami`, `version`) waits at most 30 s
-  for each server's answer (`TASKMGR_QUERY_TIMEOUT=<seconds>` changes it).
-- `--detail` prints the JSON object `{"complete", "errors", "jobs"}` instead.
+  for each server's answer (`TASKMGR_QUERY_TIMEOUT=<seconds>` changes it). The same limit
+  applies to every call to a single server (`status`, `cancel`, `retry`, `resolve`, each
+  poll of `status --wait`); uploads (`submit`), `logs` and `fetch` have no limit.
+- `--detail` prints the JSON object `{"complete", "errors", "skipped", "jobs"}` instead.
+  Each entry of `errors` has `host`, `error` and `code`: `connection_error` when the server
+  could not be reached or did not answer in time, `remote_error` when it was reached but
+  the remote command gave no JSON reply (it crashed).
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | success; `--wait`: job succeeded; `jobs`: at least one server answered |
+| 0 | success; `--wait`: job succeeded; `jobs`: at least one server answered, or no server is configured |
 | 1 | `--wait`: job ended failed / invalid_result / cancelled / timed_out; `validate`: invalid |
 | 2 | parameter, connection, query or operation error; `jobs` with every server failing |
 | 3 | `--wait` found the job in `unknown` |
@@ -111,8 +119,8 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 The JSON objects below are what `--detail` prints.
 
 Submit receipt: `{"host", "jobid", "task_id", "submission_key", "deduplicated",
-"content_hash", "state"}`. If the outcome is uncertain (connection failure or no valid
-reply), stderr names the chosen host and the submission key and prints the retry command
+"content_hash", "state"}`. If the outcome is uncertain (connection failure, or no valid
+reply: error code `remote_error`), stderr names the chosen host and the submission key and prints the retry command
 `task submit --host H --submission-key K PATH`; the CLI never resubmits to another server.
 
 `task status` for an unfinished job prints

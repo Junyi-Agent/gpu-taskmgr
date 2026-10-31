@@ -73,8 +73,9 @@ Linux, see [[docs/testing]].
 - `# type: ignore` / `# pyright: ignore` only where the checker cannot be satisfied
   otherwise, always with the rule name and a reason. Current uses: the optional `torch`
   import in `examples/multi-gpu/run.py`, and `argparse._SubParsersAction` /
-  `argparse._HelpAction` (`reportPrivateUsage`) in `taskmgr.py`, which walks the parser to
-  print help.
+  `argparse._HelpAction` (`reportPrivateUsage`) in `cliparse.py`, which walks the parser to
+  print help, and `Remote._env` in `hostsetup.py` (the setup lock's ssh process needs the
+  same environment as other remote calls).
 
 ## Tests
 

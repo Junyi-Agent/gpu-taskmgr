@@ -34,11 +34,13 @@ Other language: [[docs/task-package.zh-CN]]
 
 - `task_id` matches `^[A-Z]{2}-[0-9]{2,4}$`.
 - `entry.argv[0]`: contains `/` → path (relative = package file, resolved against the
-  job's workdir, must be executable); otherwise a command name looked up on the entry
-  process PATH on the remote side. No shell is involved; use `["bash", "-c", "..."]`.
+  job's workdir, must be an executable file in the package); otherwise a command name
+  looked up on the entry process PATH on the remote side. No shell is involved; use
+  `["bash", "-c", "..."]`.
 - `gpus`: nvidia-smi indices (PCI bus order) or full `GPU-...` UUIDs; `[]` = no GPU. MIG
   UUIDs and duplicates (also an index and a UUID naming the same GPU) are rejected.
-- `env` may not set `CUDA_VISIBLE_DEVICES`, `CUDA_DEVICE_ORDER`, `VIRTUAL_ENV`, `TASKMGR_*`.
+- `env` names match `^[A-Za-z_][A-Za-z0-9_]*$`; values are strings. `env` may not set
+  `CUDA_VISIBLE_DEVICES`, `CUDA_DEVICE_ORDER`, `VIRTUAL_ENV`, `TASKMGR_*`.
 
 `progress.json`: `{"schema_version": 1, "stage": str, "updated_at": "UTC ISO 8601",
 "percent"?: 0..100, "message"?: str}`. Written only by the task.
@@ -62,10 +64,38 @@ Result is valid when it is a JSON object with an `outputs` object containing eve
 is kept as `result.json.corrupt` and reported in `validation_errors`; a task-written
 `_taskmgr` is dropped with warning `task_wrote_taskmgr`.
 
-`error.kind` values: `setup`, `shim_start_failed`, `exit_code`, `signal`, `exit_code_lost`,
-`interrupted` (the run was cut off and an automatic re-run was created),
+`error.kind` values: `setup`, `shim_start_failed`, `shim_error` (the shim failed before
+it started the entry; the job ends `failed` and is not re-run), `exit_code`, `signal`,
+`exit_code_lost`, `interrupted` (the run was cut off and an automatic re-run was created),
 `too_many_interruptions`, `operator_marked_stopped`, `stop_unconfirmed` (job in unknown),
-`record_incomplete` / `undeterminable` (unknown after recovery).
+`record_incomplete` / `undeterminable` (unknown after recovery), `recovery_error` (unknown:
+the daemon's recovery or tracking of the job failed repeatedly, see [[docs/recovery]]).
+
+## Packing and validation
+
+`task validate` and `task submit` check the package locally; the server checks it again
+after the upload.
+
+- Left out of the packed archive and of the content hash: every path with a component
+  named `__pycache__`, `.git` or `.DS_Store`, ending in `.pyc` or `.json.lock` (the lock
+  files of `taskmgr_task.py`) or starting with `.tmp-` (unfinished atomic writes); at the
+  package root also every name starting with `result.json` (`result.json`,
+  `result.json.lock` from a local test run).
+- Size: the packed regular files may total at most `max_package_bytes`. The local check
+  uses the server default (1073741824 bytes); error `package_too_large`. The server
+  enforces its own `max_package_bytes` while extracting, and stops receiving an upload
+  that is larger than the limit plus 1/16 plus 1 MiB.
+- Symlinks must be relative and resolve inside the package (also through other links);
+  special files (FIFOs, devices, sockets) are rejected.
+- A relative `entry.argv[0]` must name a regular file inside the package that is not left
+  out of packing and has the executable bit (error `entry`; fix with `chmod +x` or run it
+  through an interpreter, e.g. `["python", "run.py"]`).
+- Extracting an archive (on the server, and `task validate` of a `.tar.gz`) refuses
+  absolute paths, `..`, duplicate entries (compared case-insensitively), hard links,
+  device files, FIFOs, and symlinks that point or resolve outside the package. Nothing is
+  written through a symlink an earlier entry created, and no existing file is
+  overwritten. `task validate` lists every unsafe entry; the server stops at the first
+  (`unsafe_package`).
 
 ## Entry process environment
 
@@ -75,7 +105,9 @@ is kept as `result.json.corrupt` and reported in `validation_errors`; a task-wri
 3. `env` from `task.json`.
 4. Runner: `CUDA_DEVICE_ORDER=PCI_BUS_ID`, `CUDA_VISIBLE_DEVICES=<uuids in declaration
    order>` (empty string for `[]`), `TASKMGR_JOBID`, `TASKMGR_TASK_ID`,
-   `TASKMGR_WORKDIR`, `TASKMGR_PROGRESS_FILE`, `TASKMGR_RESULT_FILE`.
+   `TASKMGR_WORKDIR`, `TASKMGR_PROGRESS_FILE`, `TASKMGR_RESULT_FILE`, and
+   `TASKMGR_GPU_BUSY_EXIT_CODE` (the server's `gpu_busy_exit_code`; not set when it is
+   `null`).
 
 stdin is `/dev/null`; stdout/stderr go to `stdout.log` / `stderr.log` in the job directory.
 
@@ -110,8 +142,10 @@ for this. Instead the task reports it:
   another process ...")`; other CUDA errors and a missing `libcuda.so.1` raise
   `RuntimeError` (the task declared GPUs, so that is a setup problem). Call it before
   slow imports or compilation. Its `load` argument replaces the library loader in tests.
-- `taskmgr_task.gpu_busy(message="")` prints the message to stderr and exits 75. Call it
-  when your own CUDA code sees "device busy/unavailable".
+- `taskmgr_task.gpu_busy(message="")` prints the message to stderr and exits with
+  `taskmgr_task.gpu_busy_exit_code()`: the value of `TASKMGR_GPU_BUSY_EXIT_CODE`, or 75
+  when it is unset or not an integer from 1 to 255. Call it when your own CUDA code sees
+  "device busy/unavailable".
 - If the CUDA work runs in a subprocess, do not call `claim_gpu()` in the parent: in
   exclusive-process mode the parent's context would block the child. Let the child exit 75
   and forward it with `gpu_busy()`.

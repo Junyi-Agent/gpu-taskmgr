@@ -16,7 +16,7 @@ task validate AA-01/                   # 退出码 0 校验通过；1 列出所�
 task submit AA-01/                     # 在启用的服务器之间轮询
 task submit --host nebius-h200-2 AA-01.tar.gz
 task submit --host nebius-h200-2 --submission-key tune-aa01-v3 AA-01/   # 幂等重试
-task jobs [--host H] [--state running]
+task jobs [--host H] [--state STATE]     # STATE：queued、running、stopping、unknown 或某个终态
 task status <jobid> [--host H]
 task status <jobid> [--host H] --wait [--poll-interval 5] [--retry-timeout 300] [--timeout S]
 task logs    <jobid> [--host H] [--stream stdout|stderr|shim] [--follow]
@@ -88,16 +88,22 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 - 按提交时间（UTC）排序。所有显示 STATE 的命令中，同一状态颜色相同：queued 和 `pending (gpu busy)` 黄、
   running 青、stopping 品红、unknown 粗体品红、succeeded 绿、failed / invalid_result / timed_out
   红、cancelled 灰。
-- 连不上的服务器在 stderr 报告（`warning: H unreachable, ...`）；退出码规则不变（至少一台服务器有
-  响应为 0，否则为 2）。
+- `--state` 只接受作业状态（`pending (gpu busy)` 只是显示，不是状态；请用 `--state running`）；
+  其他值是用法错误（退出码 2）。
+- 连不上的服务器在 stderr 报告（`warning: H unreachable, ...`），被跳过的已禁用服务器也一样；
+  加 `--detail` 时同样输出。至少一台服务器有响应、或机器列表为空时退出码为 0，否则为 2。
 - 宕机的服务器不会卡住命令：ssh 连接 10 秒后放弃（`ConnectTimeout=10`；服务器在机器列表中自己的
   `-o ConnectTimeout=N` 优先）；向所有服务器发出的查询（`jobs`、按 jobid 查找、`whoami`、`version`）
-  对每台服务器最多等 30 秒（用 `TASKMGR_QUERY_TIMEOUT=<秒数>` 修改）。
-- `--detail` 改为输出 JSON 对象 `{"complete", "errors", "jobs"}`。
+  对每台服务器最多等 30 秒（用 `TASKMGR_QUERY_TIMEOUT=<秒数>` 修改）。对单台服务器的调用
+  （`status`、`cancel`、`retry`、`resolve`、`status --wait` 的每次轮询）也受这个上限约束；上传
+  （`submit`）、`logs` 和 `fetch` 不限时。
+- `--detail` 改为输出 JSON 对象 `{"complete", "errors", "skipped", "jobs"}`。`errors` 的每一项有
+  `host`、`error` 和 `code`：连不上服务器或没有按时响应时为 `connection_error`；连上了但远程命令
+  没有返回 JSON（远程命令崩溃）时为 `remote_error`。
 
 | 退出码 | 含义 |
 | --- | --- |
-| 0 | 成功；`--wait`：作业 succeeded；`jobs`：至少一台服务器有响应 |
+| 0 | 成功；`--wait`：作业 succeeded；`jobs`：至少一台服务器有响应，或没有配置任何服务器 |
 | 1 | `--wait`：作业以 failed / invalid_result / cancelled / timed_out 结束；`validate`：校验不通过 |
 | 2 | 参数、连接、查询或操作错误；`jobs` 时所有服务器都失败 |
 | 3 | `--wait` 发现作业处于 `unknown` |
@@ -105,7 +111,7 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 以下 JSON 对象是 `--detail` 的输出。
 
 提交回执：`{"host", "jobid", "task_id", "submission_key", "deduplicated", "content_hash",
-"state"}`。如果提交结果不确定（连接失败或没有收到有效回复），stderr 会给出所选的服务器和
+"state"}`。如果提交结果不确定（连接失败，或没有收到有效回复：错误码 `remote_error`），stderr 会给出所选的服务器和
 submission key，并打印重试命令 `task submit --host H --submission-key K PATH`；CLI 不会自动
 改投其他服务器。
 

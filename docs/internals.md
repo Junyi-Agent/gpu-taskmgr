@@ -39,8 +39,11 @@ Other language: [[docs/internals.zh-CN]]
 ```
 
 A job runs at most once. A retry (`task retry`) or an automatic re-run after an interruption
-is a new job with its own jobid and directory, built from copies of `package.tar.gz` and
-`package/` under `incoming/retry-<jobid>/` and renamed into `queue/`.
+is a new job with its own jobid and directory, built under `incoming/retry-<jobid>/` and
+renamed into `queue/`. Its `package.tar.gz` and the files of `package/` are hard links to
+the old job's (copied where linking fails); they are read-only and never modified, so the
+jobs share them. Removing a job directory makes only directories writable, never the
+shared files.
 
 `job.json`:
 
@@ -99,6 +102,8 @@ running --shim died between a GPU-busy exit and the relaunch--> queued (same job
 queued --cancel--> cancelled
 running --shim fork/exec failure--> failed(shim_start_failed)
 running --pre-start check failure--> failed(setup)
+running --shim error before the entry started--> failed(shim_error)  (cancelled if cancel was requested)
+running/stopping --daemon's recovery or takeover of the job failed 3 times in a row--> unknown(recovery_error)
 running --cancel seen / timeout--> stopping --group gone--> cancelled | timed_out
 stopping --still alive after SIGKILL--> unknown
 running/stopping --restart recovery--> see below
@@ -139,7 +144,11 @@ identity; if it has one, the job becomes `unknown` and keeps its GPUs.
    nvidia-smi). Failure → `failed`, `error.kind=setup`, `return_code: null`.
 2. Fork; the child `setsid()`s and blocks on a pipe. The shim writes the identity record
    (`boot_id`, shim pid/start time, pgid, leader pid/start time, argv hash) with fsync, then
-   releases the child, which execs the entry. No identity ⇒ the entry never ran.
+   releases the child, which resets every ignored signal to its default action, clears the
+   signal mask and execs the entry. No identity ⇒ the entry never ran. An exception in the
+   shim before this point ends the job `failed` with `error.kind=shim_error` (`cancelled`
+   if a cancel was requested); it is not treated as an interruption and not re-run. An
+   error after the entry may have started is left to recovery.
 3. Poll `waitpid`, re-read `job.json` every `control_poll_seconds` for `cancel_requested`,
    enforce `timeout_seconds` (from the start of this launch).
 4. On exit: write `exited/return_code/signal/ended_at`; stop leftover group members
@@ -151,8 +160,9 @@ identity; if it has one, the job becomes `unknown` and keeps its GPUs.
    and `last_gpu_busy_at` to `runner.json` (the exit fields stay until the next identity
    record), sets `job.json` `pending_reason` (and moves a `stopping`/`leftover` job back
    to `running`), and waits `gpu_retry_interval_seconds`, re-reading `job.json` every
-   `control_poll_seconds`. A cancel request while waiting ends the job running → stopping →
-   cancelled (no process is running). Then it keeps `workdir/` as it is (the busy launch
+   `control_poll_seconds`. The entry learns the code from `TASKMGR_GPU_BUSY_EXIT_CODE` in
+   its environment (unset when the convention is off). A cancel request while waiting
+   ends the job running → stopping → cancelled (no process is running). Then it keeps `workdir/` as it is (the busy launch
    did no work under the GPU contract, and copying the package on every retry would only
    cost I/O), appends `--- taskmgr: relaunch #N after GPU busy ---` to `stdout.log` and `stderr.log`,
    and starts the entry again with step 2 (new pgid, leader, start time, identity record).
@@ -167,4 +177,8 @@ SIGTERM to the process group → wait `stop_grace_seconds` → SIGKILL → wait
 `kill_confirm_seconds`. Only when no member of the group is alive are GPUs released and the
 terminal state entered; otherwise the job becomes `unknown` and keeps its GPUs. Membership
 is "pgid equals the recorded one and start time ≥ the leader's start time" via `/proc`;
-zombies count as gone.
+zombies count as gone. In addition the `TASKMGR_JOBID` in `/proc/<pid>/environ` must be
+the job's: after the group is gone its pgid can be reused by a new session of another
+job. A process whose tag cannot be read (environ not readable, or the task cleared it)
+still counts, unless the pid equal to the pgid now belongs to a process other than the
+recorded leader; then the whole group is a new one.
