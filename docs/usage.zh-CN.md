@@ -24,8 +24,8 @@ task fetch   <jobid> [--host H] --output ./results/
 task cancel  <jobid> [--host H]
 task retry   <jobid> [--host H]        # 创建一个新作业，输出新的 jobid
 task resolve <jobid> [--host H] [--as stopped --confirm <jobid>]
-task host add NAME [--ssh USER@HOST] [--port N] [--identity-file F] [--remote-root DIR]
-                   [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
+task host add NAME [--ssh USER@HOST] [--port N] [--identity-file F]
+                   [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE] [--yes]
 task host list                         # 已配置的服务器
 task host remove NAME [--yes]          # 从机器列表删除一台服务器
 task host enable NAME                  # 重新使用一台服务器

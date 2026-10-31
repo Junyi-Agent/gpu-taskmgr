@@ -52,16 +52,21 @@ exist only in the tests; nothing in `taskmgr/` refers to them. The same file tes
 `task host list`, `task host remove` and `task host ping` against plain local-transport
 servers; an unreachable server is a machine entry with `"local": {"fail": "message"}`.
 
-These tests install `taskmgr-remote.pyz` as on a real server (a symlink into
-`$HOME/.taskmgr-remote/`); the fake `start` runs it. An older installed version is
+These tests install `taskmgr-remote.pyz` as on a real server (`$HOME/.taskmgr-remote/taskmgr-remote.pyz`, a symlink into
+`versions/`); the fake `start` runs it. An older installed version is
 simulated by installing a copy of the archive whose `.taskmgr-code-version` differs and
-switching the link, as `host add` does. The code-update test keeps a task running across
+switching the link, as `host add` does. The class builds `taskmgr-remote.pyz` once and
+every run passes it with `--pyz`; a missing archive, an archive of another code version and
+`task.pyz` given as `--pyz` make the `code` step fail before anything changes. Other tests
+cover `TASKMGR_REMOTE_ROOT`, the cleanup of the first zipapp layout (`~/taskmgr-remote.pyz`,
+`~/.taskmgr-remote/<version>.pyz`) and the warning about data under `~/taskmgr-root`. The code-update test keeps a task running across
 two updates; it catches a shim that imports from an archive replaced during its start.
 
 `taskmgr/tests/test_pyz.py` builds `task.pyz` and `taskmgr-remote.pyz` with
 `python3 -m taskmgr.pyz` and runs them without `PYTHONPATH` and outside the checkout:
 archive contents, exit codes, the code version (same as the checkout), `task init` (same
-package as the checkout), running through a symlink, and a job submitted with `task.pyz`
+package as the checkout), running through a symlink, where `host add` looks for
+`taskmgr-remote.pyz` when run from `task.pyz` (next to it, symlinks resolved), and a job submitted with `task.pyz`
 that the daemon and shim of `taskmgr-remote.pyz` run to `succeeded`.
 
 ## Optional smoke test against real SSH
@@ -70,7 +75,7 @@ that the daemon and shim of `taskmgr-remote.pyz` run to `succeeded`.
 task host add gpu1 --ssh tuner@<server>                       # every step ok or changed
 task host add gpu1                                            # second run: every step ok, no prompt
 task host ping gpu1                                           # ok, code version of the local tree
-ssh gpu1 ls -l taskmgr-remote.pyz .taskmgr-remote/            # link -> .taskmgr-remote/<version>.pyz
+ssh gpu1 ls -l .taskmgr-remote/                               # taskmgr-remote.pyz -> versions/<version>.pyz
 task submit --host gpu1 taskmgr/examples/succeed
 task status <jobid> --host gpu1 --wait --poll-interval 2      # exit 0, outputs present
 task submit --host gpu1 taskmgr/examples/multi-gpu            # needs >= 2 GPUs

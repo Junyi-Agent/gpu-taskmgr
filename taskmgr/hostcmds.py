@@ -52,17 +52,15 @@ def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) 
         help=helps["add"],
         description="Check the server step by step and change only what differs from the "
         + "wanted state (code, remote_root, systemd user service, linger, machine list). "
-        + "Every change is confirmed with [y/N]; a second run changes nothing.",
+        + "Every change is confirmed with [y/N]; a second run changes nothing. "
+        + "The server's storage root is $TASKMGR_REMOTE_ROOT (default: the existing entry's, "
+        + "else ~/.taskmgr-remote on the server); it holds config.json, the job data and "
+        + "the code.",
     )
     _ = h.add_argument("name", help="name in the machine list")
     _ = h.add_argument("--ssh", metavar="USER@HOST", help="ssh destination (required when new)")
     _ = h.add_argument("--port", type=int, help="ssh port (default 22)")
     _ = h.add_argument("--identity-file", metavar="FILE", help="ssh private key file")
-    _ = h.add_argument(
-        "--remote-root",
-        metavar="DIR",
-        help="remote storage root (default ~/taskmgr-root on the server)",
-    )
     _ = h.add_argument(
         "--ssh-option",
         action="append",
@@ -83,6 +81,13 @@ def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) 
         action="store_true",
         default=None,
         help="put the server back into round-robin submits",
+    )
+    _ = h.add_argument(
+        "--pyz",
+        metavar="FILE",
+        help="taskmgr-remote.pyz to upload, built by `python3 -m taskmgr.pyz` (default: "
+        + "dist/taskmgr-remote.pyz in the checkout, or next to task.pyz); its code version "
+        + "must equal this task's",
     )
     _ = h.add_argument("--yes", "-y", action="store_true", help="answer yes to every prompt")
     _ = sub.add_parser("list", parents=[common], help=helps["list"], description=helps["list"])

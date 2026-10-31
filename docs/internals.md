@@ -125,7 +125,7 @@ Jobs with `gpus: []` only obey `max_cpu_jobs`. Dispatch writes `runner.json`, th
 `job.json` (running) and the rename, and only then double-forks the shim (new session,
 reparented to init) and hands it the already-locked `shim.lock`. The shim runs
 `python3 -m taskmgr.remote ... shim` with the daemon's code root first on `PYTHONPATH`;
-on a server that is the resolved archive `~/.taskmgr-remote/<version>.pyz`, a file that is
+on a server that is the resolved archive `<remote_root>/versions/<version>.pyz`, a file that is
 never modified, so an update during the shim's start cannot break its imports
 ([[docs/install]]). A failed fork/exec ends
 the job as `failed` (`shim_start_failed`). A queued job that already has a `runner.json`

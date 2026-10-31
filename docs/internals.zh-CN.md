@@ -119,7 +119,7 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 写 `runner.json`，再写 `job.json`（running）并重命名目录，最后才两次 fork 出 shim（新会话，被 init
 收养），并把已加锁的 `shim.lock` 交给它。shim 运行 `python3 -m taskmgr.remote ... shim`，
 `PYTHONPATH` 最前面是守护进程的代码根目录；在服务器上它是解析后的压缩包
-`~/.taskmgr-remote/<版本>.pyz`，这个文件从不修改，所以 shim 启动期间发生更新也不会让它的导入
+`<remote_root>/versions/<版本>.pyz`，这个文件从不修改，所以 shim 启动期间发生更新也不会让它的导入
 失败（[[docs/install.zh-CN]]）。fork/exec 失败时作业以 `failed`
 （`shim_start_failed`）结束。queued 作业如果已经有 `runner.json`（两次写入之间崩溃），记录中没有
 执行身份时重新派发；有执行身份时作业变为 `unknown`，继续占用 GPU。

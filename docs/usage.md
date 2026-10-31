@@ -24,8 +24,8 @@ task fetch   <jobid> [--host H] --output ./results/
 task cancel  <jobid> [--host H]
 task retry   <jobid> [--host H]        # creates a new job; prints its jobid
 task resolve <jobid> [--host H] [--as stopped --confirm <jobid>]
-task host add NAME [--ssh USER@HOST] [--port N] [--identity-file F] [--remote-root DIR]
-                   [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
+task host add NAME [--ssh USER@HOST] [--port N] [--identity-file F]
+                   [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE] [--yes]
 task host list                         # configured servers
 task host remove NAME [--yes]          # drop a server from the machine list
 task host enable NAME                  # use a server again

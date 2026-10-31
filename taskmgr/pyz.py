@@ -5,7 +5,8 @@
 Each archive holds the package (taskmgr/ without tests/ and __pycache__) plus, at the top,
 the code version, pyproject.toml and the commit. The code version is the content hash of
 taskmgr/, so it is the same for a checkout and for every archive built from it.
-`task host add` installs taskmgr-remote.pyz on the server (see hostsetup).
+`task host add` uploads a taskmgr-remote.pyz built here to the server (see hostsetup); it
+never builds one itself.
 """
 
 import argparse
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import zipapp
+import zipfile
 from typing import cast
 
 from . import package
@@ -118,9 +120,35 @@ def build(out_dir: str, targets: tuple[tuple[str, str], ...] = TARGETS) -> Built
     return Built(version, _commit(), files, outputs)
 
 
-def build_remote(out_dir: str) -> Built:
-    """Only taskmgr-remote.pyz (what `task host add` uploads)."""
-    return build(out_dir, tuple(t for t in TARGETS if t[0] == REMOTE_PYZ))
+def default_remote_pyz() -> str:
+    """Where `task host add` looks for taskmgr-remote.pyz when --pyz is not given.
+
+    From a checkout: <checkout>/dist/taskmgr-remote.pyz (the default output of this module).
+    From task.pyz: taskmgr-remote.pyz next to the archive (symlinks resolved).
+    """
+    if code_is_zipapp():
+        return os.path.join(os.path.dirname(os.path.realpath(CODE_ROOT)), REMOTE_PYZ)
+    return os.path.join(CODE_ROOT, "dist", REMOTE_PYZ)
+
+
+def remote_archive_info(path: str) -> tuple[str, int]:
+    """(code version, files under taskmgr/) of a taskmgr-remote.pyz built by this module.
+
+    Raises ValueError when path is not such an archive (OSError when it cannot be read).
+    """
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+            main = z.read("__main__.py").decode("utf-8") if "__main__.py" in names else ""
+            version = z.read(VERSION_FILE).decode("utf-8").strip() if VERSION_FILE in names else ""
+    except zipfile.BadZipFile:
+        raise ValueError("%s is not a zip archive" % path) from None
+    if "from taskmgr.remote import main" not in main:
+        raise ValueError("%s is not a taskmgr-remote.pyz (wrong entry point)" % path)
+    if not version:
+        raise ValueError("%s has no %s" % (path, VERSION_FILE))
+    files = sum(1 for n in names if n.startswith("taskmgr/") and not n.endswith("/"))
+    return version, files
 
 
 def main(argv: list[str] | None = None) -> int:

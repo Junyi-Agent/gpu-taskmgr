@@ -18,40 +18,33 @@
 
 CLI 是一个单文件 `task.pyz`，只需要 `python3` >= 3.10（[[docs/install.zh-CN]]，单文件 zipapp）。
 
-1.1 构建 pyz（可选，已有 `task.pyz` 时跳过）：在 checkout 里运行
-
 ```sh
-python3 -m taskmgr.pyz -o dist     # 生成 dist/task.pyz 和 dist/taskmgr-remote.pyz
-```
+# 构建（已有 dist/task.pyz 和 dist/taskmgr-remote.pyz 时可跳过）
+python3 -m taskmgr.pyz -o dist
 
-1.2 安装 pyz：拷到 `PATH` 上任意位置
-
-```sh
-cp dist/task.pyz ~/.local/bin/task
-task version                       # 确认可以运行
+# 安装（用符号链接，task host add 才能在 dist/ 找到 taskmgr-remote.pyz）
+ln -s "$PWD/dist/task.pyz" ~/.local/bin/task
+task --help
 ```
 
 **2. 本机：配置服务器**
 
 ```sh
 task host add gpu1 --ssh tuner@10.0.0.12
+# 依次执行，每处改动先询问 [y/N]（--yes 全部回答 yes）：
+#  1. 检查 ssh、Linux、python3 >= 3.10、systemctl --user
+#  2. 上传 dist/taskmgr-remote.pyz 到 ~/.taskmgr-remote/versions/<version>.pyz，
+#     把 ~/.taskmgr-remote/taskmgr-remote.pyz 链接过去（不在本地构建；code version 与 task 不同时报错）
+#  3. 创建 ~/.taskmgr-remote/config.json
+#  4. 写 ~/.config/systemd/user/taskmgr-remote.service，启用并启动服务
+#  5. loginctl enable-linger
+#  6. 把 gpu1 加入本地 ~/.taskmgr/machines.json
 ```
 
-这条命令把代码打包成一个文件，安装到服务器的 `~/taskmgr-remote.pyz`（指向
-`~/.taskmgr-remote/<版本>.pyz` 的符号链接），创建 `~/taskmgr-root` 和其中的 `config.json`，
-安装并启动运行这个文件的 systemd 用户服务，开启 lingering，并把 `gpu1` 加入
-`~/.taskmgr/machines.json`。每一步都会说明发现了什么；每一处改动都先询问 `[y/N]`（`--yes`
-回答 yes）。如果 `loginctl enable-linger` 被拒绝，这一步会给出管理员需要执行一次的命令。如果 `$HOME` 在 NFS 上，加上
-`--remote-root /scratch/tuner/taskmgr-root`（本地磁盘）。详见 [[docs/install.zh-CN]]。
+更新服务器（`git pull` 或改代码之后）：重新运行 `python3 -m taskmgr.pyz -o dist`，再运行
+`task host add gpu1`。`task host add`。
 
-以后要更新服务器（`git pull` 之后），再执行一次 `task host add gpu1`。它是幂等的：服务器已是最新
-状态时，不做改动，也不询问。如果服务器是 zipapp 之前的版本配置的，它还会询问是否删除旧的
-`~/taskmgr` 目录。
-
-CLI 和每台服务器的 `protocol_version` 必须相同，不同时命令以 `protocol_mismatch` 失败（退出码 2）。
-协议 2 去掉了 attempt（一个作业只运行一次，重试是一个新作业）。协议 1 写下的作业目录
-（`attempts/NNNN/`）不做迁移：`task host add` 在询问后把它们移到 `<remote_root>.backup-<时间>/`，
-如果这样的作业可能仍在运行，则拒绝移动。
+更新的命令是幂等的
 
 **3. 使用**
 
@@ -63,55 +56,4 @@ task validate AA-01/
 task submit AA-01/                   # 输出 JOBID TASK_ID HOST STATE
 task status <jobid> --wait
 task fetch <jobid> --output ./results/
-```
-
-## 文档
-
-| 文档 | 内容 |
-| --- | --- |
-| [[docs/install.zh-CN]] | 本地 CLI、`task host add`、systemd 用户服务、`config.json` |
-| [[docs/usage.zh-CN]] | 命令、JSON 输出、退出码 |
-| [[docs/task-package.zh-CN]] | `task.json`、`progress.json`、`result.json`、入口进程环境 |
-| [[docs/internals.zh-CN]] | 远程目录结构、`job.json` / `runner.json`、状态机、调度、shim、停止流程 |
-| [[docs/recovery.zh-CN]] | 重启恢复、手动处理 `unknown` |
-| [[docs/assumptions.zh-CN]] | 需求文档未规定之处的全部假设；限制 |
-| [[docs/testing.zh-CN]] | 测试命令、仅用于测试的覆盖项、真实 SSH 冒烟测试 |
-| [[docs/development.zh-CN]] | uv 环境、pre-commit（ruff 格式化、basedpyright 检查） |
-
-需求文档要求 README 说明的几点：
-
-- systemd unit 使用 `KillMode=process`，停止守护进程不会停止正在运行的任务。与为每个 shim 使用
-  `systemd-run --scope` 相比，这种方式不需要访问 D-Bus（[[docs/install.zh-CN]]）。
-- 只管理任务所在的进程组；自行调用 `setsid()` 的进程会脱离管理（[[docs/assumptions.zh-CN]]）。
-- GPU 被其他进程占用的任务以 75 退出；shim 稍等后重新启动它，`task jobs` 显示
-  `pending (gpu busy)`（[[docs/task-package.zh-CN]] 的 GPU 约定）。
-- 仅用于测试的覆盖项在 [[docs/testing.zh-CN]] 中列出并标注，该文档也包含可选的真实 SSH 冒烟
-  测试。
-
-## 代码结构
-
-```
-taskmgr/
-  taskmgr.py      本地 CLI 入口（`task`）
-  hostsetup.py    `task host add`：通过 ssh 逐步配置和更新服务器
-  pyz.py          构建 zipapp：task.pyz 和 taskmgr-remote.pyz（`python3 -m taskmgr.pyz`）
-  transport.py    机器列表；ssh / local 传输（`Remote`）
-  remote.py       远程入口（`taskmgr-remote`）：子命令、`serve`、`shim`
-  daemon.py       调度守护进程：扫描队列、GPU 预留、启动 shim、恢复循环
-  shim.py         每次运行一个的监管进程：启动前检查、exec、wait、停止、收尾、
-                  GPU 忙退出（75）后重新启动
-  monitor.py      停止流程、重启恢复检查、守护进程接管跟踪
-  store.py        远程存储根目录、状态锁、job/runner 记录、结果合并
-  package.py      校验、确定性打包、内容哈希、安全解包
-  gpu.py          查询 nvidia-smi、解析 GPU 声明
-  procutil.py     /proc：boot_id、进程启动时间、进程组成员
-  common.py       常量、原子 JSON 写入、flock 辅助函数
-  template/       任务包模板（`task init`），含 taskmgr_task.py
-  examples/       succeed/（EX-01，仅 CPU）和 multi-gpu/（MG-01，gpus [0, 1]）
-  deploy/         taskmgr-remote.user.service（systemd 用户 unit）、machines.example.json、
-                  config.example.json
-  tests/          unittest 测试套件：python -m unittest discover -s taskmgr/tests
-bin/task, bin/taskmgr-remote   从源码目录直接运行的包装脚本（`python3 -m taskmgr.pyz`
-                               构建单文件 task.pyz / taskmgr-remote.pyz）
-docs/            文档（英文 *.md，中文 *.zh-CN.md）
 ```

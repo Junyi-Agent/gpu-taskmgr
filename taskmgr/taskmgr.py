@@ -100,9 +100,9 @@ class Args(argparse.Namespace):
     ssh: str | None = None
     port: int | None = None
     identity_file: str | None = None
-    remote_root: str | None = None
     ssh_option: list[str] | None = None
     enabled: bool | None = None
+    pyz: str | None = None
     yes: bool = False
 
 

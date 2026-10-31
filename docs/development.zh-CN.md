@@ -81,7 +81,8 @@ uv run python -m unittest discover -s taskmgr/tests     # 在 Linux 上
 uv run python -m taskmgr.pyz -o dist    # dist/task.pyz、dist/taskmgr-remote.pyz
 ```
 
-`taskmgr/pyz.py` 用包（不含 `tests/` 和 `__pycache__`）构建这两个压缩包。`task host add` 每次上传
-前也用同样的方式构建 `taskmgr-remote.pyz`，所以服务器从不需要手工构建。从压缩包运行的代码不能用
+`taskmgr/pyz.py` 用包（不含 `tests/` 和 `__pycache__`）构建这两个压缩包。`task host add` 不构建：
+它上传已构建好的 `taskmgr-remote.pyz`（`pyz.default_remote_pyz()` 或 `--pyz`），code version 与
+当前运行的代码不同时失败，所以每次改代码后都要重新构建。从压缩包运行的代码不能用
 `open()` 打开包内文件：请用 `common.copy_package_tree` 和 `common.read_code_file`，它们在 checkout
 和 `.pyz` 中都能用。`taskmgr` 模块的 import 一律放在模块顶层或进程启动时（见 `pyz.MAIN_PY`）。

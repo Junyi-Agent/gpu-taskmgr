@@ -75,4 +75,4 @@ up: "[[taskmgr/README.zh-CN]]"
 - 不安装任何软件或环境；venv 和所需路径必须已存在于服务器上。`task host add` 只安装 taskmgr
   本身（代码、unit、`remote_root`）。
 - `task host add` 不对服务器加锁：不支持对同一台服务器同时执行两次。它以
-  `~/taskmgr-remote.pyz` 内记录的代码版本为准。
+  `<remote_root>/taskmgr-remote.pyz` 内记录的代码版本为准。

@@ -7,8 +7,8 @@
       "ssh": {"host": "10.0.0.11", "user": "tuner", "port": 22,
               "identity_file": "~/.ssh/id_ed25519",
               "options": ["-o", "ServerAliveInterval=15", "-o", "ConnectTimeout=10"]},
-      "remote_root": "/home/tuner/taskmgr-root",
-      "remote_command": "/home/tuner/taskmgr-remote.pyz"
+      "remote_root": "/home/tuner/.taskmgr-remote",
+      "remote_command": "/home/tuner/.taskmgr-remote/taskmgr-remote.pyz"
     },
     {
       "name": "nebius-h200-2",
@@ -17,16 +17,16 @@
       "ssh": {"host": "10.0.0.12", "user": "tuner", "port": 22,
               "identity_file": "~/.ssh/id_ed25519",
               "options": ["-o", "ServerAliveInterval=15"]},
-      "remote_root": "/home/tuner/taskmgr-root",
-      "remote_command": "/home/tuner/taskmgr-remote.pyz"
+      "remote_root": "/home/tuner/.taskmgr-remote",
+      "remote_command": "/home/tuner/.taskmgr-remote/taskmgr-remote.pyz"
     },
     {
       "name": "nebius-h200-3",
       "enabled": false,
       "transport": "ssh",
       "ssh": {"host": "10.0.0.13", "user": "tuner"},
-      "remote_root": "/home/tuner/taskmgr-root",
-      "remote_command": "/home/tuner/taskmgr-remote.pyz"
+      "remote_root": "/home/tuner/.taskmgr-remote",
+      "remote_command": "/home/tuner/.taskmgr-remote/taskmgr-remote.pyz"
     }
   ]
 }

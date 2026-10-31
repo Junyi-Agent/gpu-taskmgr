@@ -3,10 +3,9 @@
 import os
 import subprocess
 import sys
-import tempfile
 import zipfile
 
-from taskmgr.hostsetup import build_code
+from taskmgr import pyz
 from taskmgr.records import override
 from taskmgr.tests.helpers import REPO, TASK, Env
 
@@ -48,15 +47,14 @@ class PyzTest(Env):
         )
 
     def local_code_version(self) -> str:
-        with tempfile.TemporaryDirectory() as tmp:
-            return build_code(tmp)[0]
+        return pyz.code_version()
 
     def test_archives_hold_the_shipped_tree(self) -> None:
-        for pyz in (self.task_pyz, self.remote_pyz):
-            with open(pyz, "rb") as f:
+        for archive in (self.task_pyz, self.remote_pyz):
+            with open(archive, "rb") as f:
                 self.assertEqual(f.readline(), b"#!/usr/bin/env python3\n")
-            self.assertTrue(os.access(pyz, os.X_OK))
-            with zipfile.ZipFile(pyz) as z:
+            self.assertTrue(os.access(archive, os.X_OK))
+            with zipfile.ZipFile(archive) as z:
                 names = z.namelist()
                 version = z.read(".taskmgr-code-version").decode().strip()
             self.assertIn("taskmgr/remote.py", names)
@@ -85,8 +83,8 @@ class PyzTest(Env):
         self.assertIn('"code_dir": "%s"' % os.path.realpath(self.remote_pyz), p.stdout)
 
     def test_local_version_matches_the_checkout(self) -> None:
-        """build_code from inside the .pyz gives the version a checkout gives, so
-        `task.pyz host add` installs the same code."""
+        """task.pyz reports the version a checkout has, the version `task.pyz host add`
+        requires of the taskmgr-remote.pyz it uploads."""
         p = self.run_pyz(self.task_pyz, "version", "--detail", "--plain")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn('"code_version": "%s"' % self.local_code_version(), p.stdout)
@@ -94,6 +92,25 @@ class PyzTest(Env):
         p = self.run_pyz(self.task_pyz, "update", "--plain")
         self.assertEqual(p.returncode, 2)
         self.assertIn("not_a_checkout", p.stderr)
+
+    def test_host_add_looks_next_to_task_pyz(self) -> None:
+        """From task.pyz (also through a symlink), `host add` uploads the taskmgr-remote.pyz
+        in the same directory unless --pyz is given."""
+        link = os.path.join(self.tmp, "task")
+        os.symlink(self.task_pyz, link)
+        code = "import sys; sys.path.insert(0, %r); from taskmgr import pyz; "
+        code += "print(pyz.default_remote_pyz())"
+        for path in (self.task_pyz, link):
+            p = subprocess.run(
+                [sys.executable, "-c", code % path],
+                cwd=self.tmp,
+                env=self.env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual(p.stdout.strip(), os.path.realpath(self.remote_pyz))
 
     def test_init_gives_the_same_package_as_the_checkout(self) -> None:
         a, b = os.path.join(self.tmp, "a"), os.path.join(self.tmp, "b")

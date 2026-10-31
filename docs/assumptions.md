@@ -89,5 +89,5 @@ Other language: [[docs/assumptions.zh-CN]]
 - No installation of software or environments; venvs and paths must exist on the server.
   `task host add` installs only taskmgr itself (code, unit, `remote_root`).
 - `task host add` does not lock the server: two runs for the same server at the same time
-  are not supported. It trusts the code version recorded inside `~/taskmgr-remote.pyz`
+  are not supported. It trusts the code version recorded inside `<remote_root>/taskmgr-remote.pyz`
   (an installed archive is never modified, see [[docs/install]]).

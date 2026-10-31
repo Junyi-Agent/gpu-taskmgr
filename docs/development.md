@@ -86,8 +86,9 @@ uv run python -m taskmgr.pyz -o dist    # dist/task.pyz, dist/taskmgr-remote.pyz
 ```
 
 `taskmgr/pyz.py` builds both archives from the package (without `tests/` and
-`__pycache__`). `task host add` builds `taskmgr-remote.pyz` the same way before each
-upload, so a server never needs a manual build. Code that runs from an archive cannot
+`__pycache__`). `task host add` does not build: it uploads a prebuilt
+`taskmgr-remote.pyz` (`pyz.default_remote_pyz()` or `--pyz`) and fails when its code
+version differs from the running code, so rebuild after every code change. Code that runs from an archive cannot
 open package files with `open()`: use `common.copy_package_tree` and
 `common.read_code_file`, which work in a checkout and in a `.pyz`. Keep every import of
 `taskmgr` modules at module level or at process start (see `pyz.MAIN_PY`).

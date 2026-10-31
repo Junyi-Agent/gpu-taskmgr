@@ -351,3 +351,14 @@ Known limits: no lock against two concurrent `add host` runs for one server; fil
 by hand in `~/taskmgr` are not noticed while the version file matches; the optional
 `task remove host` was not added.
 
+
+## D19. `task host add`: prebuilt archive, one server directory (§17)
+
+User decisions 2026-10-31, superseding the code and path parts of D13 and D18:
+
+| Decision | Reason |
+| --- | --- |
+| `task host add` never builds the server code. It uploads a `taskmgr-remote.pyz` built by `python3 -m taskmgr.pyz -o dist` (default `dist/` of the checkout, or next to `task.pyz`; `--pyz FILE`), and fails the `code` step when the archive's code version differs from the running `task` | user: on a version mismatch the user rebuilds by hand; `host add` only uploads |
+| `--remote-root` is removed; `TASKMGR_REMOTE_ROOT` (read by `task host add` on the local machine) sets `remote_root`; without it an existing entry keeps its `remote_root` | user: an environment variable instead of the flag |
+| Everything on the server is in `remote_root`, default `~/.taskmgr-remote`: `config.json`, the job data, `versions/<version>.pyz`, the symlink `taskmgr-remote.pyz`, and `backups/<UTC time>/` for moved job directories | user: no separate `~/taskmgr-root` and `~/.taskmgr-remote` |
+| Data under `~/taskmgr-root` (older default) is not moved; a new entry gets a warning that names `TASKMGR_REMOTE_ROOT=~/taskmgr-root`. Step `old_code` also offers to delete the first zipapp layout (`~/taskmgr-remote.pyz`, `~/.taskmgr-remote/<version>.pyz` top-level files) | never move job data automatically |
