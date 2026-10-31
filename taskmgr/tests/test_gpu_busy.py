@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from types import ModuleType
 from typing import cast
+from unittest import mock
 
 from taskmgr.records import JsonDict, JsonValue, override
 from taskmgr.tests.helpers import GPUS, OK_RESULT, REPO, Env, kill_quiet, pid_alive
@@ -321,6 +322,15 @@ class TaskHelperTest(Env):
             gpu_busy("no luck")
         self.assertEqual(cm.exception.code, 75)
         self.assertIn("no luck", err.getvalue())
+        # The runner exports the server's code; junk or out-of-range values fall back to 75.
+        for raw, want in (("42", 42), ("", 75), ("x", 75), ("0", 75), ("256", 75)):
+            with (
+                mock.patch.dict(os.environ, {"TASKMGR_GPU_BUSY_EXIT_CODE": raw}),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                gpu_busy("")
+            self.assertEqual(cm.exception.code, want, raw)
 
     def test_helper_copies_identical_and_standalone(self) -> None:
         with open(os.path.join(TEMPLATE, "taskmgr_task.py"), "rb") as f:
