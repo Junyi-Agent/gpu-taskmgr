@@ -12,7 +12,8 @@ Never write the "_taskmgr" key; the runner owns it.
 
 GPU contract: exit code 75 (GPU_BUSY_EXIT_CODE, EX_TEMPFAIL) means "I could not get the
 GPU and did no work"; taskmgr then starts the entry again later, so the job waits instead
-of failing. Call claim_gpu() before any work; call gpu_busy() if your own CUDA code finds
+of failing. The runner exports the server's code as TASKMGR_GPU_BUSY_EXIT_CODE; gpu_busy()
+uses it (75 when unset). Call claim_gpu() before any work; call gpu_busy() if your own CUDA code finds
 the device busy or unavailable. Never exit 75 for any other reason.
 
     tt.claim_gpu()                             # first line of main()
@@ -30,7 +31,7 @@ from collections.abc import Callable, Generator, Mapping
 from typing import NoReturn, Protocol, cast
 
 SCHEMA_VERSION = 1
-GPU_BUSY_EXIT_CODE = 75  # EX_TEMPFAIL
+GPU_BUSY_EXIT_CODE = 75  # EX_TEMPFAIL; the default when TASKMGR_GPU_BUSY_EXIT_CODE is unset
 CUDA_SUCCESS = 0
 CUDA_ERROR_DEVICE_UNAVAILABLE = 46
 
@@ -149,18 +150,29 @@ def update_outputs(**outputs: object) -> dict[str, object]:
 # GPU contract
 
 
+def gpu_busy_exit_code() -> int:
+    """The exit code meaning "GPU busy": TASKMGR_GPU_BUSY_EXIT_CODE, else 75."""
+    raw = os.environ.get("TASKMGR_GPU_BUSY_EXIT_CODE", "")
+    try:
+        code = int(raw)
+    except ValueError:
+        return GPU_BUSY_EXIT_CODE
+    return code if 1 <= code <= 255 else GPU_BUSY_EXIT_CODE
+
+
 def gpu_busy(message: str = "") -> NoReturn:
-    """Exit with GPU_BUSY_EXIT_CODE: the GPU is held by someone else and no work was done.
+    """Exit with gpu_busy_exit_code(): the GPU is held by someone else and no work was done.
 
     taskmgr starts the entry again after a short wait (the job stays running, shown as
     "pending (gpu busy)"). Call it before producing any side effects.
     """
+    code = gpu_busy_exit_code()
     _ = sys.stderr.write(
         "taskmgr_task: GPU busy, exiting %d to be started again later%s\n"
-        % (GPU_BUSY_EXIT_CODE, ": " + message if message else "")
+        % (code, ": " + message if message else "")
     )
     _ = sys.stderr.flush()
-    raise SystemExit(GPU_BUSY_EXIT_CODE)
+    raise SystemExit(code)
 
 
 class CudaDriver(Protocol):
