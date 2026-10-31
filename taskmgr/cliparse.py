@@ -11,8 +11,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import NamedTuple, NoReturn, cast
 
 from . import hostcmds, textout
-from .common import ALL_STATES
-from .records import override
+from .common import ALL_STATES, override
 from .textout import BOLD, CYAN, RED, CmdResult, hint, paint
 
 

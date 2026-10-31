@@ -11,6 +11,10 @@
 #   systemctl --user enable --now taskmgr-remote
 #   loginctl enable-linger "$USER"   # keep the user manager (and tasks) alive without a login
 #
+# ExecStart names python3 by its absolute path, like the unit `task host add` writes: use
+# the output of `command -v python3` in an ssh session (Python 3.10 or newer), so the
+# service runs the Python you checked, whatever PATH the user manager has.
+#
 # %h is the user's home directory. remote_root (~/.taskmgr-remote) holds config.json, the job
 # data and the code. It must be on a local filesystem; if $HOME is on NFS, use a directory
 # on local disk (e.g. /scratch/<user>/taskmgr-remote) in both places of ExecStart.
@@ -25,7 +29,7 @@ Description=taskmgr remote scheduler daemon (user service)
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/.taskmgr-remote/taskmgr-remote.pyz --root %h/.taskmgr-remote serve
+ExecStart=/usr/bin/python3 %h/.taskmgr-remote/taskmgr-remote.pyz --root %h/.taskmgr-remote serve
 KillMode=process
 KillSignal=SIGTERM
 TimeoutStopSec=30

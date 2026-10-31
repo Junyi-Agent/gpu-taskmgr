@@ -30,7 +30,6 @@ from .common import (
     code_is_zipapp,
     copy_package_tree,
     flocked,
-    override,
     read_code_file,
     try_read_json,
     utcnow_iso,

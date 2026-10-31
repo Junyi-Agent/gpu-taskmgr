@@ -6,10 +6,10 @@ import json
 import os
 import shlex
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import IO, TypedDict, cast
 
-from .common import PROTOCOL_VERSION, TaskmgrError, read_json
+from .common import PROTOCOL_VERSION, TaskmgrError, atomic_write_bytes, flocked, read_json
 from .records import JsonDict, JsonValue, LocalInjection, Server, SshConfig
 
 
@@ -366,3 +366,24 @@ def query_all(
     order: list[str] = [s["name"] for s in servers]
     errors.sort(key=lambda e: order.index(e["host"]))
     return results, errors
+
+
+def edit_machines(home: str, edit: Callable[[list[JsonValue]], None]) -> None:
+    """Change the "servers" array of $TASKMGR_HOME/machines.json (an empty list when the
+    file does not exist) under machines.lock, then write the file back atomically. `edit`
+    changes the list in place; it may raise to leave the file as it is."""
+    path = os.path.join(home, "machines.json")
+    os.makedirs(home, exist_ok=True)
+    with flocked(os.path.join(home, "machines.lock")):
+        try:
+            data = read_json(path)
+        except ValueError as e:
+            raise TaskmgrError("bad_machines", "%s is not valid JSON: %s" % (path, e)) from e
+        if data is None:
+            empty: JsonDict = {"servers": []}
+            data = empty
+        servers = data.get("servers") if isinstance(data, dict) else data
+        if not isinstance(servers, list):
+            raise TaskmgrError("bad_machines", '%s must contain a "servers" array' % path)
+        edit(servers)
+        atomic_write_bytes(path, (json.dumps(data, indent=2) + "\n").encode())

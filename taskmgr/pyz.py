@@ -3,14 +3,17 @@
     python3 -m taskmgr.pyz [-o DIR]
 
 Each archive holds the package (taskmgr/ without tests/ and __pycache__) plus, at the top,
-the code version, pyproject.toml and the commit. The code version is the content hash of
-taskmgr/, so it is the same for a checkout and for every archive built from it.
+the code version, pyproject.toml and the commit. The code version is a hash of the files of
+taskmgr/ that change what runs (code_hash), so it is the same for a checkout and for every
+archive built from it, and an edit of the docs does not make servers restart.
 `task host add` uploads a taskmgr-remote.pyz built here to the server (see hostsetup); it
 never builds one itself.
 """
 
 import argparse
 import dataclasses
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -20,7 +23,6 @@ import zipapp
 import zipfile
 from typing import cast
 
-from . import package
 from .common import CODE_ROOT, code_is_zipapp, copy_package_tree, read_code_file
 
 INTERPRETER = "/usr/bin/env python3"
@@ -28,6 +30,9 @@ VERSION_FILE = ".taskmgr-code-version"
 COMMIT_FILE = ".taskmgr-commit"
 # Package parts that are not put into the archives.
 EXCLUDE = ("__pycache__", "tests", ".DS_Store", "*.pyc")
+# Top-level parts of taskmgr/ outside the code version: documentation and samples that no
+# code reads (deploy/ holds examples to copy by hand; the README files are docs).
+NOT_CODE = ("deploy", "examples")
 LOCAL_PYZ = "task.pyz"
 REMOTE_PYZ = "taskmgr-remote.pyz"
 TARGETS = ((LOCAL_PYZ, "taskmgr.taskmgr"), (REMOTE_PYZ, "taskmgr.remote"))
@@ -62,10 +67,36 @@ def _commit() -> str | None:
     return (p.stdout.strip() or None) if p.returncode == 0 else None
 
 
+def _in_code_version(rel: str) -> bool:
+    """Whether taskmgr/<rel> counts for the code version: every .py file, and all of
+    template/ (`task init` copies it into new task packages)."""
+    top = rel.split("/", 1)[0]
+    if top in NOT_CODE:
+        return False
+    return rel.endswith(".py") or top == "template"
+
+
+def code_hash(pkg: str) -> str:
+    """The code version of a copy of the package at pkg (a taskmgr/ directory)."""
+    rows: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(pkg):
+        dirnames.sort()
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, pkg).replace(os.sep, "/")
+            if not _in_code_version(rel) or not os.path.isfile(full):
+                continue
+            with open(full, "rb") as f:
+                digest = hashlib.sha256(f.read()).hexdigest()
+            executable = bool(os.stat(full).st_mode & 0o111)
+            rows.append(json.dumps([rel, executable, digest]))
+    return hashlib.sha256("".join(r + "\n" for r in sorted(rows)).encode()).hexdigest()
+
+
 def stage(dest: str) -> tuple[str, int]:
     """Lay out an archive's content in the new directory dest: (code version, files)."""
     files = copy_package_tree("", os.path.join(dest, "taskmgr"), EXCLUDE)
-    version = package.content_hash(dest)  # only taskmgr/ exists at this point
+    version = code_hash(os.path.join(dest, "taskmgr"))
     extras = {VERSION_FILE: version + "\n"}
     pyproject = read_code_file("pyproject.toml")
     if pyproject is not None:
@@ -82,9 +113,9 @@ def stage(dest: str) -> tuple[str, int]:
 def code_version() -> str:
     """The code version of the running code (checkout or archive)."""
     with tempfile.TemporaryDirectory(prefix="taskmgr-version-") as tmp:
-        files = os.path.join(tmp, "stage")
-        _ = copy_package_tree("", os.path.join(files, "taskmgr"), EXCLUDE)
-        return package.content_hash(files)
+        pkg = os.path.join(tmp, "taskmgr")
+        _ = copy_package_tree("", pkg, EXCLUDE)
+        return code_hash(pkg)
 
 
 def write_archive(staged: str, path: str, module: str) -> None:

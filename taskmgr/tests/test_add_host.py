@@ -8,6 +8,7 @@ $HOME/.fake-systemd, log every call, and `start` really launches the unit's Exec
 daemon), so jobs run end to end. `stop` signals only the main PID, like KillMode=process.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -21,8 +22,8 @@ import unittest
 import zipfile
 from typing import cast
 
-from taskmgr import hostsetup, pyz
-from taskmgr.common import override
+from taskmgr import hostlegacy, hostsetup, pyz
+from taskmgr.common import DEFAULT_REMOTE_CONFIG, override
 from taskmgr.records import JsonDict, JsonValue, Server
 from taskmgr.tests.helpers import REMOTE, REPO, TASK, Env, kill_quiet, pid_alive
 from taskmgr.transport import Remote
@@ -257,7 +258,7 @@ class AddHostTest(Env):
 
     def installed_version(self) -> str:
         with zipfile.ZipFile(self.rcode()) as z:
-            return z.read(hostsetup.VERSION_FILE).decode().strip()
+            return z.read(pyz.VERSION_FILE).decode().strip()
 
     def store(self) -> list[str]:
         return sorted(os.listdir(os.path.join(self.rroot(), hostsetup.CODE_STORE)))
@@ -272,7 +273,7 @@ class AddHostTest(Env):
             _ = f.write(b"#!/usr/bin/env python3\n")
             with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
                 for info, data in members:
-                    if info.filename == hostsetup.VERSION_FILE:
+                    if info.filename == pyz.VERSION_FILE:
                         data = (version + "\n").encode()
                     z.writestr(info, data)
         os.chmod(fake, 0o755)
@@ -497,7 +498,7 @@ class AddHostTest(Env):
         bin/taskmgr-remote) and ~/taskmgr.old-*. After the archive runs, they are deleted."""
         legacy = self.rpath("taskmgr")
         os.makedirs(os.path.join(legacy, "taskmgr"))
-        for rel in ("taskmgr/remote.py", hostsetup.VERSION_FILE):
+        for rel in ("taskmgr/remote.py", hostlegacy.LEGACY_MARKER):
             with open(os.path.join(legacy, rel), "w") as f:
                 _ = f.write("old\n")
         os.makedirs(self.rpath("taskmgr.old-20260101T000000Z", "taskmgr"))
@@ -524,7 +525,7 @@ class AddHostTest(Env):
         os.makedirs(self.rpath(".taskmgr-remote"))
         with open(self.rpath(".taskmgr-remote", old), "wb") as f:
             _ = f.write(data)
-        os.symlink(".taskmgr-remote/" + old, self.rpath(hostsetup.OLD_CODE_FILE))
+        os.symlink(".taskmgr-remote/" + old, self.rpath(hostlegacy.OLD_CODE_LINK))
         rc, out, err = self.add("--yes")
         self.assertEqual(rc, 0, err)
         self.expect(
@@ -538,7 +539,7 @@ class AddHostTest(Env):
             machines="changed",
             old_code="changed",
         )
-        self.assertFalse(os.path.lexists(self.rpath(hostsetup.OLD_CODE_FILE)))
+        self.assertFalse(os.path.lexists(self.rpath(hostlegacy.OLD_CODE_LINK)))
         self.assertFalse(os.path.exists(self.rpath(".taskmgr-remote", old)))
         self.assertEqual(self.installed_version(), pyz.code_version())
         rc, out, err = self.add("--yes", new=False)
@@ -546,31 +547,142 @@ class AddHostTest(Env):
         self.expect(out, err)
 
     def test_old_remote_root_is_reported(self) -> None:
-        """Data under ~/taskmgr-root (the old default) is not moved; host add warns and
+        """Data under ~/taskmgr-root (the old default) is not moved. Setting up another
+        remote_root next to it needs a confirmation by hand (--yes refuses);
         TASKMGR_REMOTE_ROOT keeps using it."""
-        os.makedirs(self.rpath("taskmgr-root"))
-        with open(self.rpath("taskmgr-root", "config.json"), "w") as f:
+        old = self.rpath("taskmgr-root")
+        os.makedirs(old)
+        with open(os.path.join(old, "config.json"), "w") as f:
             _ = f.write("{}\n")
-        rc, _, err = self.add(answers="n\n")
+        machines = self.machines_raw()
+        rc, out, err = self.add("--yes")
         self.assertEqual(rc, 2, err)
-        self.assertIn("taskmgr-root holds the data of an older setup", err)
-        self.assertIn("TASKMGR_REMOTE_ROOT=~/taskmgr-root", err)
+        self.expect(out, err, ssh="failed", **{s: "skipped" for s in ALL_STEPS[1:]})
+        detail = self.detail(out, "ssh")
+        self.assertIn("%s already holds taskmgr data" % old, detail)
+        self.assertIn("TASKMGR_REMOTE_ROOT=%s" % old, detail)
+        self.assertIn("run without --yes and confirm", detail)
+        self.assertEqual(sorted(os.listdir(self.rhome)), [".fake-systemd", "taskmgr-root"])
+        self.assertEqual(self.machines_raw(), machines)
+        rc, out, err = self.add(answers="n\n")
+        self.assertEqual(rc, 2, err)
+        self.assertEqual(self.statuses(out)["ssh"], "declined")
+        self.assertIn("TASKMGR_REMOTE_ROOT=%s" % old, err)
         self.env[hostsetup.REMOTE_ROOT_ENV] = "~/taskmgr-root"
         rc, _, err = self.add("--yes")
         self.assertEqual(rc, 0, err)
-        self.assertNotIn("older setup", err)
+        self.assertNotIn("already holds taskmgr data", err)
         self.assertEqual(self.entry()["remote_root"], self.rpath("taskmgr-root"))
         self.assertTrue(os.path.islink(self.rpath("taskmgr-root", hostsetup.CODE_FILE)))
         self.assertFalse(os.path.exists(self.rroot()))
 
     def test_unrelated_taskmgr_directory_is_left_alone(self) -> None:
-        mine = self.rpath("taskmgr", "notes.txt")
+        """Only a tree with the old installer's marker is old code; a checkout of taskmgr
+        (taskmgr/remote.py, even with a marker, but with .git) is the user's."""
+        mine = self.rpath("taskmgr", "taskmgr", "remote.py")
         os.makedirs(os.path.dirname(mine))
         open(mine, "w").close()
         rc, out, err = self.add("--yes")
         self.assertEqual(rc, 0, err)
         self.assertEqual(self.statuses(out)["old_code"], "ok")
         self.assertTrue(os.path.exists(mine))
+        for tree in (self.rpath("taskmgr"), self.rpath("taskmgr.old-20260101T000000Z")):
+            os.makedirs(os.path.join(tree, ".git"), exist_ok=True)
+            open(os.path.join(tree, hostlegacy.LEGACY_MARKER), "w").close()
+        rc, out, err = self.add("--yes", new=False)
+        self.assertEqual(rc, 0, err)
+        self.expect(out, err)
+        self.assertTrue(os.path.exists(mine))
+        self.assertTrue(os.path.isdir(self.rpath("taskmgr.old-20260101T000000Z", ".git")))
+
+    def test_switching_remote_root_needs_a_confirmation_by_hand(self) -> None:
+        """TASKMGR_REMOTE_ROOT other than the entry's (which holds data): --yes refuses and
+        changes nothing; confirmed by hand, the entry and the unit use the new one."""
+        rc, _, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
+        unit = self.rpath(".config/systemd/user/taskmgr-remote.service")
+        with open(unit) as f:
+            before = f.read()
+        pid = self.main_pid()
+        self.env[hostsetup.REMOTE_ROOT_ENV] = "~/elsewhere"
+        rc, out, err = self.add("--yes", new=False)
+        self.assertEqual(rc, 2, err)
+        self.expect(out, err, ssh="failed", **{s: "skipped" for s in ALL_STEPS[1:]})
+        self.assertIn("%s already holds taskmgr data" % self.rroot(), self.detail(out, "ssh"))
+        with open(unit) as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(self.entry()["remote_root"], self.rroot())
+        self.assertFalse(os.path.exists(self.rpath("elsewhere")))
+        self.assertEqual(self.main_pid(), pid)
+        rc, out, err = self.add(new=False, answers="y\n" * 20)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.entry()["remote_root"], self.rpath("elsewhere"))
+        self.assertTrue(os.path.isfile(self.rpath("elsewhere", "config.json")))
+        self.assertTrue(os.path.isfile(os.path.join(self.rroot(), "config.json")))  # kept
+
+    def test_archive_of_the_running_daemon_is_kept(self) -> None:
+        """Old archives are removed only once the daemon runs the new code: one that the
+        running daemon was started from stays while a restart is declined."""
+        rc, _, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
+        current = self.installed_version()[:16] + ".pyz"
+        a, b, c = ("a" * 64, "b" * 64, "c" * 64)
+        self.set_installed_version(a)
+        p = subprocess.run(
+            ["systemctl", "--user", "restart", "taskmgr-remote"],
+            env=dict(self.env, HOME=self.rhome),
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)  # the daemon runs archive a now
+        self.set_installed_version(b)
+        rc, out, err = self.add(answers="y\nn\n")  # install the current code; no restart
+        self.assertEqual(rc, 2, err)
+        self.assertEqual(self.statuses(out)["service"], "declined")
+        self.assertEqual(self.store(), sorted([current, a[:16] + ".pyz", b[:16] + ".pyz"]))
+        self.set_installed_version(c)
+        rc, out, err = self.add("--yes", new=False)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("removed older archives", self.detail(out, "code"))
+        self.assertEqual(self.store(), sorted([current, c[:16] + ".pyz"]))
+
+    def test_interrupted_uploads_are_removed(self) -> None:
+        rc, _, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
+        store = os.path.join(self.rroot(), hostsetup.CODE_STORE)
+        old = os.path.join(store, "0123456789abcdef.pyz.new-abc123")
+        fresh = os.path.join(store, "0123456789abcdef.pyz.new-def456")
+        for path in (old, fresh):
+            open(path, "w").close()
+        hour_ago = time.time() - 3600
+        os.utime(old, (hour_ago, hour_ago))
+        rc, out, err = self.add("--yes", new=False)
+        self.assertEqual(rc, 0, err)
+        self.expect(out, err)
+        self.assertIn("removed interrupted uploads", self.detail(out, "code"))
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(fresh))  # may be an upload in progress
+
+    def test_a_second_run_does_not_interleave(self) -> None:
+        """While another run holds the server's setup lock, a run stops after step ssh."""
+        run_dir = os.path.join(self.tmp, "run")
+        os.makedirs(run_dir)
+        self.env["XDG_RUNTIME_DIR"] = run_dir
+        path = os.path.join(run_dir, "taskmgr-hostsetup-%d.lock" % os.getuid())
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            _ = os.write(fd, b"4242")
+            rc, out, err = self.add("--yes")
+            self.assertEqual(rc, 2, err)
+            self.expect(out, err, ssh="failed", **{s: "skipped" for s in ALL_STEPS[1:]})
+            self.assertIn("another `task host add`", self.detail(out, "ssh"))
+            self.assertIn("pid 4242", self.detail(out, "ssh"))
+            self.assertEqual(sorted(os.listdir(self.rhome)), [".fake-systemd"])
+        finally:
+            os.close(fd)
+        rc, _, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
 
     def test_existing_config_is_never_overwritten(self) -> None:
         os.makedirs(self.rroot())
@@ -725,7 +837,7 @@ class AddHostTest(Env):
             _ = f.write(b"#!/usr/bin/env python3\n")
             with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
                 for info, data in members:
-                    if info.filename == hostsetup.VERSION_FILE:
+                    if info.filename == pyz.VERSION_FILE:
                         data = b"0" * 64 + b"\n"
                     z.writestr(info, data)
         rc, out, err = self.add("--yes", archive=stale)
@@ -881,21 +993,23 @@ class AddHostUnitTest(unittest.TestCase):
 
     def test_unit_matches_the_shipped_template(self) -> None:
         def directives(text: str) -> list[str]:
-            return [
-                line
-                for line in text.splitlines()
-                if line and not line.startswith(("#", "ExecStart="))
-            ]
+            return [line for line in text.splitlines() if line and not line.startswith("#")]
 
         with open(os.path.join(REPO, "taskmgr", "deploy", "taskmgr-remote.user.service")) as f:
-            template = f.read()
-        unit = hostsetup.unit_text("/usr/bin/python3", "/scratch/t root/%x")
+            template = f.read().replace("%h", "/home/u")
+        unit = hostsetup.unit_text("/usr/bin/python3", "/home/u/.taskmgr-remote")
         self.assertEqual(directives(unit), directives(template))
+        unit = hostsetup.unit_text("/usr/bin/python3", "/scratch/t root/%x")
         self.assertIn(
             '\nExecStart=/usr/bin/python3 "/scratch/t root/%%x/taskmgr-remote.pyz" '
             + '--root "/scratch/t root/%%x" serve\n',
             unit,
         )
+
+    def test_config_example_matches_the_defaults(self) -> None:
+        with open(os.path.join(REPO, "taskmgr", "deploy", "config.example.json")) as f:
+            example = cast(JsonValue, json.load(f))
+        self.assertEqual(example, DEFAULT_REMOTE_CONFIG)
 
     def test_ssh_options_and_shell_argv(self) -> None:
         opts = hostsetup.merge_ssh_options(

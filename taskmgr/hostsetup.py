@@ -6,12 +6,14 @@ yes). A run on an up-to-date server changes nothing and asks nothing. Nothing ne
 
 Steps: ssh (read-only checks), code, remote_root, data, unit, service, linger, verify
 (read-only), machines (the local machine list), old_code (removes code that older versions
-installed outside remote_root). Everything on the server lives in remote_root (default
-~/.taskmgr-remote, or $TASKMGR_REMOTE_ROOT): config.json, the job data, the code
-versions/<version>.pyz (built by taskmgr.pyz) and the symlink taskmgr-remote.pyz to it. An
-installed archive is never modified: an update adds a file and switches the link (see
-pyz.MAIN_PY for why). Progress and prompts go to stderr; the
-result is a summary of the steps (text on stdout, or JSON with --detail; see hostcmds).
+installed outside remote_root; see hostlegacy). Everything on the server lives in
+remote_root (default ~/.taskmgr-remote, or $TASKMGR_REMOTE_ROOT): config.json, the job data,
+the code versions/<version>.pyz (built by taskmgr.pyz) and the symlink taskmgr-remote.pyz to
+it. An installed archive is never modified: an update adds a file and switches the link (see
+pyz.MAIN_PY for why). What runs on the server is in hostserver. From the end of step ssh to
+the end of the run, a lock on the server keeps a second run for the same server user out.
+Progress and prompts go to stderr; the result is a summary of the steps (text on stdout, or
+JSON with --detail; see hostcmds).
 """
 
 import datetime
@@ -19,34 +21,26 @@ import difflib
 import json
 import os
 import re
+import select
 import shlex
-import sys
+import subprocess
 import time
 from collections.abc import Callable, Mapping
 from typing import Protocol, TypedDict, cast
 
-from . import pyz
-from .common import (
-    DEFAULT_REMOTE_CONFIG,
-    TaskmgrError,
-    atomic_write_bytes,
-    flocked,
-    read_json,
-)
-from .pyz import VERSION_FILE as VERSION_FILE
+from . import hostlegacy, pyz
+from .common import DEFAULT_REMOTE_CONFIG, TaskmgrError, read_code_file
+from .hostlegacy import OLD_REMOTE_ROOT, LegacyProbe
+from .prompt import Declined, NonInteractive, Ui
 from .records import JsonDict, JsonValue, Server, SshConfig
-from .textout import BOLD, CYAN, GREEN, RED, YELLOW, paint
-from .transport import Remote, load_machines
+from .textout import BOLD, CYAN, GREEN, RED, YELLOW
+from .transport import Remote, edit_machines, load_machines
 
 # Under remote_root:
 CODE_FILE = pyz.REMOTE_PYZ  # the installed code, a symlink into CODE_STORE
-CODE_STORE = "versions"  # <version>.pyz files: the current one and the previous one
+CODE_STORE = "versions"  # <version>.pyz files: the current one, the previous one, in use
 BACKUP_DIR = "backups"  # backups/<UTC time>/: job directories the new code cannot handle
-# Under $HOME, written by older versions:
-LEGACY_DIR = "taskmgr"  # the code tree of versions before the zipapp
-OLD_CODE_FILE = pyz.REMOTE_PYZ  # ~/taskmgr-remote.pyz, a symlink into OLD_CODE_STORE
-OLD_CODE_STORE = ".taskmgr-remote"  # ~/.taskmgr-remote/<version>.pyz
-OLD_REMOTE_ROOT = "taskmgr-root"  # the default remote_root of older versions
+STALE_UPLOAD_MINUTES = 10  # CODE_STORE/*.new-* older than this: an interrupted upload
 UNIT = "taskmgr-remote"
 UNIT_DIR = ".config/systemd/user"  # under the remote $HOME
 DEFAULT_REMOTE_ROOT = "~/.taskmgr-remote"
@@ -73,147 +67,8 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
 fi
 """
 
-# Read-only probe, run with the server's python3 (any Python 3, so it can report an old
-# one). argv[1] is the remote_root as given (may start with ~). Prints one JSON object.
-PROBE = r"""
-import fcntl, json, os, pwd, re, subprocess, sys, time
-
-def run(argv):
-    try:
-        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, universal_newlines=True)
-    except OSError as e:
-        return 127, "", str(e)
-    try:
-        out, err = p.communicate(timeout=60)
-    except subprocess.TimeoutExpired:
-        p.kill()
-        out, err = p.communicate()
-        return 124, out.strip(), "timed out"
-    return p.returncode, out.strip(), err.strip()
-
-def read(path):
-    try:
-        with open(path) as f:
-            return f.read()
-    except (OSError, UnicodeDecodeError):
-        return None
-
-def zip_text(path, name):
-    try:
-        import zipfile
-        with zipfile.ZipFile(path) as z:
-            return z.read(name).decode()
-    except Exception:
-        return None
-
-def mtime(path):
-    try:
-        return os.stat(path).st_mtime
-    except OSError:
-        return None
-
-def started(pid):
-    # wall-clock start of pid: now - (uptime - start ticks), precise to a clock tick
-    try:
-        with open("/proc/%d/stat" % pid) as f:
-            data = f.read()
-        with open("/proc/uptime") as f:
-            uptime = float(f.read().split()[0])
-        ticks = float(data[data.rfind(")") + 2:].split()[19])
-    except (OSError, ValueError, IndexError):
-        return None
-    return time.time() - (uptime - ticks / os.sysconf("SC_CLK_TCK"))
-
-home = os.path.expanduser("~")
-user = pwd.getpwuid(os.getuid()).pw_name
-spec = sys.argv[1]
-if spec == "~" or spec.startswith("~/"):
-    root = home + spec[1:]
-elif os.path.isabs(spec):
-    root = spec
-else:
-    root = os.path.join(home, spec)
-root = os.path.normpath(root)
-code = os.path.join(root, "taskmgr-remote.pyz")
-store = os.path.join(root, "versions")
-legacy = os.path.join(home, "taskmgr")
-old_code = os.path.join(home, "taskmgr-remote.pyz")
-old_store = os.path.join(home, ".taskmgr-remote")
-old_root = os.path.join(home, "taskmgr-root")
-unit = os.path.join(home, ".config", "systemd", "user", "taskmgr-remote.service")
-out = {
-    "python": sys.executable,
-    "python_version": list(sys.version_info[:2]),
-    "uname": os.uname()[0],
-    "home": home,
-    "user": user,
-    "root": root,
-    "root_exists": os.path.isdir(root),
-    "config_exists": os.path.lexists(os.path.join(root, "config.json")),
-    "code_exists": os.path.lexists(code),
-    "code_target": os.readlink(code) if os.path.islink(code) else None,
-    "code_store": sorted(os.listdir(store)) if os.path.isdir(store) else [],
-    "legacy_code": os.path.isdir(legacy) and not os.path.islink(legacy) and (
-        os.path.exists(os.path.join(legacy, ".taskmgr-code-version"))
-        or os.path.exists(os.path.join(legacy, "taskmgr", "remote.py"))),
-    "unit": read(unit),
-    "unit_mtime": mtime(unit),
-    "old_code_dirs": sorted(n for n in os.listdir(home) if n.startswith("taskmgr.old-")),
-    # code of the first zipapp layout: ~/taskmgr-remote.pyz -> .taskmgr-remote/<v>.pyz
-    "old_code_link": os.path.islink(old_code) and old_code != code,
-    "old_code_files": sorted(
-        n for n in (os.listdir(old_store) if os.path.isdir(old_store) else [])
-        if re.match(r"^[0-9a-f]{16}\.pyz(\.new-.*)?$", n)
-        and os.path.isfile(os.path.join(old_store, n))),
-    "old_root": os.path.normpath(old_root) != root
-        and os.path.exists(os.path.join(old_root, "config.json")),
-}
-version = zip_text(code, ".taskmgr-code-version")
-out["code_version"] = version.strip() if version is not None else None
-try:
-    # the link is made anew at every switch, so its own mtime is the time of the install
-    out["code_version_mtime"] = os.lstat(code).st_mtime
-except OSError:
-    out["code_version_mtime"] = None
-existing = root
-while not os.path.exists(existing):
-    existing = os.path.dirname(existing)
-rc, fs, _ = run(["stat", "-f", "-c", "%T", existing])
-out["fs_path"] = existing
-out["fs_type"] = fs if rc == 0 else None
-rc, _, err = run(["systemctl", "--user", "show-environment"])
-out["systemd_ok"] = rc == 0
-out["systemd_error"] = err
-out["active"] = run(["systemctl", "--user", "is-active", "taskmgr-remote"])[1]
-out["enabled"] = run(["systemctl", "--user", "is-enabled", "taskmgr-remote"])[1]
-pid = run(["systemctl", "--user", "show", "taskmgr-remote", "-p", "MainPID"])[1]
-pid = pid.split("=", 1)[-1]
-out["main_pid"] = int(pid) if pid.isdigit() else 0
-out["main_started"] = started(out["main_pid"]) if out["main_pid"] else None
-rc, linger, err = run(["loginctl", "show-user", user, "-p", "Linger"])
-out["linger"] = linger.split("=", 1)[1] if rc == 0 and linger.startswith("Linger=") else None
-out["linger_error"] = err
-held, dpid = False, None
-try:
-    fd = os.open(os.path.join(root, "locks", "daemon.lock"), os.O_RDONLY)
-except OSError:
-    fd = None
-if fd is not None:
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except OSError:
-            held = True
-        text = os.read(fd, 64).decode(errors="replace").strip()
-        dpid = int(text) if held and text.isdigit() else None
-    finally:
-        os.close(fd)
-out["daemon_running"] = held
-out["daemon_pid"] = dpid
-out["now"] = time.time()
-print(json.dumps(out))
-"""
+# hostserver.py, the script run on the server (as `python3 -c`).
+SERVER_SCRIPT = "taskmgr/hostserver.py"
 
 
 class AddHostArgs(Protocol):
@@ -240,18 +95,15 @@ class Probe(TypedDict, total=False):
     root: str
     root_exists: bool
     config_exists: bool
+    unit_root: str | None  # the --root of the installed unit
+    data_roots: list[str]  # other directories with a config.json (see probe_params)
     code_exists: bool
-    code_target: str | None
     code_store: list[str]
-    legacy_code: bool
     code_version: str | None
     code_version_mtime: float | None
     unit: str | None
     unit_mtime: float | None
-    old_code_dirs: list[str]
-    old_code_link: bool
-    old_code_files: list[str]
-    old_root: bool
+    legacy: LegacyProbe
     fs_path: str
     fs_type: str | None
     systemd_ok: bool
@@ -264,7 +116,6 @@ class Probe(TypedDict, total=False):
     linger_error: str
     daemon_running: bool
     daemon_pid: int | None
-    now: float
 
 
 class Step(TypedDict):
@@ -275,16 +126,8 @@ class Step(TypedDict):
     detail: str
 
 
-class Declined(Exception):
-    """The user answered no."""
-
-
 class StepFailed(Exception):
     """The step cannot reach the wanted state; the message says why."""
-
-
-class NonInteractive(StepFailed):
-    pass
 
 
 def utc_stamp() -> str:
@@ -399,51 +242,35 @@ def parse_destination(dest: str) -> tuple[str | None, str]:
     return (user if sep else None), host
 
 
-# ---------------------------------------------------------------------------
-# Prompts
+def destination(s: Server) -> str:
+    """user@host[:port] of an ssh entry; "local" for the test-only local transport."""
+    if s.get("transport", "ssh") == "local":
+        return "local"
+    ssh = s.get("ssh") or {}
+    dest = ssh.get("host", "")
+    user, port = ssh.get("user"), ssh.get("port")
+    if user:
+        dest = "%s@%s" % (user, dest)
+    if port:
+        dest += ":%d" % port
+    return dest
 
 
-# Color of a step's result line.
-STATUS_SGR = {"ok": GREEN, "changed": GREEN, "skipped": YELLOW, "declined": YELLOW, "failed": RED}
+# Color of a step's status (progress on stderr and the summary table).
+STEP_COLORS = {
+    "ok": GREEN,
+    "changed": "1;32",  # bold green: done, and something was changed
+    "skipped": YELLOW,
+    "declined": YELLOW,
+    "failed": RED,
+}
 
 
-class Ui:
-    """Progress and prompts on stderr; answers from stdin."""
-
-    def __init__(self, yes: bool) -> None:
-        self.yes: bool = yes
-        # TASKMGR_TEST_INTERACTIVE=1: test-only, answers come from a pipe instead of a TTY.
-        self.interactive: bool = sys.stdin.isatty() or (
-            os.environ.get("TASKMGR_TEST_INTERACTIVE") == "1"
-        )
-
-    @staticmethod
-    def say(text: str = "", sgr: str | None = None) -> None:
-        _ = sys.stderr.write(paint(text, sgr) + "\n")
-        _ = sys.stderr.flush()
-
-    def info(self, text: str, sgr: str | None = None) -> None:
-        for line in text.splitlines() or [""]:
-            self.say("      " + paint(line, sgr))
-
-    def confirm(self, change: str) -> None:
-        """Describe a change and ask; raises Declined or NonInteractive."""
-        self.info("change: " + change, YELLOW)
-        if self.yes:
-            self.say("      %s y (--yes)" % paint("proceed? [y/N]", BOLD))
-            return
-        if not self.interactive:
-            raise NonInteractive(
-                "a change is needed but stdin is not a terminal; run it in a terminal or "
-                + "pass --yes (nothing was changed by this step)"
-            )
-        _ = sys.stderr.write("      %s " % paint("proceed? [y/N]", BOLD))
-        _ = sys.stderr.flush()
-        answer = sys.stdin.readline()
-        if not answer:
-            self.say("")
-        if answer.strip().lower() not in ("y", "yes"):
-            raise Declined("declined: " + change)
+def server_script() -> str:
+    text = read_code_file(SERVER_SCRIPT)
+    if text is None:
+        raise StepFailed("%s is missing from this copy of taskmgr" % SERVER_SCRIPT)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +296,9 @@ class HostSetup:
         self.files: int = 0
         self.staged: str | None = None  # uploaded archive waiting for the data check
         self.code_changed: bool = False
+        self.previous_code: str | None = None  # the archive the link pointed to before
         self.unit_changed: bool = False
+        self.locker: subprocess.Popen[bytes] | None = None  # holds the server's setup lock
         self.steps: list[Step] = []
 
     # -- the wanted machine entry ---------------------------------------------
@@ -521,9 +350,10 @@ class HostSetup:
         return entry
 
     def destination(self) -> str:
-        if self.entry.get("transport") == "local":
-            return "local (test transport)"
-        return self.remote.ssh_argv()[-1]
+        return destination(self.entry)
+
+    def host_name(self) -> str:
+        return self.args.name
 
     # -- running steps ----------------------------------------------------------
     def run(self) -> tuple[Mapping[str, object], int]:
@@ -553,17 +383,18 @@ class HostSetup:
                     status, detail = fn()
                 except Declined as e:
                     status, detail = "declined", str(e)
-                except StepFailed as e:
+                except (StepFailed, NonInteractive) as e:
                     status, detail = "failed", str(e)
                 except TaskmgrError as e:
                     status, detail = "failed", e.message
-                self.ui.info("-> %s: %s" % (status, detail), STATUS_SGR.get(status))
+                self.ui.info("-> %s: %s" % (status, detail), STEP_COLORS.get(status))
                 self.steps.append({"name": name, "status": status, "detail": detail})
                 if status in ("declined", "failed") and required:
                     stopped_by = "step %s %s" % (name, status)
         finally:
             if self.staged is not None:
                 self._discard_staged(stopped_by or "the run ended early")
+            _ = self._unlock()
         complete = all(s["status"] in ("ok", "changed") for s in self.steps)
         self.ui.say(
             "done: %s" % ("the server is set up" if complete else "NOT complete, see the steps"),
@@ -580,15 +411,36 @@ class HostSetup:
             raise StepFailed("remote command failed (exit %d): %s" % (rc, err.strip()[-1500:]))
         return out
 
+    def server_command(self, params: Mapping[str, object]) -> str:
+        """Shell command that runs hostserver.py with PARAMS on the server."""
+        return "exec python3 -c %s %s\n" % (q(server_script()), q(json.dumps(params)))
+
+    def probe_params(self, spec: str) -> dict[str, object]:
+        # Where data may already be: the existing entry's remote_root, else the default
+        # of older versions (hostserver adds the installed unit's --root).
+        old = self.existing
+        data_roots = [old["remote_root"]] if old is not None else ["~/" + OLD_REMOTE_ROOT]
+        return {
+            "mode": "probe",
+            "root": spec,
+            "code": CODE_FILE,
+            "store": CODE_STORE,
+            "version_file": pyz.VERSION_FILE,
+            "unit": "%s/%s.service" % (UNIT_DIR, UNIT),
+            "unit_name": UNIT,
+            "data_roots": data_roots,
+            "legacy": hostlegacy.probe_params(),
+        }
+
     def run_probe(self, root_spec: str | None = None) -> Probe:
         spec = root_spec or self.probe.get("root") or DEFAULT_REMOTE_ROOT
         script = (
             "if ! command -v python3 >/dev/null 2>&1; then\n"
             + '  printf \'{"python": null, "uname": "%s"}\\n\' "$(uname -s)"; exit 0\n'
             + "fi\n"
-            + "exec python3 - %s\n" % q(spec)
+            + self.server_command(self.probe_params(spec))
         )
-        out = self.sh(script, PROBE.encode(), timeout=120)
+        out = self.sh(script, timeout=120)
         try:
             obj = cast(JsonValue, json.loads(out.strip().splitlines()[-1]))
         except (ValueError, IndexError):
@@ -597,6 +449,9 @@ class HostSetup:
             raise StepFailed("the server probe printed no JSON object")
         self.probe = cast(Probe, cast(object, obj))
         return self.probe
+
+    def legacy_probe(self) -> LegacyProbe:
+        return self.run_probe().get("legacy") or {}
 
     def p_home(self) -> str:
         return self.probe.get("home") or ""
@@ -674,15 +529,81 @@ class HostSetup:
                 + "Set %s to a directory on a local disk " % REMOTE_ROOT_ENV
                 + "(e.g. /scratch/<user>/taskmgr-remote) and run again."
             )
-        if p.get("old_root"):
-            self.ui.info(
-                "WARNING: %s/%s holds the data of an older setup; this run uses %s. "
-                % (p.get("home"), OLD_REMOTE_ROOT, root)
-                + "To keep using the old data, stop here and run again with "
-                + "%s=~/%s" % (REMOTE_ROOT_ENV, OLD_REMOTE_ROOT),
-                YELLOW,
-            )
+        self._check_root_switch()
+        self._lock()
         return "ok", "%s, Python %s, systemd user instance ok" % (self.destination(), vtext)
+
+    def _check_root_switch(self) -> None:
+        """Data in another remote_root (the existing entry's, the installed unit's, or the
+        default of older versions) would be orphaned: the unit is rewritten to this run's
+        remote_root and the daemon restarted there. That needs a confirmation by hand;
+        --yes does not give it."""
+        p = self.probe
+        root = self.root()
+        others = list(p.get("data_roots") or [])
+        old = os.path.normpath("%s/%s" % (self.p_home(), OLD_REMOTE_ROOT))
+        if p.get("unit_root") not in (None, old):
+            # a unit for another remote_root: the old default was left behind on purpose
+            others = [d for d in others if d != old]
+        if not others:
+            return
+        where = ", ".join(others)
+        problem = (
+            "%s already holds taskmgr data (config.json), but this run sets up remote_root " % where
+            + "%s: the service would run on %s and no longer see the jobs in %s"
+            % (root, root, where)
+        )
+        keep = "to keep using it, run again with %s=%s" % (REMOTE_ROOT_ENV, others[0])
+        if self.ui.yes:
+            raise StepFailed(
+                "%s. Nothing was changed; %s, or to use %s anyway run without --yes and "
+                % (problem, keep, root)
+                + "confirm"
+            )
+        self.ui.info("WARNING: %s; %s" % (problem, keep), YELLOW)
+        self.ui.confirm(
+            "use %s as remote_root; the data in %s stays where it is, unused" % (root, where)
+        )
+
+    # -- the server's setup lock --------------------------------------------------
+    def _lock(self) -> None:
+        """Take the setup lock on the server, held by a process there until _unlock."""
+        script = PRELUDE + self.server_command({"mode": "lock"})
+        env = self.remote._env()  # pyright: ignore[reportPrivateUsage]
+        p = subprocess.Popen(
+            self.remote.shell_argv(script),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        self.locker = p
+        assert p.stdout is not None
+        ready, _, _ = select.select([p.stdout], [], [], 120)
+        line = cast(bytes, p.stdout.readline()).decode(errors="replace").strip() if ready else ""
+        if line.startswith("locked "):
+            self.ui.info("holding the setup lock %s" % line[len("locked ") :])
+            return
+        err = self._unlock()
+        if line.startswith("busy "):
+            _, path, pid = (line.split(" ", 2) + ["?", "?"])[:3]
+            raise StepFailed(
+                "another `task host add` for this server is running (pid %s on the server " % pid
+                + "holds %s); wait for it to end, then run again" % path
+            )
+        raise StepFailed("could not take the setup lock on the server: %s" % (line or err))
+
+    def _unlock(self) -> str:
+        """Release the setup lock (if held); returns the locker's stderr."""
+        p, self.locker = self.locker, None
+        if p is None:
+            return ""
+        try:
+            _, err = p.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            _, err = p.communicate()
+        return err.decode(errors="replace").strip()[-500:]
 
     # -- 2. code ----------------------------------------------------------------
     def step_code(self) -> tuple[str, str]:
@@ -693,8 +614,9 @@ class HostSetup:
         installed = self.probe.get("code_version")
         short = self.version[:12]
         self.ui.info("local version %s; installed: %s" % (short, (installed or "none")[:12]))
+        cleaned = self._remove_stale_uploads()
         if installed == self.version:
-            return "ok", "already up to date (%s)" % short
+            return "ok", "already up to date (%s)%s" % (short, cleaned)
         path = self.code_path()
         store = self.store_path()
         final = "%s/%s" % (store, self.archive_name())
@@ -706,7 +628,8 @@ class HostSetup:
         self.ui.confirm(
             "%s: upload %s (%d KB, %d files inside) to %s/, and after step data point %s at "
             % (what, CODE_FILE, size // 1024, self.files, store, path)
-            + "%s (the previous archive is kept, older ones are removed)" % final
+            + "%s (the previous archive is kept; once the service runs the new code, " % final
+            + "older ones that no running job uses are removed)"
         )
         with open(self.pyz, "rb") as f:
             data = f.read()
@@ -725,7 +648,26 @@ class HostSetup:
         self.staged = staged
         self.ui.info("uploaded to %s" % staged)
         # Status is finalized when the staged file is moved into place (after step data).
-        return "changed", "uploaded version %s to %s (installed after step data)" % (short, staged)
+        return "changed", "uploaded version %s to %s (installed after step data)%s" % (
+            short,
+            staged,
+            cleaned,
+        )
+
+    def _remove_stale_uploads(self) -> str:
+        """Remove what interrupted uploads left in CODE_STORE (the setup lock keeps
+        uploads of other runs out; the age is a second guard). Returns a detail suffix."""
+        store = self.store_path()
+        out = self.sh(
+            "if [ -d %s ]; then find %s -maxdepth 1 -type f -name '*.new-*' -mmin +%d "
+            % (q(store), q(store), STALE_UPLOAD_MINUTES)
+            + "-print -delete; fi\n"
+        )
+        removed = [os.path.basename(line) for line in out.splitlines() if line.strip()]
+        if not removed:
+            return ""
+        self.ui.info("removed interrupted uploads: %s" % ", ".join(removed))
+        return "; removed interrupted uploads %s" % ", ".join(removed)
 
     def _install_staged(self) -> None:
         staged = self.staged
@@ -734,8 +676,8 @@ class HostSetup:
         final = "%s/%s" % (store, name)
         # The archive gets its final name (an existing file of this version stays as it is:
         # a process may be reading it), then a new link replaces `path` with one rename, so
-        # `path` exists at every moment. Archives other than this one and the one the link
-        # pointed to before are removed (nothing reads them after its start).
+        # `path` exists at every moment. Old archives are removed only in step service, once
+        # the daemon runs this one (see _prune_code).
         script = (
             "set -e\n"
             + "prev=$(readlink %s 2>/dev/null || true)\n" % q(path)
@@ -743,28 +685,44 @@ class HostSetup:
             % (q(final), q(staged), q(staged), q(final))
             + "ln -s %s %s\n" % (q("%s/%s" % (CODE_STORE, name)), q(path + ".link-new"))
             + "mv -f %s %s\n" % (q(path + ".link-new"), q(path))
-            + 'keep=$(basename "${prev:-none}")\n'
-            + "for f in %s/*; do\n" % q(store)
-            + '  b=$(basename "$f")\n'
-            + '  if [ "$b" != %s ] && [ "$b" != "$keep" ]; then rm -f "$f"; fi\n' % q(name)
-            + "done\n"
+            + 'echo "prev=$prev"\n'
         )
-        _ = self.sh(script)
+        last = (self.sh(script).strip().splitlines() or [""])[-1]
         self.staged = None
         self.code_changed = True
+        prev = os.path.basename(last[len("prev=") :]) if last.startswith("prev=") else ""
         p = self.run_probe()
         if p.get("code_version") != self.version:
             raise StepFailed(
                 "after the switch %s reports version %r" % (path, p.get("code_version"))
             )
         detail = "installed version %s: %s -> %s" % (self.version[:12], path, final)
-        previous = [n for n in p.get("code_store") or [] if n != name]
-        if previous:
-            detail += "; previous archive kept: %s/%s" % (store, previous[0])
+        if prev and prev != name and prev in (p.get("code_store") or []):
+            self.previous_code = prev
+            detail += "; previous archive kept: %s/%s" % (store, prev)
+        self._set_code_detail(detail)
+
+    def _set_code_detail(self, detail: str) -> None:
         self.ui.info("code: " + detail)
         for s in self.steps:
             if s["name"] == "code":
                 s["detail"] = detail
+
+    def _prune_code(self) -> None:
+        """After the daemon was (re)started on the code installed in this run: remove the
+        archives that are neither that code, the previous one, nor in use by a process
+        (a running job's shim imports from the archive it was started with)."""
+        keep = [self.archive_name()] + ([self.previous_code] if self.previous_code else [])
+        params = {"mode": "prune", "store": self.store_path(), "keep": keep}
+        out = self.sh(self.server_command(params), timeout=120)
+        try:
+            reply = cast(JsonValue, json.loads(out.strip().splitlines()[-1]))
+        except (ValueError, IndexError):
+            raise StepFailed("removing old archives printed no JSON: %r" % out[-500:]) from None
+        removed = _strs(reply.get("removed") if isinstance(reply, dict) else None)
+        if removed:
+            detail = next(s["detail"] for s in self.steps if s["name"] == "code")
+            self._set_code_detail("%s; removed older archives %s" % (detail, ", ".join(removed)))
 
     def _discard_staged(self, why: str) -> None:
         staged = self.staged
@@ -1034,6 +992,8 @@ class HostSetup:
                 "the daemon to start and take locks/daemon.lock",
             )
             self.ui.info("daemon running, pid %s" % p.get("main_pid"))
+        if self.code_changed:
+            self._prune_code()
         if not done:
             return "ok", "%s is enabled and active (pid %s)" % (UNIT, p.get("main_pid"))
         return "changed", "%s (pid %s)" % (", ".join(done), self.probe.get("main_pid"))
@@ -1107,21 +1067,16 @@ class HostSetup:
         self.ui.confirm(
             "%s %s in %s" % ("add" if old is None else "update", self.args.name, self.machines_path)
         )
-        os.makedirs(self.home, exist_ok=True)
-        with flocked(os.path.join(self.home, "machines.lock")):
-            empty: JsonDict = {"servers": []}
-            data = read_json(self.machines_path) or empty
-            servers = data.get("servers") if isinstance(data, dict) else data
-            if not isinstance(servers, list):
-                raise StepFailed('%s must contain a "servers" array' % self.machines_path)
-            new = cast(JsonValue, json.loads(json.dumps(want)))
+        new = cast(JsonValue, json.loads(json.dumps(want)))
+
+        def upsert(servers: list[JsonValue]) -> None:
             for i, s in enumerate(servers):
                 if isinstance(s, dict) and s.get("name") == self.args.name:
                     servers[i] = new
-                    break
-            else:
-                servers.append(new)
-            atomic_write_bytes(self.machines_path, (json.dumps(data, indent=2) + "\n").encode())
+                    return
+            servers.append(new)
+
+        edit_machines(self.home, upsert)
         return "changed", "%s %s in %s" % (
             "added" if old is None else "updated",
             self.args.name,
@@ -1130,39 +1085,7 @@ class HostSetup:
 
     # -- 10. code that older versions installed outside remote_root -------------------
     def step_old_code(self) -> tuple[str, str]:
-        p = self.run_probe()
-        home = self.p_home()
-        trees = ["%s/%s" % (home, LEGACY_DIR)] if p.get("legacy_code") else []
-        trees += ["%s/%s" % (home, d) for d in p.get("old_code_dirs") or []]
-        files = ["%s/%s" % (home, OLD_CODE_FILE)] if p.get("old_code_link") else []
-        old_store = "%s/%s" % (home, OLD_CODE_STORE)
-        files += ["%s/%s" % (old_store, n) for n in p.get("old_code_files") or []]
-        if not trees and not files:
-            return "ok", "no code of an older version"
-        self.ui.info(
-            "the service runs %s; this code from older versions is not used any more:"
-            % self.code_path()
-        )
-        for t in trees + files:
-            self.ui.info("  " + t)
-        self.ui.confirm(
-            "delete %s. Machine lists on other computers that still name "
-            % ", ".join(trees + files)
-            + "it stop working; run `task host add %s` there" % self.args.name
-        )
-        script = "rm -rf -- %s\n" % " ".join(q(t) for t in trees + files)
-        if old_store != self.root():
-            script += "rmdir %s 2>/dev/null || true\n" % q(old_store)
-        _ = self.sh(script)
-        left = self.run_probe()
-        if (
-            left.get("legacy_code")
-            or left.get("old_code_dirs")
-            or left.get("old_code_link")
-            or left.get("old_code_files")
-        ):
-            raise StepFailed("still there after rm -rf: %s" % ", ".join(trees + files))
-        return "changed", "deleted %s" % ", ".join(trees + files)
+        return hostlegacy.step_old_code(self)
 
 
 def _canon(s: Server) -> str:
