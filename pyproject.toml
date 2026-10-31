@@ -29,6 +29,22 @@ dev = [
 line-length = 100
 target-version = "py310"
 
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RET", "S", "BLE", "PIE"]
+ignore = [
+    "S603", "S607",  # subprocess calls are intentional here
+    "S606",          # os.exec*/spawn without a shell is intentional
+    "S101",          # asserts are used for type narrowing
+    "S103",          # 0o755 on scripts that must be executable
+    "UP031",         # codebase uses %-formatting consistently
+    "B009",          # getattr(obj, "name") is used to keep basedpyright strict mode happy
+    "SIM105",        # try/except/pass is fine; contextlib.suppress is not clearer
+    "SIM115",        # files handed to Popen / kept open on purpose
+]
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 150  # E501 threshold; ruff format still wraps at line-length = 100
+
 [tool.basedpyright]
 pythonVersion = "3.10"
 pythonPlatform = "Linux"  # the remote side relies on /proc, fork, setsid

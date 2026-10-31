@@ -18,11 +18,12 @@ uv tool install --editable /path/to/gpu-taskmgr   # 安装 `task` 和 `taskmgr-r
 # 不用 pip 的话：
 ln -s /path/to/gpu-taskmgr/bin/task ~/.local/bin/task
 
-task add host gpu1 --ssh tuner@10.0.0.12   # 配置服务器，并把它加入 machines.json
-task hosts
+task host add gpu1 --ssh tuner@10.0.0.12   # 配置服务器，并把它加入 machines.json
+task host list
+task host ping                             # 确认服务器有应答
 ```
 
-`task add host`（见下文）会创建 `~/.taskmgr/machines.json` 和其中的条目。也可以参照
+`task host add`（见下文）会创建 `~/.taskmgr/machines.json` 和其中的条目。也可以参照
 `taskmgr/deploy/machines.example.json` 手工编写这个文件。
 
 本地状态保存在 `$TASKMGR_HOME`（默认 `~/.taskmgr`，也可用 `task --home DIR ...` 指定）：
@@ -36,31 +37,49 @@ task hosts
 任务包就是普通的本地目录（或 `.tar.gz` 文件），放在哪里都可以。本地不保存 jobid 索引，也不
 保存运行状态。
 
-### 远程服务器：`task add host`（无需 root）
+### 单文件 zipapp（`.pyz`）
 
-守护进程以 **systemd 用户服务** 的形式运行在拥有这些作业的账号下，不需要 root 权限。
-`task add host` 通过 ssh 配置一台服务器，或更新已配置的服务器：
+在 checkout 里运行 `python3 -m taskmgr.pyz`，生成两个文件，只要有 `python3` >= 3.10 就能运行，
+不需要别的东西：
 
 ```sh
-task add host NAME --ssh USER@HOST [--port N] [--identity-file PATH]
-              [--remote-root DIR] [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
-task add host gpu1 --ssh tuner@10.0.0.12          # 新服务器
-task add host gpu1                                # 已有条目：检查并更新
+python3 -m taskmgr.pyz -o dist      # 生成 dist/task.pyz 和 dist/taskmgr-remote.pyz
+cp dist/task.pyz ~/.local/bin/task  # 本地 CLI 只有一个文件
+task version                        # commit 和 code_version 从压缩包里读取
 ```
 
-命令分九步执行。每一步都会输出它检查了什么、发现了什么。需要改动时，先说明要做的改动，再询问
+每个压缩包里是整个包（`taskmgr/`，不含 `tests/` 和 `__pycache__`），顶层另有 `pyproject.toml`、`.taskmgr-commit` 和 `.taskmgr-code-version`。
+code version 是 `taskmgr/` 的内容哈希，checkout 和由它构建的每个压缩包都相同，所以
+`task.pyz host add` 安装的代码和从 checkout 安装的一样，`task version` 显示服务器为 `up_to_date`。`taskmgr-remote.pyz` 可以运行 daemon 和 shim
+（daemon 把压缩包放进 shim 的 `PYTHONPATH`）；`taskmgr-remote.pyz version` 的 `code_dir`
+是压缩包路径。在 `.pyz` 里运行 `task update` 会报 `not_a_checkout`，需要重新构建。
+`task host add` 自己构建 `taskmgr-remote.pyz` 并安装到服务器（见下文），不需要事先构建。
+
+### 远程服务器：`task host add`（无需 root）
+
+守护进程以 **systemd 用户服务** 的形式运行在拥有这些作业的账号下，不需要 root 权限。
+`task host add` 通过 ssh 配置一台服务器，或更新已配置的服务器：
+
+```sh
+task host add NAME --ssh USER@HOST [--port N] [--identity-file PATH]
+              [--remote-root DIR] [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
+task host add gpu1 --ssh tuner@10.0.0.12          # 新服务器
+task host add gpu1                                # 已有条目：检查并更新
+```
+
+命令分十步执行。每一步都会输出它检查了什么、发现了什么。需要改动时，先说明要做的改动，再询问
 `proceed? [y/N]`；回答 `y` 以外的任何内容都会在这一步停止（退出码 2），后面的步骤不再执行。
 只读检查从不询问。`--yes` 对所有询问回答 yes。没有 `--yes`、stdin 也不是终端时，命令在第一处
 需要改动的地方停止（退出码 2），不做任何改动。
 
 这个命令是幂等的：服务器已是最新状态时，每一步都报告 `ok`，不做改动，也不询问。`git pull`
-（或修改代码）之后要更新服务器，再执行一次 `task add host NAME` 即可：只有代码这一步和服务重启
+（或修改代码）之后要更新服务器，再执行一次 `task host add NAME` 即可：只有代码这一步和服务重启
 会执行。
 
 | 步骤 | 检查 | 改动（每项都会询问） |
 | --- | --- | --- |
 | `ssh` | ssh 能连通（BatchMode）、Linux、`python3` >= 3.10、`systemctl --user` 可用、linger、已安装的代码版本、unit 文件、服务状态、`remote_root` 所在文件系统（NFS、CIFS、FUSE 等给出警告） | 无；检查失败则停止 |
-| `code` | 比较 `~/taskmgr/.taskmgr-code-version` 和本地包 | 把 `taskmgr/`（不含 `tests/` 和 `__pycache__`）和 `bin/taskmgr-remote` 上传到 `~/taskmgr.new-*`；`data` 步骤之后用它替换 `~/taskmgr`，旧目录保留为 `~/taskmgr.old-<时间>`（更早的 `~/taskmgr.old-*` 被删除） |
+| `code` | 比较 `~/taskmgr-remote.pyz` 内的代码版本和本地代码 | 构建 `taskmgr-remote.pyz`，上传到 `~/.taskmgr-remote/<版本>.pyz.new-*`；`data` 步骤之后改名为 `~/.taskmgr-remote/<版本>.pyz`，并把符号链接 `~/taskmgr-remote.pyz` 切换过去（一次 rename）。链接原来指向的压缩包保留，更早的删除 |
 | `remote_root` | `remote_root` 和 `config.json` 是否存在 | `mkdir -p`；`config.json` 不存在时写入默认配置；已有的 `config.json` 永远不会被覆盖 |
 | `data` | `taskmgr-remote inspect`（只读）：新代码无法处理的作业目录（协议 1 的 `attempts/`、`job.json` 缺少当前字段） | 停止服务，然后把这些目录（以及对应的 `submission-keys/*.json`）移到 `<remote_root>.backup-<UTC 时间>/`；不删除任何东西。可能仍在运行的作业（running、stopping、unknown，或位于 `in-progress/`）永远不会被移动：这一步失败并列出它们 |
 | `unit` | 比较 `~/.config/systemd/user/taskmgr-remote.service` 和生成的 unit（显示 diff） | 写入文件，执行 `systemctl --user daemon-reload` |
@@ -68,12 +87,14 @@ task add host gpu1                                # 已有条目：检查并更�
 | `linger` | `loginctl show-user` | `loginctl enable-linger <user>`；被拒绝时这一步失败，并给出管理员需要执行一次的命令，后续步骤继续执行 |
 | `verify` | `taskmgr-remote --protocol-version N version` 有应答；服务的主 PID 持有 `locks/daemon.lock` | 无 |
 | `machines` | `~/.taskmgr/machines.json` 中的条目 | 新增或更新该条目（显示改动）；其他条目保持原样 |
+| `old_code` | zipapp 之前的版本安装的代码目录：`~/taskmgr`（仅当其中有 `.taskmgr-code-version` 或 `taskmgr/remote.py`）和 `~/taskmgr.old-*` | 删除它们。其他电脑上的机器列表如果还写着 `~/taskmgr/bin/taskmgr-remote`，会无法使用，需要在那里执行一次 `task host add NAME`。回答 no 时这一步报告 declined，下次运行会再问 |
 
-stdout 输出一个 JSON 对象：`{"host", "steps": [{"name", "status", "detail"}], "complete"}`，
-`status` 取值为 `ok`、`changed`、`skipped`、`declined`、`failed`。所有步骤都是 `ok` 或
-`changed` 时退出码为 0，否则为 2。
+进度和询问输出到 stderr。stdout 输出各步骤的表格（STEP、STATUS、DETAIL）和一行 `done:` 或
+`incomplete:`；加 `--detail` 时改为输出 JSON 对象
+`{"host", "steps": [{"name", "status", "detail"}], "complete"}`。`status` 取值为 `ok`、
+`changed`、`skipped`、`declined`、`failed`。所有步骤都是 `ok` 或 `changed` 时退出码为 0，否则为 2。
 
-新条目使用绝对路径（`remote_root`，`remote_command = <home>/taskmgr/bin/taskmgr-remote`），
+新条目使用绝对路径（`remote_root`，`remote_command = <home>/taskmgr-remote.pyz`），
 并带有以下 ssh 选项，与 `--ssh-option` 合并（同名选项以后者为准）：`ServerAliveInterval=15`、
 `ConnectTimeout=10`、`ControlMaster=auto`、`ControlPath=~/.ssh/cm-%r@%h:%p`、
 `ControlPersist=10m`。对已有条目，省略的参数取条目中保存的值；它的 ssh 选项保持不变，
@@ -90,32 +111,62 @@ stdout 输出一个 JSON 对象：`{"host", "steps": [{"name", "status", "detail
   版本就是实际运行的版本。
 - `remote_root` 中的数据永远不会被删除。不兼容的作业目录在你确认后移走；仍在运行的作业留在原处，
   直到结束。
-- 不支持对同一台服务器同时执行两个 `add host`。
-- 代码版本是所发送文件的内容哈希。版本文件一致时，在 `~/taskmgr` 中手工改动的文件不会被发现。
+- 不支持对同一台服务器同时执行两个 `host add`。
+- 服务器上的代码是 `~/taskmgr-remote.pyz`，它是指向 `~/.taskmgr-remote/<版本>.pyz` 的符号链接；
+  代码版本读自压缩包内的 `.taskmgr-code-version`。已安装的压缩包从不修改。Python 的 zipimport
+  按路径读取压缩包，每导入一个模块读一次，并沿用第一次读到的偏移量，所以在进程启动期间（例如
+  守护进程刚拉起的 shim）替换文件，会让它的导入失败。因此更新时总是新增一个文件再切换链接，
+  每个进程都从解析后的路径导入（`sys.path[0]` 换成 realpath；守护进程给 shim 的 `PYTHONPATH`
+  也是解析后的路径）。手工回滚：`ln -sfn .taskmgr-remote/<旧版本>.pyz ~/taskmgr-remote.pyz`，
+  再执行 `systemctl --user restart taskmgr-remote`。
 
-### `add host` 做了什么，以及手工方式
+### 机器列表：`task host list`、`remove`、`ping`
+
+```sh
+task host list                # NAME、ENABLED、DESTINATION（user@host[:port]）、REMOTE_ROOT
+task host ping                # 所有服务器；`task host ping gpu1` 只检查一台
+task host disable gpu1        # gpu1 宕机：暂时不向它提交，也不查询它
+task host enable gpu1         # 恢复
+task host remove gpu1         # 询问 [y/N]；--yes 跳过询问
+```
+
+`task host disable NAME` / `enable NAME` 设置条目中的 `enabled`（与 `remove` 一样在 `machines.lock`
+下原子地重写文件）。禁用的服务器不参与轮询提交，也不参与向所有服务器发出的查询（`jobs`、按 jobid
+查找、`whoami`、`version`）；`--host NAME` 仍然可以访问它。见 [[docs/usage.zh-CN]]。
+
+`task host ping` 在各服务器上并行执行 `taskmgr-remote version`，每台服务器输出一行：`ok` 或
+`unreachable`、往返时间、`protocol_version`、已安装的代码版本（服务器运行的不是
+`task host add` 安装的代码时显示 `none`），以及远端运行时的用户名和主机名。无法连接的服务器的
+错误信息列在表格之后。所有被检查的服务器都有应答时退出码为 0，否则为 2。已禁用的服务器也会被检查。
+
+`task host remove NAME` 把条目从 `machines.json` 中删除（在 `machines.lock` 下原子地重写文件；
+其他条目保持不变）。它不改动服务器：代码、服务、`remote_root` 及其中的作业都保留，
+`task host add NAME --ssh ...` 可以重新加入这台服务器。不在终端中运行时需要 `--yes`；名字不存在时
+以 `unknown_host` 失败（退出码 2）。如果还要停止服务器上的服务，见下面的手工步骤。
+
+### `host add` 做了什么，以及手工方式
 
 下面是用户 `tuner` 的手工配置方式。它安装随代码提供的 unit
-（`taskmgr/deploy/taskmgr-remote.user.service`，使用 `%h` 路径）；之后执行 `task add host`
+（`taskmgr/deploy/taskmgr-remote.user.service`，使用 `%h` 路径）；之后执行 `task host add`
 会把它替换为生成的 unit（并显示 diff）。
 
 ```sh
-git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'   # 在本机执行
-mkdir -p ~/taskmgr-root                                                   # 在服务器上执行
-cp ~/taskmgr/taskmgr/deploy/config.example.json ~/taskmgr-root/config.json
+python3 -m taskmgr.pyz -o dist                                    # 在本机执行
+scp dist/taskmgr-remote.pyz taskmgr/deploy/config.example.json \
+    taskmgr/deploy/taskmgr-remote.user.service gpu1:
+mkdir -p ~/taskmgr-root && mv ~/config.example.json ~/taskmgr-root/config.json   # 在服务器上执行
 ```
 
 机器列表中要写绝对路径（不能用 `~`）：
 `"remote_root": "/home/tuner/taskmgr-root"`，
-`"remote_command": "/home/tuner/taskmgr/bin/taskmgr-remote"`。如果 `remote_root` 不是
+`"remote_command": "/home/tuner/taskmgr-remote.pyz"`。如果 `remote_root` 不是
 `~/taskmgr-root`，相应修改 unit 中的 `--root`。
 
 #### 启动 / 停止 / 开机自启（systemd 用户服务）
 
 ```sh
 mkdir -p ~/.config/systemd/user
-cp ~/taskmgr/taskmgr/deploy/taskmgr-remote.user.service \
-   ~/.config/systemd/user/taskmgr-remote.service
+mv ~/taskmgr-remote.user.service ~/.config/systemd/user/taskmgr-remote.service
 systemctl --user daemon-reload
 systemctl --user enable --now taskmgr-remote     # 立即启动，并随用户管理器启动
 loginctl enable-linger "$USER"                   # 开机启动，注销后继续运行
@@ -136,7 +187,7 @@ cgroup 里，所以如果用默认的 `KillMode=control-group`，执行 `systemc
 shim 和任务。设置 `KillMode=process` 后，systemd 只向守护进程的主 PID 发信号；守护进程收到
 SIGTERM 后直接退出，不碰 shim，下次启动时执行重启恢复。我们没有选择为每个 shim 使用
 `systemd-run --user --scope`，原因是守护进程不需要访问 D-Bus，而且它保持为普通进程，在
-systemd 之外（tmux、nohup）也能运行：`nohup ~/taskmgr/bin/taskmgr-remote --root ~/taskmgr-root
+systemd 之外（tmux、nohup）也能运行：`nohup ~/taskmgr-remote.pyz --root ~/taskmgr-root
 serve > /dev/null 2>&1 &`；停止时执行 `kill <pid>`（pid 记录在 `locks/daemon.lock` 中）。
 
 在同一个 root 上再启动一个 `serve` 会以退出码 2 结束（它拿不到 `locks/daemon.lock`）。

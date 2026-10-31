@@ -254,10 +254,11 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
         return {"decision": "unknown", "reason": "runner.json is %s" % err}
 
     if runner.get("final"):
-        if runner.get("status") == "interrupted":
-            j = interrupt_run(store, jobid, runner.get("interrupted_reason", ""))
-        else:
-            j = finalize_run(store, jobid)
+        j = (
+            interrupt_run(store, jobid, runner.get("interrupted_reason", ""))
+            if runner.get("status") == "interrupted"
+            else finalize_run(store, jobid)
+        )
         return {"decision": "restored", "state": j["state"]}
 
     lock_path = os.path.join(jobdir, "shim.lock")
@@ -433,7 +434,7 @@ class Takeover:
 
     def tick(self) -> None:
         if self.done:
-            return
+            return None
         try:
             if self.stopper is None:
                 if not procutil.group_members(self.pgid, self.min_start):
@@ -453,7 +454,7 @@ class Takeover:
                         and time.time() - self.started_epoch >= self.timeout
                     ):
                         self._begin_stop("timeout")
-                return
+                return None
             r = self.stopper.step()
             if r == "stopped":
                 _ = finish_stopped(

@@ -3,11 +3,14 @@
 import contextlib
 import datetime
 import fcntl
+import fnmatch
 import json
 import os
 import re
+import shutil
 import tempfile
-from collections.abc import Generator
+import zipfile
+from collections.abc import Generator, Sequence
 from typing import cast
 
 from .records import JsonDict as JsonDict
@@ -15,6 +18,12 @@ from .records import JsonValue as JsonValue
 from .records import RemoteConfig
 
 PROTOCOL_VERSION = 2
+
+# The package directory. Inside a zipapp it is a path into the archive
+# (/path/task.pyz/taskmgr), which os.path functions accept but open() does not.
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+# The code root: the checkout (or installed tree) that holds taskmgr/, or the .pyz file.
+CODE_ROOT = os.path.dirname(PACKAGE_DIR)
 SCHEMA_VERSION = 1
 
 TASK_ID_RE = re.compile(r"^[A-Z]{2}-[0-9]{2,4}\Z")
@@ -164,10 +173,7 @@ def flocked(path: str, exclusive: bool = True) -> Generator[int, None, None]:
 
 def try_flock_fd(path: str, create: bool = False, directory: bool = False) -> int | None:
     """Try a non-blocking exclusive flock. Returns the fd (lock held) or None."""
-    if directory:
-        flags = os.O_RDONLY
-    else:
-        flags = os.O_RDWR | (os.O_CREAT if create else 0)
+    flags = os.O_RDONLY if directory else os.O_RDWR | (os.O_CREAT if create else 0)
     try:
         fd = os.open(path, flags, 0o644)
     except OSError:
@@ -178,3 +184,60 @@ def try_flock_fd(path: str, create: bool = False, directory: bool = False) -> in
         os.close(fd)
         return None
     return fd
+
+
+# ---------------------------------------------------------------------------
+# Code root: a directory tree, or a zipapp (.pyz) built by `python3 -m taskmgr.pyz`
+
+
+def code_is_zipapp() -> bool:
+    """True when this code runs from a .pyz archive."""
+    return os.path.isfile(CODE_ROOT)
+
+
+def read_code_file(name: str) -> str | None:
+    """Text of a file at the top of the code root (next to taskmgr/), or None."""
+    try:
+        if code_is_zipapp():
+            with zipfile.ZipFile(CODE_ROOT) as z:
+                return z.read(name).decode("utf-8")
+        with open(os.path.join(CODE_ROOT, name)) as f:
+            return f.read()
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        return None
+
+
+def _ignored(rel: str, ignore: Sequence[str]) -> bool:
+    return any(fnmatch.fnmatch(part, pat) for part in rel.split("/") for pat in ignore)
+
+
+def copy_package_tree(sub: str, dest: str, ignore: Sequence[str] = ()) -> int:
+    """Copy taskmgr/<sub> (the whole package when sub is "") to the new directory dest.
+
+    Works from a checkout and from a zipapp; file modes are kept. A path is skipped when
+    one of its components matches a glob in `ignore`. Returns the number of files copied.
+    """
+    if not code_is_zipapp():
+        src = os.path.join(PACKAGE_DIR, sub) if sub else PACKAGE_DIR
+        _ = shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*ignore))
+        return sum(len(names) for _, _, names in os.walk(dest))
+    prefix = os.path.basename(PACKAGE_DIR) + "/" + (sub.strip("/") + "/" if sub else "")
+    os.makedirs(dest)
+    count = 0
+    with zipfile.ZipFile(CODE_ROOT) as z:
+        for info in z.infolist():
+            if info.is_dir() or not info.filename.startswith(prefix):
+                continue
+            rel = info.filename[len(prefix) :]
+            if not rel or _ignored(rel, ignore):
+                continue
+            target = os.path.join(dest, *rel.split("/"))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with z.open(info) as src_f, open(target, "wb") as dst_f:
+                shutil.copyfileobj(src_f, dst_f)
+            mode = (info.external_attr >> 16) & 0o777
+            os.chmod(target, mode or 0o644)
+            count += 1
+    if count == 0:
+        raise FileNotFoundError("%s has no %s" % (CODE_ROOT, prefix))
+    return count

@@ -189,7 +189,11 @@ class SubmitTest(Env):
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "protocol_mismatch")
         rc, out, _ = self.task(
-            "retry", "0123456789abcdef", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "1"}
+            "retry",
+            "0123456789abcdef",
+            "--host",
+            "s1",
+            env={"TASKMGR_TEST_PROTOCOL_VERSION": "1"},
         )
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "protocol_mismatch"))
         pkg = self.make_pkg()

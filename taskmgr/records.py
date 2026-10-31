@@ -246,7 +246,7 @@ class SshConfig(TypedDict, total=False):
 
 class LocalInjection(TypedDict, total=False):
     """Test-only settings for transport "local": connection-failure injection, and `home`,
-    the HOME of every command run for this server (`task add host` tests)."""
+    the HOME of every command run for this server (`task host add` tests)."""
 
     fail: str
     fail_if_exists: str

@@ -1,7 +1,8 @@
-"""`task add host` (desc-2 D18): server setup and update, step by step and idempotent.
+"""`task host add|list|remove|ping` (desc-2 D18).
 
-The "server" is a local-transport machine entry whose HOME is a directory of the test
-(test-only `"local": {"home": ...}`, created through TASKMGR_TEST_LOCAL_HOME). Fake
+`host add` sets up and updates a server, step by step and idempotent. The "server" is a
+local-transport machine entry whose HOME is a directory of the test (test-only
+`"local": {"home": ...}`, created through TASKMGR_TEST_LOCAL_HOME). Fake
 `systemctl` and `loginctl` scripts on PATH stand in for systemd: they keep their state under
 $HOME/.fake-systemd, log every call, and `start` really launches the unit's ExecStart (the
 daemon), so jobs run end to end. `stop` signals only the main PID, like KillMode=process.
@@ -17,6 +18,7 @@ import sys
 import tempfile
 import time
 import unittest
+import zipfile
 from typing import cast
 
 from taskmgr import hostsetup
@@ -152,6 +154,7 @@ ALL_STEPS = (
     "linger",
     "verify",
     "machines",
+    "old_code",
 )
 
 
@@ -184,8 +187,12 @@ class AddHostTest(Env):
     def add(
         self, *extra: str, answers: str | None = None, name: str = "h1", new: bool = True
     ) -> tuple[int, JsonDict, str]:
-        """Run `task add host`; answers != None makes stdin an "interactive" pipe."""
-        args = ["add", "host", name] + (["--ssh", "tuner@gpu.example"] if new else []) + list(extra)
+        """Run `task host add --detail`; answers != None makes stdin an "interactive" pipe."""
+        args = (
+            ["host", "add", name, "--detail", "--plain"]
+            + (["--ssh", "tuner@gpu.example"] if new else [])
+            + list(extra)
+        )
         env = dict(self.env)
         if answers is not None:
             env["TASKMGR_TEST_INTERACTIVE"] = "1"
@@ -193,8 +200,7 @@ class AddHostTest(Env):
             [sys.executable, TASK] + args,
             env=env,
             input=(answers or "").encode(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=300,
         )
         err = p.stderr.decode()
@@ -218,6 +224,34 @@ class AddHostTest(Env):
 
     def rpath(self, *parts: str) -> str:
         return os.path.join(self.rhome, *parts)
+
+    def rcode(self) -> str:
+        """The installed archive, ~/taskmgr-remote.pyz on the server."""
+        return self.rpath(hostsetup.CODE_FILE)
+
+    def installed_version(self) -> str:
+        with zipfile.ZipFile(self.rcode()) as z:
+            return z.read(hostsetup.VERSION_FILE).decode().strip()
+
+    def store(self) -> list[str]:
+        return sorted(os.listdir(self.rpath(hostsetup.CODE_STORE)))
+
+    def set_installed_version(self, version: str) -> None:
+        """Install, like `host add` does, a copy of the archive that reports another version."""
+        with zipfile.ZipFile(self.rcode()) as z:
+            members = [(i, z.read(i)) for i in z.infolist()]
+        name = version[:16] + ".pyz"
+        fake = self.rpath(hostsetup.CODE_STORE, name)
+        with open(fake, "wb") as f:
+            _ = f.write(b"#!/usr/bin/env python3\n")
+            with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
+                for info, data in members:
+                    if info.filename == hostsetup.VERSION_FILE:
+                        data = (version + "\n").encode()
+                    z.writestr(info, data)
+        os.chmod(fake, 0o755)
+        os.symlink(os.path.join(hostsetup.CODE_STORE, name), self.rcode() + ".tmp")
+        os.replace(self.rcode() + ".tmp", self.rcode())
 
     def rroot(self) -> str:
         return self.rpath("taskmgr-root")
@@ -249,7 +283,7 @@ class AddHostTest(Env):
         files = [
             os.path.join(self.home, "machines.json"),
             self.rpath(".config/systemd/user/taskmgr-remote.service"),
-            self.rpath("taskmgr", hostsetup.VERSION_FILE),
+            self.rcode(),
             os.path.join(self.rroot(), "config.json"),
         ]
         snap: dict[str, object] = {}
@@ -311,7 +345,7 @@ class AddHostTest(Env):
         # local machine list: absolute paths, default ssh options; s1 untouched
         e = self.entry()
         self.assertEqual(e["remote_root"], self.rroot())
-        self.assertEqual(e["remote_command"], self.rpath("taskmgr", "bin", "taskmgr-remote"))
+        self.assertEqual(e["remote_command"], self.rcode())
         self.assertEqual((e["enabled"], e["transport"]), (True, "local"))
         self.assertEqual(self.get(e, "local", "home"), self.rhome)
         ssh = self.obj(e, "ssh")
@@ -324,17 +358,29 @@ class AddHostTest(Env):
         # server side
         with tempfile.TemporaryDirectory() as tmp:
             version = hostsetup.build_code(tmp)[0]
-        with open(self.rpath("taskmgr", hostsetup.VERSION_FILE)) as f:
-            self.assertEqual(f.read().strip(), version)
-        self.assertTrue(os.access(self.rpath("taskmgr", "bin", "taskmgr-remote"), os.X_OK))
-        self.assertFalse(os.path.exists(self.rpath("taskmgr", "taskmgr", "tests")))
+        self.assertEqual(self.installed_version(), version)
+        self.assertTrue(os.access(self.rcode(), os.X_OK))
+        with zipfile.ZipFile(self.rcode()) as z:
+            self.assertFalse([n for n in z.namelist() if "/tests/" in n])
+        # the server holds one file of code (plus the state directories)
+        self.assertEqual(
+            sorted(os.listdir(self.rhome)),
+            sorted(
+                [".config", ".fake-systemd", hostsetup.CODE_FILE, hostsetup.CODE_STORE]
+                + ["taskmgr-root"]
+            ),
+        )
+        self.assertEqual(
+            os.readlink(self.rcode()), "%s/%s.pyz" % (hostsetup.CODE_STORE, version[:16])
+        )
+        self.assertEqual(self.store(), [version[:16] + ".pyz"])
         with open(self.rpath(".config/systemd/user/taskmgr-remote.service")) as f:
             unit = f.read()
         self.assertIn("KillMode=process\n", unit)
         self.assertRegex(
             unit,
             r"\nExecStart=\S*python\S* %s --root %s serve\n"
-            % (re.escape(self.rpath("taskmgr", "bin", "taskmgr-remote")), re.escape(self.rroot())),
+            % (re.escape(self.rcode()), re.escape(self.rroot())),
         )
         with open(os.path.join(self.rroot(), "config.json")) as f:
             self.assertEqual(f.read(), hostsetup.config_text())
@@ -373,21 +419,23 @@ class AddHostTest(Env):
         _ = self.wait_for(
             lambda: os.path.isdir(os.path.join(self.rroot(), "in-progress", jobid)), 30, "running"
         )
+        current_version = self.installed_version()
+        current = current_version[:16] + ".pyz"
         for round_ in (1, 2):
-            with open(self.rpath("taskmgr", hostsetup.VERSION_FILE), "w") as f:
-                _ = f.write("0" * 64 + "\n")  # an older version is installed
+            older = str(round_) * 64
+            self.set_installed_version(older)  # an older version is installed
             rc, out, err = self.add("--yes")
             self.assertEqual(rc, 0, err)
             self.expect(out, err, code="changed", service="changed")
             self.assertIn("restarted", self.detail(out, "service"))
-            olds = [n for n in os.listdir(self.rhome) if n.startswith("taskmgr.old-")]
-            self.assertEqual(len(olds), 1, olds)  # only the newest previous tree is kept
+            self.assertIn("previous archive kept", self.detail(out, "code"))
+            # the current archive and the one the link pointed to before; nothing else
+            self.assertEqual(self.store(), sorted([current, older[:16] + ".pyz"]))
+            self.assertEqual(self.installed_version(), current_version)
             self.assertFalse([n for n in os.listdir(self.rhome) if ".new-" in n])
             pid2 = self.main_pid()
             self.assertTrue(pid2 and pid2 != pid1, (round_, pid1, pid2))
             pid1 = pid2
-            if round_ == 1:
-                time.sleep(1.1)  # the next .old-<time> gets another name
         # KillMode=process: the task survived both restarts and finishes normally
         self.assertTrue(os.path.isdir(os.path.join(self.rroot(), "in-progress", jobid)))
         open(marker, "w").close()
@@ -398,8 +446,7 @@ class AddHostTest(Env):
         self.assertEqual(rc, 0, err)
         pid1 = self.main_pid()
         time.sleep(0.6)  # the stale check allows 0.5 s of clock error
-        with open(self.rpath("taskmgr", hostsetup.VERSION_FILE), "w") as f:
-            _ = f.write("old\n")
+        self.set_installed_version("old")
         rc, out, err = self.add(answers="y\nn\n")
         self.assertEqual(rc, 2, err)
         self.expect(
@@ -410,6 +457,7 @@ class AddHostTest(Env):
             linger="skipped",
             verify="skipped",
             machines="skipped",
+            old_code="skipped",
         )
         self.assertEqual(self.main_pid(), pid1)
         # the code is current now, but the daemon still runs the old one: restart it
@@ -419,6 +467,37 @@ class AddHostTest(Env):
         self.assertIn("restarted", self.detail(out, "service"))
         self.assertIn("started before the current code", err)
         self.assertNotEqual(self.main_pid(), pid1)
+
+    def test_old_code_tree_is_replaced_by_the_archive(self) -> None:
+        """A server set up by a version before the zipapp: ~/taskmgr (a tree with
+        bin/taskmgr-remote) and ~/taskmgr.old-*. After the archive runs, they are deleted."""
+        legacy = self.rpath("taskmgr")
+        os.makedirs(os.path.join(legacy, "taskmgr"))
+        for rel in ("taskmgr/remote.py", hostsetup.VERSION_FILE):
+            with open(os.path.join(legacy, rel), "w") as f:
+                _ = f.write("old\n")
+        os.makedirs(self.rpath("taskmgr.old-20260101T000000Z", "taskmgr"))
+        rc, out, err = self.add(answers="y\n" * 7 + "n\n")  # 7 changes before old_code, then no
+        self.assertEqual(rc, 2, err)
+        self.assertEqual(self.statuses(out)["old_code"], "declined")
+        self.assertIn("still name %s/bin/taskmgr-remote" % legacy, err)
+        self.assertTrue(os.path.isdir(legacy))
+        rc, out, err = self.add("--yes", new=False)
+        self.assertEqual(rc, 0, err)
+        self.expect(out, err, old_code="changed")
+        self.assertFalse(os.path.exists(legacy))
+        self.assertFalse([n for n in os.listdir(self.rhome) if n.startswith("taskmgr.old-")])
+        jobid = self.run_job('echo \'{"outputs": {}}\' > "$TASKMGR_RESULT_FILE"')
+        self.assertEqual(self.get(self.wait_job(jobid), "_taskmgr", "status"), "succeeded")
+
+    def test_unrelated_taskmgr_directory_is_left_alone(self) -> None:
+        mine = self.rpath("taskmgr", "notes.txt")
+        os.makedirs(os.path.dirname(mine))
+        open(mine, "w").close()
+        rc, out, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.statuses(out)["old_code"], "ok")
+        self.assertTrue(os.path.exists(mine))
 
     def test_existing_config_is_never_overwritten(self) -> None:
         os.makedirs(self.rroot())
@@ -476,7 +555,7 @@ class AddHostTest(Env):
         good = self.run_job('echo \'{"outputs": {}}\' > "$TASKMGR_RESULT_FILE"')
         _ = self.wait_job(good)
         # (only in done/: the running daemon of this test would trip over a queued one,
-        # which is why add host stops the service before moving)
+        # which is why host add stops the service before moving)
         old = self.write_old_job("done", "succeeded", key="old-key")
         pid1 = self.main_pid()
         rc, out, err = self.add("--yes")
@@ -539,20 +618,135 @@ class AddHostTest(Env):
         self.assertIn("timed out", self.detail(out, "ssh"))
 
     def test_bad_arguments(self) -> None:
-        rc, obj, _ = self.task("add", "host", "new-host")  # a new host needs --ssh
+        rc, obj, _ = self.task("host", "add", "new-host")  # a new host needs --ssh
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "bad_args")
-        rc, obj, _ = self.task("add", "host", "bad/name", "--ssh", "x@y")
+        rc, obj, _ = self.task("host", "add", "bad/name", "--ssh", "x@y")
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "bad_args")
+
+
+class HostCmdsTest(Env):
+    """`task host list|remove|ping` against plain local-transport servers."""
+
+    servers: tuple[str, ...] = ("s1", "s2")
+
+    def machines_json(self) -> JsonDict:
+        with open(os.path.join(self.home, "machines.json")) as f:
+            return self.obj(cast(JsonValue, json.load(f)))
+
+    def test_list(self) -> None:
+        self.server("s2")["enabled"] = False
+        self.write_machines()
+        obj = self.ok("host", "list")
+        rows = self.objs(obj, "servers")
+        self.assertEqual([self.text(r, "name") for r in rows], ["s1", "s2"])
+        self.assertEqual([r["enabled"] for r in rows], [True, False])
+        self.assertEqual(rows[0]["destination"], "local")
+        self.assertEqual(rows[0]["remote_root"], self.root("s1"))
+        rc, out, err = self.task("host", "list", text=True)
+        self.assertEqual(rc, 0, err)
+        lines = self.text(out).splitlines()
+        self.assertEqual(lines[0].split(), ["NAME", "ENABLED", "DESTINATION", "REMOTE_ROOT"])
+        self.assertEqual(lines[1].split(), ["s1", "yes", "local", self.root("s1")])
+        self.assertEqual(lines[2].split(), ["s2", "no", "local", self.root("s2")])
+        self.assertNotIn("\033", self.text(out))  # --plain: no color
+        self.assertFalse([ln for ln in lines if ln != ln.rstrip()])
+        rc, out, _ = self.task("host", "list", text=True, color=True)
+        self.assertIn("\033[1mNAME", self.text(out))
+
+    def test_enable_disable(self) -> None:
+        before = self.machines_json()
+        out = self.obj(self.ok("host", "disable", "s2"))
+        self.assertEqual((out["host"], out["enabled"], out["changed"]), ("s2", False, True))
+        after = self.machines_json()
+        self.assertEqual(self.objs(after, "servers")[1]["enabled"], False)
+        # Only the flag changed.
+        self.assertEqual(
+            [dict(s, enabled=True) for s in self.objs(after, "servers")],
+            [dict(s, enabled=True) for s in self.objs(before, "servers")],
+        )
+        self.assertEqual(self.get(self.ok("host", "disable", "s2"), "changed"), False)
+        rc, out, _ = self.task("host", "disable", "s2", text=True)
+        self.assertEqual((rc, out), (0, "unchanged: s2 is already disabled\n"))
+        rc, out, _ = self.task("host", "list", text=True)
+        self.assertEqual(self.text(out).splitlines()[2].split()[:2], ["s2", "no"])
+        rc, out, _ = self.task("host", "enable", "s2", text=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.text(out), "enabled: s2 is used for submits and queries again\n")
+        self.assertEqual(self.objs(self.machines_json(), "servers")[1]["enabled"], True)
+        rc, obj, _ = self.task("host", "enable", "nope")
+        self.assertEqual((rc, self.get(obj, "error", "code")), (2, "unknown_host"))
+
+    def test_remove(self) -> None:
+        before = self.machines_json()
+        s2 = self.objs(before, "servers")[1]
+        # without --yes and without a terminal: refused, nothing changed
+        rc, obj, _ = self.task("host", "remove", "s1")
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.get(obj, "error", "code"), "not_interactive")
+        self.assertEqual(self.machines_json(), before)
+        # declined at the prompt
+        env = {"TASKMGR_TEST_INTERACTIVE": "1"}
+        rc, obj, err = self.task("host", "remove", "s1", env=env)
+        self.assertEqual(rc, 2, err)
+        self.assertFalse(self.get(obj, "removed"))
+        self.assertIn("proceed? [y/N]", err)
+        self.assertEqual(self.machines_json(), before)
+        # unknown name
+        rc, obj, _ = self.task("host", "remove", "nope", "--yes")
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.get(obj, "error", "code"), "unknown_host")
+        self.assertEqual(self.machines_json(), before)
+        # --yes: only s1 goes; the server's files stay
+        rc, out, err = self.task("host", "remove", "s1", "--yes", text=True)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("removed: s1", self.text(out))
+        self.assertIn("untouched", self.text(out))
+        self.assertEqual(self.machines_json(), {"servers": [s2]})
+        self.assertTrue(os.path.isfile(os.path.join(self.root("s1"), "config.json")))
+        rc, obj, _ = self.task("host", "remove", "s1", "--yes")
+        self.assertEqual(self.get(obj, "error", "code"), "unknown_host")
+
+    def test_ping(self) -> None:
+        obj = self.ok("host", "ping")
+        rows = self.objs(obj, "hosts")
+        self.assertEqual([self.text(r, "host") for r in rows], ["s1", "s2"])
+        for r in rows:
+            self.assertTrue(r["reachable"])
+            self.assertEqual(r["protocol_version"], 2)
+            self.assertIsInstance(r["ms"], int)
+            self.assertTrue(r["user"] and r["hostname"])
+        self.assertTrue(self.get(obj, "complete"))
+        rc, out, err = self.task("host", "ping", "s1", text=True)
+        self.assertEqual(rc, 0, err)
+        lines = self.text(out).splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0].split()[:3], ["HOST", "STATUS", "RTT"])
+        self.assertEqual(lines[1].split()[:2], ["s1", "ok"])
+        # s2 does not answer: exit 2, s1 is still reported
+        self.server("s2")["local"] = {"fail": "ssh: connect to host s2: Connection refused"}
+        self.write_machines()
+        rc, obj, _ = self.task("host", "ping")
+        self.assertEqual(rc, 2)
+        rows = self.objs(obj, "hosts")
+        self.assertEqual([r["reachable"] for r in rows], [True, False])
+        self.assertEqual(rows[1]["code"], "connection_error")
+        self.assertIn("Connection refused", self.text(rows[1], "error"))
+        self.assertFalse(self.get(obj, "complete"))
+        rc, out, _ = self.task("host", "ping", text=True)
+        self.assertEqual(rc, 2)
+        self.assertRegex(self.text(out), r"\ns2 +unreachable")
+        self.assertIn("s2: ssh: connect to host s2: Connection refused", self.text(out))
+        rc, _, _ = self.task("host", "ping", "s1")
+        self.assertEqual(rc, 0)
+        rc, obj, _ = self.task("host", "ping", "nope")
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.get(obj, "error", "code"), "unknown_host")
 
 
 class AddHostUnitTest(unittest.TestCase):
     """Pure functions; no subprocess except the read-only `inspect`."""
-
-    def test_wrapper_equals_repository_file(self) -> None:
-        with open(os.path.join(REPO, "bin", "taskmgr-remote")) as f:
-            self.assertEqual(f.read(), hostsetup.WRAPPER)
 
     def test_unit_matches_the_shipped_template(self) -> None:
         def directives(text: str) -> list[str]:
@@ -567,7 +761,7 @@ class AddHostUnitTest(unittest.TestCase):
         unit = hostsetup.unit_text("/usr/bin/python3", "/home/t", "/scratch/t root/%x")
         self.assertEqual(directives(unit), directives(template))
         self.assertIn(
-            '\nExecStart=/usr/bin/python3 /home/t/taskmgr/bin/taskmgr-remote --root "/scratch/t root/%%x" serve\n',
+            '\nExecStart=/usr/bin/python3 /home/t/taskmgr-remote.pyz --root "/scratch/t root/%%x" serve\n',
             unit,
         )
 

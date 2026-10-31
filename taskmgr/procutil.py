@@ -22,7 +22,7 @@ def read_stat(pid: int) -> tuple[str, int, int] | None:
     except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError as e:
-        raise ProcUnavailable(str(e))
+        raise ProcUnavailable(str(e)) from e
     rest = data[data.rfind(")") + 2 :].split()
     # rest[0] is field 3 (state); field 5 is pgrp; field 22 is starttime.
     return rest[0], int(rest[2]), int(rest[19])
@@ -38,7 +38,7 @@ def group_members(pgid: int, min_start: int) -> list[int]:
     try:
         names = os.listdir("/proc")
     except OSError as e:
-        raise ProcUnavailable(str(e))
+        raise ProcUnavailable(str(e)) from e
     if not os.path.exists("/proc/self/stat"):
         raise ProcUnavailable("/proc is not mounted")
     pids: list[int] = []

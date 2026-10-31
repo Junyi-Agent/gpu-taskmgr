@@ -217,15 +217,27 @@ class Env(unittest.TestCase):
 
     # -- running commands -----------------------------------------------------
     def task(
-        self, *args: object, env: dict[str, str] | None = None, timeout: float = 120
+        self,
+        *args: object,
+        env: dict[str, str] | None = None,
+        timeout: float = 120,
+        text: bool = False,
+        color: bool = False,
     ) -> tuple[int, JsonValue, str]:
+        """Run `task`. Without text=True, --detail is added so stdout is the JSON object
+        (except for `logs`, which has no --detail); without color=True, --plain."""
         e = dict(self.env)
         e.update(env or {})
+        argv = [str(a) for a in args]
+        at = min(2 if argv[:1] == ["host"] else 1, len(argv))  # after the (sub)command name
+        if not text and argv and argv[0] != "logs" and "--detail" not in argv:
+            argv.insert(at, "--detail")
+        if not color:
+            argv.insert(at, "--plain")
         p = subprocess.run(
-            [sys.executable, TASK] + [str(a) for a in args],
+            [sys.executable, TASK] + argv,
             env=e,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout,
         )
         out = p.stdout.decode()
@@ -237,9 +249,14 @@ class Env(unittest.TestCase):
         return p.returncode, obj, p.stderr.decode()
 
     def ok(
-        self, *args: object, env: dict[str, str] | None = None, timeout: float = 120
+        self,
+        *args: object,
+        env: dict[str, str] | None = None,
+        timeout: float = 120,
+        text: bool = False,
+        color: bool = False,
     ) -> JsonValue:
-        rc, obj, err = self.task(*args, env=env, timeout=timeout)
+        rc, obj, err = self.task(*args, env=env, timeout=timeout, text=text, color=color)
         self.assertEqual(rc, 0, "task %s -> %d\nstdout=%s\nstderr=%s" % (args, rc, obj, err))
         return obj
 
@@ -263,8 +280,7 @@ class Env(unittest.TestCase):
         p = subprocess.run(
             [sys.executable, REMOTE, "--root", self.root(name)] + [str(a) for a in args],
             env=e,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             stdin=stdin or subprocess.DEVNULL,
             timeout=60,
         )
@@ -365,7 +381,10 @@ class Env(unittest.TestCase):
             if v:
                 return v
             time.sleep(interval)
-        self.fail("timed out waiting for %s\n--- daemon log ---\n%s" % (msg, self.daemon_log()))
+        # self.fail() spelled out: ruff (RET503) does not know that fail() never returns.
+        raise self.failureException(
+            "timed out waiting for %s\n--- daemon log ---\n%s" % (msg, self.daemon_log())
+        )
 
     def wait_state(
         self, jobid: str, states: str | tuple[str, ...], name: str = "s1", timeout: float = 30

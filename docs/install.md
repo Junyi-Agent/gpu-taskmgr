@@ -18,11 +18,12 @@ uv tool install --editable /path/to/gpu-taskmgr   # installs `task` and `taskmgr
 # or, without pip:
 ln -s /path/to/gpu-taskmgr/bin/task ~/.local/bin/task
 
-task add host gpu1 --ssh tuner@10.0.0.12   # sets up the server and adds it to machines.json
-task hosts
+task host add gpu1 --ssh tuner@10.0.0.12   # sets up the server and adds it to machines.json
+task host list
+task host ping                             # checks that the server answers
 ```
 
-`task add host` (below) creates `~/.taskmgr/machines.json` and its entries. You can also
+`task host add` (below) creates `~/.taskmgr/machines.json` and its entries. You can also
 write the file by hand from `taskmgr/deploy/machines.example.json`.
 
 Local state lives in `$TASKMGR_HOME` (default `~/.taskmgr`, or `task --home DIR ...`):
@@ -36,19 +37,40 @@ Local state lives in `$TASKMGR_HOME` (default `~/.taskmgr`, or `task --home DIR 
 Task packages are ordinary local directories (or `.tar.gz` files) that you keep wherever you
 like; the local side keeps no jobid index and no run state.
 
-### Remote server: `task add host` (no root required)
+### Single-file zipapps (`.pyz`)
 
-The daemon runs as a **systemd user service** under the account that owns the jobs; no
-root access is needed. `task add host` sets up a server, or updates one, over ssh:
+`python3 -m taskmgr.pyz` (from a checkout) builds two files that run with any `python3`
+>= 3.10 and need nothing else:
 
 ```sh
-task add host NAME --ssh USER@HOST [--port N] [--identity-file PATH]
-              [--remote-root DIR] [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
-task add host gpu1 --ssh tuner@10.0.0.12          # new server
-task add host gpu1                                # existing entry: check and update
+python3 -m taskmgr.pyz -o dist      # writes dist/task.pyz and dist/taskmgr-remote.pyz
+cp dist/task.pyz ~/.local/bin/task  # the local CLI as one file
+task version                        # commit and code_version come from the archive
 ```
 
-It goes through nine steps. Each step prints what it checks and what it found. A step that
+Each archive holds the package (`taskmgr/` without `tests/` and `__pycache__`), plus `pyproject.toml`, `.taskmgr-commit` and `.taskmgr-code-version` at the
+top. The code version is the content hash of `taskmgr/`: it is the same for the checkout and
+for every archive built from it, so `task.pyz host add` installs the same code as a checkout
+would, and `task version` shows the servers as `up_to_date`.
+`taskmgr-remote.pyz` runs the daemon and the shim (the daemon puts the archive on the
+shim's `PYTHONPATH`); `taskmgr-remote.pyz version` reports the archive path as `code_dir`.
+`task update` refuses inside a `.pyz` (`not_a_checkout`): build a new one instead.
+`task host add` builds `taskmgr-remote.pyz` itself and installs it on the server (see
+below); you do not need to build it first.
+
+### Remote server: `task host add` (no root required)
+
+The daemon runs as a **systemd user service** under the account that owns the jobs; no
+root access is needed. `task host add` sets up a server, or updates one, over ssh:
+
+```sh
+task host add NAME --ssh USER@HOST [--port N] [--identity-file PATH]
+              [--remote-root DIR] [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
+task host add gpu1 --ssh tuner@10.0.0.12          # new server
+task host add gpu1                                # existing entry: check and update
+```
+
+It goes through ten steps. Each step prints what it checks and what it found. A step that
 needs to change something describes the change and asks `proceed? [y/N]`; anything but
 `y` stops the run there (exit 2), and the steps after it are not run. Read-only checks
 never ask. `--yes` answers every question with yes. Without `--yes` and without a terminal
@@ -56,12 +78,12 @@ on stdin, the run stops at the first change it would make (exit 2) and nothing i
 
 The command is idempotent: on an up-to-date server every step reports `ok`, nothing is
 changed and nothing is asked. To update a server after `git pull` (or after editing the
-code), run `task add host NAME` again: only the code step and a service restart run.
+code), run `task host add NAME` again: only the code step and a service restart run.
 
 | Step | Checks | Changes (each asked) |
 | --- | --- | --- |
 | `ssh` | ssh works (BatchMode), Linux, `python3` >= 3.10, `systemctl --user` works, linger, installed code version, unit file, service state, filesystem of `remote_root` (warns on NFS, CIFS, FUSE, ...) | none; a failed check stops the run |
-| `code` | `~/taskmgr/.taskmgr-code-version` against the local package | upload `taskmgr/` (without `tests/` and `__pycache__`) and `bin/taskmgr-remote` to `~/taskmgr.new-*`; after the `data` step it replaces `~/taskmgr`, the old tree is kept as `~/taskmgr.old-<time>` (older `~/taskmgr.old-*` are removed) |
+| `code` | the code version inside `~/taskmgr-remote.pyz` against the local code | build `taskmgr-remote.pyz`, upload it to `~/.taskmgr-remote/<version>.pyz.new-*`; after the `data` step it is renamed to `~/.taskmgr-remote/<version>.pyz` and the symlink `~/taskmgr-remote.pyz` is switched to it (one rename). The archive the link pointed to before is kept, older ones are removed |
 | `remote_root` | `remote_root` and `config.json` exist | `mkdir -p`, write `config.json` with the defaults when it is missing; an existing `config.json` is never overwritten |
 | `data` | `taskmgr-remote inspect` (read-only): job directories that the new code cannot handle (protocol-1 `attempts/`, `job.json` missing current fields) | stop the service, then move those directories (and their `submission-keys/*.json`) into `<remote_root>.backup-<UTC time>/`; nothing is deleted. Jobs that may still run (running, stopping, unknown, or in `in-progress/`) are never moved: the step fails and lists them |
 | `unit` | `~/.config/systemd/user/taskmgr-remote.service` against the generated unit (shows a diff) | write it, `systemctl --user daemon-reload` |
@@ -69,13 +91,16 @@ code), run `task add host NAME` again: only the code step and a service restart 
 | `linger` | `loginctl show-user` | `loginctl enable-linger <user>`; if refused, the step fails with the command an admin has to run once, and the run continues |
 | `verify` | `taskmgr-remote --protocol-version N version` answers; the service's main PID holds `locks/daemon.lock` | none |
 | `machines` | the entry in `~/.taskmgr/machines.json` | add or update the entry (shows the change); other entries are left as they are |
+| `old_code` | the code tree that versions before the zipapp installed: `~/taskmgr` (only when it holds `.taskmgr-code-version` or `taskmgr/remote.py`) and `~/taskmgr.old-*` | delete them. Machine lists on other computers that still name `~/taskmgr/bin/taskmgr-remote` stop working; run `task host add NAME` there. If declined, the run reports it and the next run asks again |
 
-Stdout gets one JSON object: `{"host", "steps": [{"name", "status", "detail"}],
-"complete"}`, with `status` one of `ok`, `changed`, `skipped`, `declined`, `failed`. Exit
-code 0 when every step is `ok` or `changed`, otherwise 2.
+Progress and prompts go to stderr. Stdout gets a table of the steps (STEP, STATUS, DETAIL)
+and a `done:` or `incomplete:` line; with `--detail` it gets the JSON object
+`{"host", "steps": [{"name", "status", "detail"}], "complete"}` instead. `status` is one of
+`ok`, `changed`, `skipped`, `declined`, `failed`. Exit code 0 when every step is `ok` or
+`changed`, otherwise 2.
 
 The new machine entry gets absolute paths (`remote_root`, `remote_command =
-<home>/taskmgr/bin/taskmgr-remote`) and these ssh options, merged with `--ssh-option`
+<home>/taskmgr-remote.pyz`) and these ssh options, merged with `--ssh-option`
 (same key replaces): `ServerAliveInterval=15`, `ConnectTimeout=10`, `ControlMaster=auto`,
 `ControlPath=~/.ssh/cm-%r@%h:%p`, `ControlPersist=10m`. For an existing entry the stored
 settings are the defaults for omitted flags; its ssh options are kept, and `--ssh-option`
@@ -93,33 +118,68 @@ Notes:
   given as an absolute path, so the version checked in step `ssh` is the one that runs.
 - Data in `remote_root` is never deleted. Incompatible job directories are moved after you
   confirm; live ones stay where they are until they end.
-- Two `add host` runs for the same server at the same time are not supported.
-- The code version is the content hash of the shipped files. Files edited by hand in
-  `~/taskmgr` are not noticed while the version file matches.
+- Two `host add` runs for the same server at the same time are not supported.
+- The code on the server is `~/taskmgr-remote.pyz`, a symlink to
+  `~/.taskmgr-remote/<version>.pyz`; the code version is read from `.taskmgr-code-version`
+  inside the archive. An installed archive is never modified. Python's zipimport reads an
+  archive by path, once per module, with the offsets of its first read, so replacing the
+  file under a starting process (a shim the daemon just launched) breaks its imports. An
+  update therefore adds a new file and switches the link, and each process imports from
+  the resolved path (`sys.path[0]` is replaced by its realpath; the daemon gives shims the
+  resolved path on `PYTHONPATH`). Rollback by hand: `ln -sfn .taskmgr-remote/<old>.pyz
+  ~/taskmgr-remote.pyz`, then `systemctl --user restart taskmgr-remote`.
 
-### What `add host` does, and the manual fallback
+### Machine list: `task host list`, `enable`, `disable`, `remove`, `ping`
+
+```sh
+task host list                # NAME, ENABLED, DESTINATION (user@host[:port]), REMOTE_ROOT
+task host ping                # every server; or `task host ping gpu1` for one
+task host disable gpu1        # gpu1 is down: leave it out of submits and queries
+task host enable gpu1         # back
+task host remove gpu1         # asks [y/N]; --yes skips the question
+```
+
+`task host disable NAME` / `enable NAME` set `enabled` in the entry (rewritten atomically
+under `machines.lock`, like `remove`). A disabled server is skipped by round-robin submits
+and by the queries over every server (`jobs`, the jobid lookup, `whoami`, `version`);
+`--host NAME` still reaches it. See [[docs/usage]].
+
+`task host ping` runs `taskmgr-remote version` on each server in parallel and prints one row
+per server: `ok` or `unreachable`, the round-trip time, `protocol_version`, the installed
+code version (`none` when the server runs a checkout that `task host add` did not install),
+and the user and hostname the remote side runs as. The error of each unreachable server
+follows the table. Exit code 0 when every pinged server answered, otherwise 2. Disabled
+servers are pinged too.
+
+`task host remove NAME` removes the entry from `machines.json` (rewritten atomically under
+`machines.lock`; other entries are kept). It changes nothing on the server: code, service,
+`remote_root` and its jobs stay, and `task host add NAME --ssh ...` adds the server again.
+Without a terminal it needs `--yes`; an unknown name fails with `unknown_host` (exit 2).
+To stop the server's service as well, see the manual steps below.
+
+### What `host add` does, and the manual fallback
 
 The same setup by hand, for user `tuner`. It installs the shipped unit
 (`taskmgr/deploy/taskmgr-remote.user.service`, which uses `%h` paths) instead of the
-generated one, so a later `task add host` replaces the unit file (it shows the diff).
+generated one, so a later `task host add` replaces the unit file (it shows the diff).
 
 ```sh
-git archive HEAD | ssh gpu1 'mkdir -p ~/taskmgr && tar -x -C ~/taskmgr'   # on your machine
-mkdir -p ~/taskmgr-root                                                   # on the server
-cp ~/taskmgr/taskmgr/deploy/config.example.json ~/taskmgr-root/config.json
+python3 -m taskmgr.pyz -o dist                                    # on your machine
+scp dist/taskmgr-remote.pyz taskmgr/deploy/config.example.json \
+    taskmgr/deploy/taskmgr-remote.user.service gpu1:
+mkdir -p ~/taskmgr-root && mv ~/config.example.json ~/taskmgr-root/config.json   # on the server
 ```
 
 In the machine list use absolute paths (no `~`):
 `"remote_root": "/home/tuner/taskmgr-root"`,
-`"remote_command": "/home/tuner/taskmgr/bin/taskmgr-remote"`. If `remote_root` is not
+`"remote_command": "/home/tuner/taskmgr-remote.pyz"`. If `remote_root` is not
 `~/taskmgr-root`, change `--root` in the unit accordingly.
 
 #### Start / stop / enable at boot (systemd user service)
 
 ```sh
 mkdir -p ~/.config/systemd/user
-cp ~/taskmgr/taskmgr/deploy/taskmgr-remote.user.service \
-   ~/.config/systemd/user/taskmgr-remote.service
+mv ~/taskmgr-remote.user.service ~/.config/systemd/user/taskmgr-remote.service
 systemctl --user daemon-reload
 systemctl --user enable --now taskmgr-remote     # start now and with the user manager
 loginctl enable-linger "$USER"                   # start at boot, survive logout
@@ -143,7 +203,7 @@ shim and task on `systemctl --user stop`. With `KillMode=process` systemd only s
 daemon's main PID; the daemon exits on SIGTERM without touching shims, and on the next
 start runs restart recovery. We chose this over `systemd-run --user --scope` per shim
 because it needs no D-Bus access from the daemon and keeps the daemon a plain process that
-also runs outside systemd (tmux, nohup): `nohup ~/taskmgr/bin/taskmgr-remote --root
+also runs outside systemd (tmux, nohup): `nohup ~/taskmgr-remote.pyz --root
 ~/taskmgr-root serve > /dev/null 2>&1 &`; stop with `kill <pid>` (pid in
 `locks/daemon.lock`).
 

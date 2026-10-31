@@ -22,14 +22,13 @@ def query_gpus() -> list[tuple[int, str]]:
     try:
         out = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             stdin=subprocess.DEVNULL,
             timeout=60,
             check=True,
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
-        raise TaskmgrError("nvidia_smi_failed", "cannot query GPUs with nvidia-smi: %s" % e)
+        raise TaskmgrError("nvidia_smi_failed", "cannot query GPUs with nvidia-smi: %s" % e) from e
     gpus: list[tuple[int, str]] = []
     for line in out.decode(errors="replace").splitlines():
         if not line.strip():

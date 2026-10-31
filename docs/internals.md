@@ -123,7 +123,11 @@ a job starts only if all its GPUs are free and unreserved, otherwise its GPUs ar
 the reserved set; a job touching a GPU held by an `unknown` job neither starts nor reserves.
 Jobs with `gpus: []` only obey `max_cpu_jobs`. Dispatch writes `runner.json`, then
 `job.json` (running) and the rename, and only then double-forks the shim (new session,
-reparented to init) and hands it the already-locked `shim.lock`. A failed fork/exec ends
+reparented to init) and hands it the already-locked `shim.lock`. The shim runs
+`python3 -m taskmgr.remote ... shim` with the daemon's code root first on `PYTHONPATH`;
+on a server that is the resolved archive `~/.taskmgr-remote/<version>.pyz`, a file that is
+never modified, so an update during the shim's start cannot break its imports
+([[docs/install]]). A failed fork/exec ends
 the job as `failed` (`shim_start_failed`). A queued job that already has a `runner.json`
 (a crash between the two writes) is dispatched again if the record has no execution
 identity; if it has one, the job becomes `unknown` and keeps its GPUs.

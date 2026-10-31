@@ -116,8 +116,7 @@ class SchedTest(Env):
         p = subprocess.run(
             [sys.executable, REMOTE, "--root", self.root(), "serve"],
             env=self.env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=20,
         )
         self.assertEqual(p.returncode, 2)

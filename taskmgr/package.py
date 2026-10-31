@@ -40,7 +40,7 @@ def _link_resolves_inside(root: str, link: str) -> bool:
 def _inside(rel: str) -> bool:
     """True if a normalized relative POSIX path stays inside the package root."""
     n = posixpath.normpath(rel)
-    return not (n == ".." or n.startswith("../") or n.startswith("/"))
+    return not (n == ".." or n.startswith(("../", "/")))
 
 
 # ---------------------------------------------------------------------------
@@ -279,30 +279,32 @@ def _sorted_entries(root: str) -> list[tuple[str, str]]:
 
 def pack_dir(root: str, dest: str) -> None:
     """Deterministically pack a directory into a tar.gz (Section 5.1)."""
-    with open(dest, "wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
-            with tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
-                for rel, full in _sorted_entries(root):
-                    st = os.lstat(full)
-                    ti = tarfile.TarInfo(rel)
-                    ti.mtime = 0
-                    ti.uid = ti.gid = 0
-                    ti.uname = ti.gname = ""
-                    ti.mode = stat.S_IMODE(st.st_mode)
-                    if stat.S_ISLNK(st.st_mode):
-                        ti.type = tarfile.SYMTYPE
-                        ti.linkname = os.readlink(full)
-                        tar.addfile(ti)
-                    elif stat.S_ISDIR(st.st_mode):
-                        ti.type = tarfile.DIRTYPE
-                        tar.addfile(ti)
-                    elif stat.S_ISREG(st.st_mode):
-                        ti.type = tarfile.REGTYPE
-                        ti.size = st.st_size
-                        with open(full, "rb") as f:
-                            tar.addfile(ti, f)
-                    else:
-                        raise TaskmgrError("invalid_package", "special file in package: %s" % rel)
+    with (
+        open(dest, "wb") as raw,
+        gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz,
+        tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar,
+    ):
+        for rel, full in _sorted_entries(root):
+            st = os.lstat(full)
+            ti = tarfile.TarInfo(rel)
+            ti.mtime = 0
+            ti.uid = ti.gid = 0
+            ti.uname = ti.gname = ""
+            ti.mode = stat.S_IMODE(st.st_mode)
+            if stat.S_ISLNK(st.st_mode):
+                ti.type = tarfile.SYMTYPE
+                ti.linkname = os.readlink(full)
+                tar.addfile(ti)
+            elif stat.S_ISDIR(st.st_mode):
+                ti.type = tarfile.DIRTYPE
+                tar.addfile(ti)
+            elif stat.S_ISREG(st.st_mode):
+                ti.type = tarfile.REGTYPE
+                ti.size = st.st_size
+                with open(full, "rb") as f:
+                    tar.addfile(ti, f)
+            else:
+                raise TaskmgrError("invalid_package", "special file in package: %s" % rel)
 
 
 def content_hash(root: str) -> str:
@@ -365,7 +367,7 @@ def safe_extract(
         else:
             tar = tarfile.open(fileobj=tar_path_or_fileobj, mode="r|*")
     except (tarfile.TarError, EOFError, OSError, gzip.BadGzipFile) as e:
-        raise TaskmgrError("bad_archive", "cannot read archive: %s" % e)
+        raise TaskmgrError("bad_archive", "cannot read archive: %s" % e) from e
     try:
         for m in tar:
             name = _member_name(m)
@@ -436,7 +438,7 @@ def safe_extract(
                 continue
             seen.add(name)
     except (tarfile.TarError, EOFError, OSError, gzip.BadGzipFile) as e:
-        raise TaskmgrError("bad_archive", "cannot read archive: %s" % e)
+        raise TaskmgrError("bad_archive", "cannot read archive: %s" % e) from e
     finally:
         tar.close()
     # Chains such as x -> . and y -> x/.. pass the lexical check; check physical targets.

@@ -33,28 +33,44 @@ orphaned task processes must be reaped.
 | `TASKMGR_TEST_SHIM_CRASH=<point>` | shim exits at `before_identity`, `before_exec`, `after_exit_recorded`, `before_finalize` |
 | `TASKMGR_TEST_IGNORE_KILL=1` | stop procedure sends no signals (unconfirmed stop) |
 | `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` sleeps while holding the upload lock |
-| machine entry `"local": {"home": "/dir"}` | `transport: local` runs every command (and `task add host` scripts) with `HOME=/dir` |
-| `TASKMGR_TEST_LOCAL_HOME=/dir` | `task add host` creates a new entry with `transport: local` and `"local": {"home": "/dir"}` |
-| `TASKMGR_TEST_INTERACTIVE=1` | `task add host` reads answers from stdin even when it is not a terminal |
+| machine entry `"local": {"home": "/dir"}` | `transport: local` runs every command (and `task host add` scripts) with `HOME=/dir` |
+| `TASKMGR_TEST_LOCAL_HOME=/dir` | `task host add` creates a new entry with `transport: local` and `"local": {"home": "/dir"}` |
+| `TASKMGR_TEST_INTERACTIVE=1` | `task host add` reads answers from stdin even when it is not a terminal |
 
 The systemd behaviour is tested by checking `KillMode=process` in the user unit and by stopping
 the daemon with SIGTERM to its whole process group: shim and task keep running and the
 real exit code is recorded.
 
-`task add host` is tested without ssh and without systemd (`taskmgr/tests/test_add_host.py`).
+`task host add` is tested without ssh and without systemd (`taskmgr/tests/test_add_host.py`).
 The "server" is a local-transport entry whose HOME is a test directory (the test-only
 `"local": {"home"}` above). Fake `systemctl` and `loginctl` scripts, written by the test into a
 directory that is put first on PATH, keep their state under `$HOME/.fake-systemd/` and log
 every call there: `start` launches the unit's `ExecStart` (the real daemon), `stop` sends
 SIGTERM to the main PID only (like `KillMode=process`), `daemon-reload` is required after
 the unit file changes, and `enable-linger` fails while `linger-refuse` exists. The fakes
-exist only in the tests; nothing in `taskmgr/` refers to them.
+exist only in the tests; nothing in `taskmgr/` refers to them. The same file tests
+`task host list`, `task host remove` and `task host ping` against plain local-transport
+servers; an unreachable server is a machine entry with `"local": {"fail": "message"}`.
+
+These tests install `taskmgr-remote.pyz` as on a real server (a symlink into
+`$HOME/.taskmgr-remote/`); the fake `start` runs it. An older installed version is
+simulated by installing a copy of the archive whose `.taskmgr-code-version` differs and
+switching the link, as `host add` does. The code-update test keeps a task running across
+two updates; it catches a shim that imports from an archive replaced during its start.
+
+`taskmgr/tests/test_pyz.py` builds `task.pyz` and `taskmgr-remote.pyz` with
+`python3 -m taskmgr.pyz` and runs them without `PYTHONPATH` and outside the checkout:
+archive contents, exit codes, the code version (same as the checkout), `task init` (same
+package as the checkout), running through a symlink, and a job submitted with `task.pyz`
+that the daemon and shim of `taskmgr-remote.pyz` run to `succeeded`.
 
 ## Optional smoke test against real SSH
 
 ```sh
-task add host gpu1 --ssh tuner@<server>                       # every step ok or changed
-task add host gpu1                                            # second run: every step ok, no prompt
+task host add gpu1 --ssh tuner@<server>                       # every step ok or changed
+task host add gpu1                                            # second run: every step ok, no prompt
+task host ping gpu1                                           # ok, code version of the local tree
+ssh gpu1 ls -l taskmgr-remote.pyz .taskmgr-remote/            # link -> .taskmgr-remote/<version>.pyz
 task submit --host gpu1 taskmgr/examples/succeed
 task status <jobid> --host gpu1 --wait --poll-interval 2      # exit 0, outputs present
 task submit --host gpu1 taskmgr/examples/multi-gpu            # needs >= 2 GPUs

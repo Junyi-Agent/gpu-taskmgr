@@ -1,6 +1,7 @@
 # systemd *user* unit for the taskmgr scheduler daemon (no root needed).
 #
-# Install:
+# `task host add` writes this unit for you. By hand:
+#   python3 -m taskmgr.pyz -o dist && scp dist/taskmgr-remote.pyz SERVER:   # on your machine
 #   mkdir -p ~/.config/systemd/user
 #   cp taskmgr-remote.user.service ~/.config/systemd/user/taskmgr-remote.service
 #   systemctl --user daemon-reload
@@ -20,7 +21,7 @@ Description=taskmgr remote scheduler daemon (user service)
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/taskmgr/bin/taskmgr-remote --root %h/taskmgr-root serve
+ExecStart=%h/taskmgr-remote.pyz --root %h/taskmgr-root serve
 KillMode=process
 KillSignal=SIGTERM
 TimeoutStopSec=30

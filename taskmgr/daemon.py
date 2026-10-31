@@ -8,7 +8,7 @@ import time
 from types import FrameType
 from typing import TextIO
 
-from .common import STATE_DIRS, TERMINAL_STATES, try_flock_fd, utcnow_iso
+from .common import CODE_ROOT, STATE_DIRS, TERMINAL_STATES, try_flock_fd, utcnow_iso
 from .monitor import Takeover, assess, may_have_started
 from .records import ErrorInfo, Job, Runner
 from .store import (
@@ -138,9 +138,10 @@ class Daemon:
             for jobdir, job in queued:
                 uuids = [g["uuid"] for g in job.get("gpus", [])]
                 if not uuids:
-                    if max_cpu is None or cpu_active < int(max_cpu):
-                        if self.dispatch(jobdir, job) in ("running", "unknown"):
-                            cpu_active += 1
+                    if (max_cpu is None or cpu_active < int(max_cpu)) and self.dispatch(
+                        jobdir, job
+                    ) in ("running", "unknown"):
+                        cpu_active += 1
                     continue
                 if any(held.get(u) == "unknown" for u in uuids):
                     continue  # do not let an unknown job lock other GPUs via reservation
@@ -168,20 +169,19 @@ class Daemon:
             # left its last run record behind; that run did no work.
             _ = st.set_runner_aside(jobdir)
             old = None
-        if old is not None:
-            # A crash between writing runner.json and job.json leaves a queued job with a
-            # run record. Without an identity nothing was started: dispatch again. With
-            # one (not expected) a task may have run: an operator has to decide.
-            if may_have_started(old):
-                log("queued job %s already has a started run; marking unknown" % job["jobid"])
-                job["state"] = "unknown"
-                job["dispatched_at"] = old.get("dispatched_at") or utcnow_iso()
-                job["error"] = {
-                    "kind": "record_incomplete",
-                    "message": "queued job already has a run record with an execution identity",
-                }
-                _ = st.save_job(jobdir, job)
-                return job["state"]
+        # A crash between writing runner.json and job.json leaves a queued job with a
+        # run record. Without an identity nothing was started: dispatch again. With
+        # one (not expected) a task may have run: an operator has to decide.
+        if old is not None and may_have_started(old):
+            log("queued job %s already has a started run; marking unknown" % job["jobid"])
+            job["state"] = "unknown"
+            job["dispatched_at"] = old.get("dispatched_at") or utcnow_iso()
+            job["error"] = {
+                "kind": "record_incomplete",
+                "message": "queued job already has a run record with an execution identity",
+            }
+            _ = st.save_job(jobdir, job)
+            return job["state"]
         runner: Runner = {
             "schema_version": 1,
             "jobid": job["jobid"],
@@ -221,7 +221,7 @@ class Daemon:
         """Double-fork a shim into its own session, handing it the locked shim.lock."""
         lock_fd = os.open(os.path.join(jobdir, "shim.lock"), os.O_RDWR | os.O_CREAT, 0o644)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        pkg_parent = CODE_ROOT  # a directory, or the .pyz (zip files work on PYTHONPATH)
         # TASKMGR_SHIM_EXECUTABLE: test-only override to simulate a shim that cannot start.
         exe = os.environ.get("TASKMGR_SHIM_EXECUTABLE") or sys.executable
         argv = [

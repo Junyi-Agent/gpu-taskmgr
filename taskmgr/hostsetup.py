@@ -1,12 +1,15 @@
-"""`task add host`: set up or update a GPU server over ssh, one step at a time (desc-2 D18).
+"""`task host add`: set up or update a GPU server over ssh, one step at a time (desc-2 D18).
 
 Every step checks the server, prints what it found, and changes something only when the
 server differs from the wanted state; each change is confirmed with [y/N] (`--yes` answers
 yes). A run on an up-to-date server changes nothing and asks nothing. Nothing needs root.
 
 Steps: ssh (read-only checks), code, remote_root, data, unit, service, linger, verify
-(read-only), machines (the local machine list). Progress and prompts go to stderr; stdout
-gets one JSON summary.
+(read-only), machines (the local machine list), old_code (removes the code tree that
+versions before the zipapp installed). The code on the server is ~/taskmgr-remote.pyz (built
+by taskmgr.pyz), a symlink to ~/.taskmgr-remote/<version>.pyz. An installed archive is never
+modified: an update adds a file and switches the link (see pyz.MAIN_PY for why). Progress and prompts go to stderr; the
+result is a summary of the steps (text on stdout, or JSON with --detail; see hostcmds).
 """
 
 import datetime
@@ -22,7 +25,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Protocol, TypedDict, cast
 
-from . import package
+from . import pyz
 from .common import (
     DEFAULT_REMOTE_CONFIG,
     TaskmgrError,
@@ -30,12 +33,14 @@ from .common import (
     flocked,
     read_json,
 )
+from .pyz import VERSION_FILE as VERSION_FILE
 from .records import JsonDict, JsonValue, Server, SshConfig
+from .textout import BOLD, CYAN, GREEN, RED, YELLOW, paint
 from .transport import Remote, load_machines
 
-PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-CODE_DIR = "taskmgr"  # under the remote $HOME
-VERSION_FILE = ".taskmgr-code-version"
+CODE_FILE = pyz.REMOTE_PYZ  # the installed code (a symlink into CODE_STORE), under $HOME
+CODE_STORE = ".taskmgr-remote"  # <version>.pyz files: the current one and the previous one
+LEGACY_DIR = "taskmgr"  # the code tree versions before the zipapp installed (under $HOME)
 UNIT = "taskmgr-remote"
 UNIT_DIR = ".config/systemd/user"  # under the remote $HOME
 DEFAULT_REMOTE_ROOT = "~/taskmgr-root"
@@ -51,20 +56,6 @@ DEFAULT_SSH_OPTIONS = (
 )
 # `stat -f -c %T` names of filesystems where flock is unreliable across hosts.
 NETWORK_FS = ("nfs", "cifs", "smb", "fuse", "9p", "afs", "ceph", "gluster", "lustre", "gpfs")
-# Package parts that are not shipped to the server.
-EXCLUDE_NAMES = ("__pycache__", "tests", ".DS_Store")
-# bin/taskmgr-remote of the repository (a test checks that both are equal).
-WRAPPER = """#!/usr/bin/env python3
-\"\"\"Remote entry point wrapper: runs taskmgr.remote from this checkout.\"\"\"
-
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-from taskmgr.remote import main  # noqa: E402
-
-sys.exit(main())
-"""
 STOP_TIMEOUT = 45.0  # the unit's TimeoutStopSec is 30
 START_TIMEOUT = 20.0
 
@@ -102,6 +93,14 @@ def read(path):
     except (OSError, UnicodeDecodeError):
         return None
 
+def zip_text(path, name):
+    try:
+        import zipfile
+        with zipfile.ZipFile(path) as z:
+            return z.read(name).decode()
+    except Exception:
+        return None
+
 def mtime(path):
     try:
         return os.stat(path).st_mtime
@@ -130,7 +129,9 @@ elif os.path.isabs(spec):
 else:
     root = os.path.join(home, spec)
 root = os.path.normpath(root)
-code = os.path.join(home, "taskmgr")
+code = os.path.join(home, "taskmgr-remote.pyz")
+store = os.path.join(home, ".taskmgr-remote")
+legacy = os.path.join(home, "taskmgr")
 unit = os.path.join(home, ".config", "systemd", "user", "taskmgr-remote.service")
 out = {
     "python": sys.executable,
@@ -142,13 +143,22 @@ out = {
     "root_exists": os.path.isdir(root),
     "config_exists": os.path.lexists(os.path.join(root, "config.json")),
     "code_exists": os.path.lexists(code),
+    "code_target": os.readlink(code) if os.path.islink(code) else None,
+    "code_store": sorted(os.listdir(store)) if os.path.isdir(store) else [],
+    "legacy_code": os.path.isdir(legacy) and not os.path.islink(legacy) and (
+        os.path.exists(os.path.join(legacy, ".taskmgr-code-version"))
+        or os.path.exists(os.path.join(legacy, "taskmgr", "remote.py"))),
     "unit": read(unit),
     "unit_mtime": mtime(unit),
     "old_code_dirs": sorted(n for n in os.listdir(home) if n.startswith("taskmgr.old-")),
 }
-version = read(os.path.join(code, ".taskmgr-code-version"))
+version = zip_text(code, ".taskmgr-code-version")
 out["code_version"] = version.strip() if version is not None else None
-out["code_version_mtime"] = mtime(os.path.join(code, ".taskmgr-code-version"))
+try:
+    # the link is made anew at every switch, so its own mtime is the time of the install
+    out["code_version_mtime"] = os.lstat(code).st_mtime
+except OSError:
+    out["code_version_mtime"] = None
 existing = root
 while not os.path.exists(existing):
     existing = os.path.dirname(existing)
@@ -190,7 +200,7 @@ print(json.dumps(out))
 
 
 class AddHostArgs(Protocol):
-    """The `task add host` options (taskmgr.Args has them)."""
+    """The `task host add` options (taskmgr.Args has them)."""
 
     name: str
     ssh: str | None
@@ -214,6 +224,9 @@ class Probe(TypedDict, total=False):
     root_exists: bool
     config_exists: bool
     code_exists: bool
+    code_target: str | None
+    code_store: list[str]
+    legacy_code: bool
     code_version: str | None
     code_version_mtime: float | None
     unit: str | None
@@ -235,7 +248,7 @@ class Probe(TypedDict, total=False):
 
 
 class Step(TypedDict):
-    """One entry of the summary printed on stdout."""
+    """One entry of the step summary (the command's result)."""
 
     name: str
     status: str  # ok | changed | skipped | declined | failed
@@ -267,26 +280,12 @@ def q(s: str) -> str:
 
 
 def build_code(dest_dir: str) -> tuple[str, str, int]:
-    """Stage the shipped tree (taskmgr/ and bin/taskmgr-remote) under dest_dir and pack it.
+    """Build taskmgr-remote.pyz under dest_dir: (code version, archive path, files inside).
 
-    Returns (version, tar path, file count). The version is package.content_hash of the
-    staged tree, so it depends only on file contents and executable bits.
+    Works from a checkout and from task.pyz; both give the same version.
     """
-    stage = os.path.join(dest_dir, "tree")
-    _ = shutil.copytree(
-        PACKAGE_DIR,
-        os.path.join(stage, "taskmgr"),
-        ignore=shutil.ignore_patterns(*EXCLUDE_NAMES, "*.pyc"),
-    )
-    os.makedirs(os.path.join(stage, "bin"))
-    wrapper = os.path.join(stage, "bin", "taskmgr-remote")
-    with open(wrapper, "w") as f:
-        _ = f.write(WRAPPER)
-    os.chmod(wrapper, 0o755)
-    files = sum(len(names) for _, _, names in os.walk(stage))
-    tar = os.path.join(dest_dir, "code.tar.gz")
-    package.pack_dir(stage, tar)
-    return package.content_hash(stage), tar, files
+    built = pyz.build_remote(dest_dir)
+    return built.code_version, built.outputs[0][0], built.files
 
 
 def systemd_quote(arg: str) -> str:
@@ -301,11 +300,10 @@ def unit_text(python: str, home: str, root: str) -> str:
     """The user unit for this server (absolute paths; same settings as
     deploy/taskmgr-remote.user.service, which a test keeps in sync)."""
     exec_start = " ".join(
-        systemd_quote(a)
-        for a in (python, "%s/%s/bin/taskmgr-remote" % (home, CODE_DIR), "--root", root, "serve")
+        systemd_quote(a) for a in (python, "%s/%s" % (home, CODE_FILE), "--root", root, "serve")
     )
     return (
-        "# Generated by `task add host`; run it again instead of editing this file.\n"
+        "# Generated by `task host add`; run it again instead of editing this file.\n"
         + "# KillMode=process: stop/restart signal only the daemon, so running shims and\n"
         + "# tasks keep running (see docs/install.md).\n"
         + "[Unit]\n"
@@ -359,6 +357,10 @@ def parse_destination(dest: str) -> tuple[str | None, str]:
 # Prompts
 
 
+# Color of a step's result line.
+STATUS_SGR = {"ok": GREEN, "changed": GREEN, "skipped": YELLOW, "declined": YELLOW, "failed": RED}
+
+
 class Ui:
     """Progress and prompts on stderr; answers from stdin."""
 
@@ -370,26 +372,26 @@ class Ui:
         )
 
     @staticmethod
-    def say(text: str = "") -> None:
-        _ = sys.stderr.write(text + "\n")
+    def say(text: str = "", sgr: str | None = None) -> None:
+        _ = sys.stderr.write(paint(text, sgr) + "\n")
         _ = sys.stderr.flush()
 
-    def info(self, text: str) -> None:
+    def info(self, text: str, sgr: str | None = None) -> None:
         for line in text.splitlines() or [""]:
-            self.say("      " + line)
+            self.say("      " + paint(line, sgr))
 
     def confirm(self, change: str) -> None:
         """Describe a change and ask; raises Declined or NonInteractive."""
-        self.info("change: " + change)
+        self.info("change: " + change, YELLOW)
         if self.yes:
-            self.say("      proceed? [y/N] y (--yes)")
+            self.say("      %s y (--yes)" % paint("proceed? [y/N]", BOLD))
             return
         if not self.interactive:
             raise NonInteractive(
                 "a change is needed but stdin is not a terminal; run it in a terminal or "
                 + "pass --yes (nothing was changed by this step)"
             )
-        _ = sys.stderr.write("      proceed? [y/N] ")
+        _ = sys.stderr.write("      %s " % paint("proceed? [y/N]", BOLD))
         _ = sys.stderr.flush()
         answer = sys.stdin.readline()
         if not answer:
@@ -418,9 +420,9 @@ class HostSetup:
         self.probe: Probe = {}
         self.tmp: str = ""
         self.version: str = ""
-        self.tar: str = ""
+        self.pyz: str = ""  # the local taskmgr-remote.pyz to upload
         self.files: int = 0
-        self.staged: str | None = None  # uploaded code waiting for the data check
+        self.staged: str | None = None  # uploaded archive waiting for the data check
         self.code_changed: bool = False
         self.unit_changed: bool = False
         self.steps: list[Step] = []
@@ -482,7 +484,7 @@ class HostSetup:
     def run(self) -> tuple[Mapping[str, object], int]:
         plan: list[tuple[str, str, Callable[[], tuple[str, str]], bool]] = [
             ("ssh", "check the connection and the server", self.step_ssh, True),
-            ("code", "code in ~/taskmgr", self.step_code, True),
+            ("code", "code in ~/%s" % CODE_FILE, self.step_code, True),
             ("remote_root", "remote_root and config.json", self.step_root, True),
             ("data", "job directories match the current layout", self.step_data, True),
             ("unit", "systemd user unit", self.step_unit, True),
@@ -490,8 +492,9 @@ class HostSetup:
             ("linger", "lingering (start at boot, survive logout)", self.step_linger, False),
             ("verify", "the server answers", self.step_verify, True),
             ("machines", "local machine list", self.step_machines, True),
+            ("old_code", "code tree of older versions", self.step_old_code, False),
         ]
-        self.ui.say("task add host %s: %s" % (self.args.name, self.destination()))
+        self.ui.say("task host add %s: %s" % (self.args.name, self.destination()), BOLD)
         stopped_by: str | None = None
         self.tmp = tempfile.mkdtemp(prefix="taskmgr-addhost-")
         try:
@@ -501,7 +504,7 @@ class HostSetup:
                         {"name": name, "status": "skipped", "detail": "not run: " + stopped_by}
                     )
                     continue
-                self.ui.say("[%d/%d] %s: %s" % (i + 1, len(plan), name, title))
+                self.ui.say("[%d/%d] %s: %s" % (i + 1, len(plan), name, title), CYAN)
                 try:
                     status, detail = fn()
                 except Declined as e:
@@ -510,7 +513,7 @@ class HostSetup:
                     status, detail = "failed", str(e)
                 except TaskmgrError as e:
                     status, detail = "failed", e.message
-                self.ui.info("-> %s: %s" % (status, detail))
+                self.ui.info("-> %s: %s" % (status, detail), STATUS_SGR.get(status))
                 self.steps.append({"name": name, "status": status, "detail": detail})
                 if status in ("declined", "failed") and required:
                     stopped_by = "step %s %s" % (name, status)
@@ -520,7 +523,8 @@ class HostSetup:
             shutil.rmtree(self.tmp, ignore_errors=True)
         complete = all(s["status"] in ("ok", "changed") for s in self.steps)
         self.ui.say(
-            "done: %s" % ("the server is set up" if complete else "NOT complete, see the steps")
+            "done: %s" % ("the server is set up" if complete else "NOT complete, see the steps"),
+            GREEN if complete else RED,
         )
         out: dict[str, object] = {"host": self.args.name, "steps": self.steps, "complete": complete}
         return out, (0 if complete else 2)
@@ -545,7 +549,7 @@ class HostSetup:
         try:
             obj = cast(JsonValue, json.loads(out.strip().splitlines()[-1]))
         except (ValueError, IndexError):
-            raise StepFailed("the server probe printed no JSON: %r" % out[-500:])
+            raise StepFailed("the server probe printed no JSON: %r" % out[-500:]) from None
         if not isinstance(obj, dict):
             raise StepFailed("the server probe printed no JSON object")
         self.probe = cast(Probe, cast(object, obj))
@@ -555,7 +559,13 @@ class HostSetup:
         return self.probe.get("home") or ""
 
     def code_path(self) -> str:
-        return "%s/%s" % (self.p_home(), CODE_DIR)
+        return "%s/%s" % (self.p_home(), CODE_FILE)
+
+    def store_path(self) -> str:
+        return "%s/%s" % (self.p_home(), CODE_STORE)
+
+    def archive_name(self) -> str:
+        return "%s.pyz" % self.version[:16]
 
     def unit_path(self) -> str:
         return "%s/%s/%s.service" % (self.p_home(), UNIT_DIR, UNIT)
@@ -566,10 +576,10 @@ class HostSetup:
     def wanted_unit(self) -> str:
         return unit_text(self.probe.get("python") or "python3", self.p_home(), self.root())
 
-    def server_entry(self, code_dir: str | None = None) -> Server:
+    def server_entry(self, code_file: str | None = None) -> Server:
         e: Server = cast(Server, json.loads(json.dumps(self.entry)))
         e["remote_root"] = self.root()
-        e["remote_command"] = "%s/bin/taskmgr-remote" % (code_dir or self.code_path())
+        e["remote_command"] = code_file or self.code_path()
         return e
 
     def systemctl(self, *argv: str) -> None:
@@ -624,69 +634,78 @@ class HostSetup:
 
     # -- 2. code ----------------------------------------------------------------
     def step_code(self) -> tuple[str, str]:
-        self.version, self.tar, self.files = build_code(self.tmp)
+        self.version, self.pyz, self.files = build_code(self.tmp)
         installed = self.probe.get("code_version")
         short = self.version[:12]
         self.ui.info("local version %s; installed: %s" % (short, (installed or "none")[:12]))
         if installed == self.version:
             return "ok", "already up to date (%s)" % short
         path = self.code_path()
-        size = os.path.getsize(self.tar)
+        store = self.store_path()
+        final = "%s/%s" % (store, self.archive_name())
+        size = os.path.getsize(self.pyz)
         if self.probe.get("code_exists"):
-            what = "replace %s (version %s) with version %s; the current tree is kept as " % (
-                path,
-                (installed or "unknown")[:12],
-                short,
-            ) + "%s.old-<time> (older %s.old-* are removed)" % (path, path)
+            what = "update %s from version %s to %s" % (path, (installed or "unknown")[:12], short)
         else:
-            what = "install version %s into %s" % (short, path)
+            what = "install version %s as %s" % (short, path)
         self.ui.confirm(
-            "%s: upload %d files (%d KB) to %s.new-*, and move it into place after step data"
-            % (what, self.files, size // 1024, path)
+            "%s: upload %s (%d KB, %d files inside) to %s/, and after step data point %s at "
+            % (what, CODE_FILE, size // 1024, self.files, store, path)
+            + "%s (the previous archive is kept, older ones are removed)" % final
         )
-        with open(self.tar, "rb") as f:
+        with open(self.pyz, "rb") as f:
             data = f.read()
         script = (
             "set -e\n"
-            + 'new=$(mktemp -d "$HOME/%s.new-XXXXXX")\n' % CODE_DIR
-            + 'if ! tar -xzf - -C "$new"; then rm -rf "$new"; exit 1; fi\n'
-            + "printf '%%s\\n' %s > \"$new/%s\"\n" % (q(self.version), VERSION_FILE)
+            + "mkdir -p %s\n" % q(store)
+            + "new=$(mktemp %s)\n" % q("%s/%s.new-XXXXXX" % (store, self.archive_name()))
+            + 'if ! cat > "$new"; then rm -f "$new"; exit 1; fi\n'
             + 'chmod 755 "$new"\n'
             + 'echo "$new"\n'
         )
         out = self.sh(script, data).strip().splitlines()
         staged = out[-1] if out else ""
-        if not staged.startswith(path + ".new-"):
-            raise StepFailed("unexpected staging directory %r" % staged)
+        if not staged.startswith(final + ".new-"):
+            raise StepFailed("unexpected staging file %r" % staged)
         self.staged = staged
         self.ui.info("uploaded to %s" % staged)
-        # Status is finalized when the staged tree is moved into place (after step data).
+        # Status is finalized when the staged file is moved into place (after step data).
         return "changed", "uploaded version %s to %s (installed after step data)" % (short, staged)
 
     def _install_staged(self) -> None:
         staged = self.staged
         assert staged is not None
-        path = self.code_path()
-        old = "%s.old-%s" % (path, utc_stamp())
+        path, store, name = self.code_path(), self.store_path(), self.archive_name()
+        final = "%s/%s" % (store, name)
+        # The archive gets its final name (an existing file of this version stays as it is:
+        # a process may be reading it), then a new link replaces `path` with one rename, so
+        # `path` exists at every moment. Archives other than this one and the one the link
+        # pointed to before are removed (nothing reads them after its start).
         script = (
             "set -e\n"
-            + 'for d in "$HOME"/%s.old-*; do if [ -e "$d" ]; then rm -rf "$d"; fi; done\n'
-            % CODE_DIR
-            + "if [ -e %s ] || [ -L %s ]; then mv %s %s; fi\n" % (q(path), q(path), q(path), q(old))
-            + "mv %s %s\n" % (q(staged), q(path))
+            + "prev=$(readlink %s 2>/dev/null || true)\n" % q(path)
+            + "if [ -e %s ]; then rm -f %s; else mv %s %s; fi\n"
+            % (q(final), q(staged), q(staged), q(final))
+            + "ln -s %s %s\n" % (q("%s/%s" % (CODE_STORE, name)), q(path + ".link-new"))
+            + "mv -f %s %s\n" % (q(path + ".link-new"), q(path))
+            + 'keep=$(basename "${prev:-none}")\n'
+            + "for f in %s/*; do\n" % q(store)
+            + '  b=$(basename "$f")\n'
+            + '  if [ "$b" != %s ] && [ "$b" != "$keep" ]; then rm -f "$f"; fi\n' % q(name)
+            + "done\n"
         )
         _ = self.sh(script)
         self.staged = None
         self.code_changed = True
         p = self.run_probe()
         if p.get("code_version") != self.version:
-            raise StepFailed("after the move %s reports version %r" % (path, p.get("code_version")))
-        detail = "installed version %s in %s" % (self.version[:12], path)
-        if p.get("old_code_dirs"):
-            detail += "; previous tree kept as %s/%s" % (
-                self.p_home(),
-                (p.get("old_code_dirs") or [""])[-1],
+            raise StepFailed(
+                "after the switch %s reports version %r" % (path, p.get("code_version"))
             )
+        detail = "installed version %s: %s -> %s" % (self.version[:12], path, final)
+        previous = [n for n in p.get("code_store") or [] if n != name]
+        if previous:
+            detail += "; previous archive kept: %s/%s" % (store, previous[0])
         self.ui.info("code: " + detail)
         for s in self.steps:
             if s["name"] == "code":
@@ -698,7 +717,9 @@ class HostSetup:
         if staged is None:
             return
         try:
-            _ = self.sh("rm -rf %s\n" % q(staged))
+            _ = self.sh(
+                "rm -f %s\nrmdir %s 2>/dev/null || true\n" % (q(staged), q(self.store_path()))
+            )
             removed = "removed"
         except (StepFailed, TaskmgrError):
             removed = "could not be removed"
@@ -761,7 +782,7 @@ class HostSetup:
                 raise StepFailed(
                     "a daemon that systemd does not manage holds %s/locks/daemon.lock (pid %s); "
                     % (self.root(), p.get("daemon_pid"))
-                    + "stop it, then run task add host again"
+                    + "stop it, then run `task host add` again"
                 )
             self.ui.confirm(
                 "stop the taskmgr-remote service before moving these directories (a running "
@@ -830,7 +851,7 @@ class HostSetup:
             "%d incompatible jobs may still be running (%s); they are not moved. "
             % (len(live), _paths(live))
             + "Let them end, or if their processes are gone move them by hand into "
-            + "%s.backup-<time>/, then run task add host again" % self.root()
+            + "%s.backup-<time>/, then run `task host add` again" % self.root()
         )
         if stopped:
             msg += ". The service was stopped and stays stopped until then"
@@ -929,7 +950,7 @@ class HostSetup:
                 raise StepFailed(
                     "a daemon that systemd does not manage holds %s/locks/daemon.lock (pid %s); "
                     % (self.root(), p.get("daemon_pid"))
-                    + "stop it, then run task add host again"
+                    + "stop it, then run `task host add` again"
                 )
             self.ui.info("%s is %s" % (UNIT, p.get("active") or "inactive"))
             self.ui.confirm("`systemctl --user start %s`" % UNIT)
@@ -1051,6 +1072,31 @@ class HostSetup:
             self.machines_path,
         )
 
+    # -- 10. code tree of older versions ----------------------------------------------
+    def step_old_code(self) -> tuple[str, str]:
+        p = self.run_probe()
+        home = self.p_home()
+        trees = ["%s/%s" % (home, LEGACY_DIR)] if p.get("legacy_code") else []
+        trees += ["%s/%s" % (home, d) for d in p.get("old_code_dirs") or []]
+        if not trees:
+            return "ok", "no code tree of an older version"
+        self.ui.info(
+            "the service runs %s; these trees from older versions are not used any more:"
+            % self.code_path()
+        )
+        for t in trees:
+            self.ui.info("  " + t)
+        self.ui.confirm(
+            "delete %s. Machine lists on other computers that still name " % ", ".join(trees)
+            + "%s/%s/bin/taskmgr-remote stop working; run `task host add %s` there"
+            % (home, LEGACY_DIR, self.args.name)
+        )
+        _ = self.sh("rm -rf -- %s\n" % " ".join(q(t) for t in trees))
+        left = self.run_probe()
+        if left.get("legacy_code") or left.get("old_code_dirs"):
+            raise StepFailed("still there after rm -rf: %s" % ", ".join(trees))
+        return "changed", "deleted %s" % ", ".join(trees)
+
 
 def _canon(s: Server) -> str:
     return json.dumps(s, sort_keys=True)
@@ -1069,5 +1115,5 @@ def _paths(entries: list[JsonDict]) -> str:
 
 
 def add_host(args: AddHostArgs, home: str) -> tuple[Mapping[str, object], int]:
-    """`task add host`: (summary for stdout, exit code). `home` is the local state dir."""
+    """`task host add`: (step summary, exit code). `home` is the local state dir."""
     return HostSetup(args, home).run()

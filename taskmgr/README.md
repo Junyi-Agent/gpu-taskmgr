@@ -16,48 +16,63 @@ its ssh address, and `tuner` your user name on it. No step needs root.
 
 **1. Your machine: install the CLI**
 
+The CLI is one file, `task.pyz`, and needs only `python3` >= 3.10 ([[docs/install]],
+single-file zipapps).
+
+1.1 Build the pyz (optional; skip if you already have `task.pyz`), in the checkout:
+
 ```sh
-uv tool install --editable /path/to/gpu-taskmgr     # provides the `task` command
+python3 -m taskmgr.pyz -o dist     # writes dist/task.pyz and dist/taskmgr-remote.pyz
+```
+
+1.2 Install the pyz: copy it anywhere on your `PATH`
+
+```sh
+cp dist/task.pyz ~/.local/bin/task
+task version                       # check that it runs
 ```
 
 **2. Your machine: set up the server**
 
 ```sh
-task add host gpu1 --ssh tuner@10.0.0.12
+task host add gpu1 --ssh tuner@10.0.0.12
 ```
 
-This copies the code to `~/taskmgr` on the server, creates `~/taskmgr-root` with a
-`config.json`, installs and starts the systemd user service, enables lingering, and adds
-`gpu1` to `~/.taskmgr/machines.json`. Each step says what it found; each change asks
-`[y/N]` first (`--yes` answers yes). If `loginctl enable-linger` is refused, the step
-reports the command an admin has to run once. If `$HOME` is on NFS, add
+This builds the code into one file and installs it on the server as `~/taskmgr-remote.pyz`
+(a symlink to `~/.taskmgr-remote/<version>.pyz`), creates `~/taskmgr-root` with a
+`config.json`, installs and starts the systemd user service that runs that file, enables
+lingering, and adds `gpu1` to `~/.taskmgr/machines.json`. Each step says what it found;
+each change asks `[y/N]` first (`--yes` answers yes). If `loginctl enable-linger` is
+refused, the step reports the command an admin has to run once. If `$HOME` is on NFS, add
 `--remote-root /scratch/tuner/taskmgr-root` (local disk). Details: [[docs/install]].
 
-To update the server later (after `git pull`), run `task add host gpu1` again. It is
-idempotent: on an up-to-date server it changes nothing and asks nothing.
+To update the server later (after `git pull`), run `task host add gpu1` again. It is
+idempotent: on an up-to-date server it changes nothing and asks nothing. On a server set
+up by a version before the zipapp, it also offers to delete the old `~/taskmgr` tree.
 
 The CLI and every server must speak the same `protocol_version`; a mismatch fails with
 `protocol_mismatch` (exit 2). Protocol 2 removed attempts (a job runs once; a retry is a new
-job). Job directories written by protocol 1 (`attempts/NNNN/`) are not migrated: `task add
-host` moves them into `<remote_root>.backup-<time>/` after asking, and refuses while such a
+job). Job directories written by protocol 1 (`attempts/NNNN/`) are not migrated: `task host
+add` moves them into `<remote_root>.backup-<time>/` after asking, and refuses while such a
 job may still be running.
 
 **3. Use it**
 
 ```sh
-task hosts                           # check the machine list
+task host list                       # check the machine list
+task host ping                       # check that every server answers
 task init AA-01                      # template; fill every <REQUIRED...> marker
 task validate AA-01/
-task submit AA-01/                   # prints {"host", "jobid", ...}
+task submit AA-01/                   # prints JOBID TASK_ID HOST STATE
 task status <jobid> --wait
-task fetch <jobid> --host gpu1 --output ./results/
+task fetch <jobid> --output ./results/
 ```
 
 ## Documentation
 
 | Doc | Content |
 | --- | --- |
-| [[docs/install]] | local CLI, `task add host`, systemd user service, `config.json` |
+| [[docs/install]] | local CLI, `task host add`, systemd user service, `config.json` |
 | [[docs/usage]] | commands, JSON output, exit codes |
 | [[docs/task-package]] | `task.json`, `progress.json`, `result.json`, entry environment |
 | [[docs/internals]] | remote directory layout, `job.json` / `runner.json`, state machine, scheduling, shim, stop procedure |
@@ -84,7 +99,8 @@ Points the spec asks the README to state:
 ```
 taskmgr/
   taskmgr.py      local CLI entry (`task`)
-  hostsetup.py    `task add host`: server setup and update over ssh, step by step
+  hostsetup.py    `task host add`: server setup and update over ssh, step by step
+  pyz.py          builds the zipapps task.pyz and taskmgr-remote.pyz (`python3 -m taskmgr.pyz`)
   transport.py    machine list; ssh / local transport (`Remote`)
   remote.py       remote entry (`taskmgr-remote`): subcommands, `serve`, `shim`
   daemon.py       scheduler daemon: queue scan, GPU reservation, shim spawn, recovery loop
@@ -101,6 +117,7 @@ taskmgr/
   deploy/         taskmgr-remote.user.service (systemd user unit), machines.example.json,
                   config.example.json
   tests/          unittest suite: python -m unittest discover -s taskmgr/tests
-bin/task, bin/taskmgr-remote   wrappers that run from a checkout
+bin/task, bin/taskmgr-remote   wrappers that run from a checkout (`python3 -m taskmgr.pyz`
+                               builds single-file task.pyz / taskmgr-remote.pyz)
 docs/            documentation (English *.md, Chinese *.zh-CN.md)
 ```

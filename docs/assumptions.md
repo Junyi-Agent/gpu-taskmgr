@@ -56,7 +56,7 @@ Other language: [[docs/assumptions.zh-CN]]
     if the machine's GPUs changed. A corrupt `result.json` is kept as
     `result.json.corrupt` (or `.corrupt.N` if that name is taken).
 16. `_taskmgr.host` is the remote machine's hostname.
-17. Extra config key `scheduler_poll_seconds`; extra command `task hosts`.
+17. Extra config key `scheduler_poll_seconds`; extra commands `task host list|enable|disable|remove|ping`, `task whoami`, `task update`, `task version`.
 18. A retry or automatic re-run job gets its own `submitted_at` (the time it was created),
     so `task jobs` lists it as a separate row after the jobs it re-runs. It copies the
     resolved GPU UUIDs of the old job and is not re-validated. A queued job that already
@@ -70,6 +70,11 @@ Other language: [[docs/assumptions.zh-CN]]
     between exit 75 and the relaunch, `runner.json` is kept as `runner.prev-N.json`. An
     `unknown` job is never queued again, also after exit 75. `claim_gpu()` does nothing
     when `CUDA_VISIBLE_DEVICES` is unset (a run outside taskmgr), as when it is empty.
+20. Disabled servers (by user decision, departs from desc-1 §14): `task jobs` and the jobid
+    lookup without `--host` (also `whoami`, `version`) ask only enabled servers, so a server
+    that is down and disabled with `task host disable` costs no timeout. The output names
+    the skipped servers; `--host` still reaches a disabled server. desc-1 queried disabled
+    servers too, because they may still hold jobs.
 
 ## Limitations
 
@@ -82,7 +87,7 @@ Other language: [[docs/assumptions.zh-CN]]
 - `remote_root` must be on a local filesystem (flock is unreliable on NFS).
 - No checkpoint/resume: an automatic re-run starts from the original package.
 - No installation of software or environments; venvs and paths must exist on the server.
-  `task add host` installs only taskmgr itself (code, unit, `remote_root`).
-- `task add host` does not lock the server: two runs for the same server at the same time
-  are not supported. It trusts `~/taskmgr/.taskmgr-code-version`, so files edited by hand
-  in `~/taskmgr` are not noticed.
+  `task host add` installs only taskmgr itself (code, unit, `remote_root`).
+- `task host add` does not lock the server: two runs for the same server at the same time
+  are not supported. It trusts the code version recorded inside `~/taskmgr-remote.pyz`
+  (an installed archive is never modified, see [[docs/install]]).

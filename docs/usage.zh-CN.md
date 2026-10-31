@@ -10,26 +10,70 @@ up: "[[taskmgr/README.zh-CN]]"
 其他语言：[[docs/usage]]
 
 ```sh
+task -h                                # 按分组列出命令（tasks / hosts / others）
 task init AA-01                        # 生成 ./AA-01/ 模板；填写所有 <REQUIRED...> 标记
-task validate AA-01/                   # 退出码 0 输出 {"valid": true}；1 列出所有错误；2 路径错误
+task validate AA-01/                   # 退出码 0 校验通过；1 列出所有错误；2 路径错误
 task submit AA-01/                     # 在启用的服务器之间轮询
 task submit --host nebius-h200-2 AA-01.tar.gz
 task submit --host nebius-h200-2 --submission-key tune-aa01-v3 AA-01/   # 幂等重试
-task jobs [--host H] [--state running] [--detail] [--color auto|always|never]
+task jobs [--host H] [--state running]
 task status <jobid> [--host H]
 task status <jobid> [--host H] --wait [--poll-interval 5] [--retry-timeout 300] [--timeout S]
-task cancel  <jobid> --host H
-task retry   <jobid> --host H          # 创建一个新作业，输出新的 jobid
-task resolve <jobid> --host H [--as stopped --confirm <jobid>]
-task logs  <jobid> --host H [--stream stdout|stderr|shim] [--follow]
-task fetch <jobid> --host H --output ./results/
-task hosts                             # 列出已配置的服务器（额外命令）
-task add host NAME [--ssh USER@HOST] [--port N] [--identity-file F] [--remote-root DIR]
-              [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
+task logs    <jobid> [--host H] [--stream stdout|stderr|shim] [--follow]
+task fetch   <jobid> [--host H] --output ./results/
+task cancel  <jobid> [--host H]
+task retry   <jobid> [--host H]        # 创建一个新作业，输出新的 jobid
+task resolve <jobid> [--host H] [--as stopped --confirm <jobid>]
+task host add NAME [--ssh USER@HOST] [--port N] [--identity-file F] [--remote-root DIR]
+                   [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--yes]
+task host list                         # 已配置的服务器
+task host remove NAME [--yes]          # 从机器列表删除一台服务器
+task host enable NAME                  # 重新使用一台服务器
+task host disable NAME                 # 暂时不向这台服务器提交、也不查询它
+task host ping [NAME]                  # 检查服务器是否有响应
+task whoami                            # 每台服务器上 taskmgr 以哪个用户、哪台主机运行
+task update                            # 更新本地 CLI（git pull --ff-only）
+task version                           # 本地版本和每台服务器上的代码版本
 ```
 
-除 `logs` 和 `jobs` 表格外，所有命令都在 stdout 输出一个 JSON 对象；出错时输出
-`{"error": {"code", "message", "host"?, "details"?}}`，诊断信息写到 stderr。
+除 `logs` 外，所有命令都支持 `--detail`；所有命令都支持 `--plain`。
+
+## 输出
+
+所有输出都带颜色：stdout 上的文本和 `--detail` JSON、stderr 上的错误和进度、`-h` 帮助和参数错误，
+不论是否在终端里。`--plain`（放在命令行任意位置）或环境变量 `NO_COLOR` 关闭颜色。读取输出的脚本
+使用 `--detail --plain`。
+
+所有命令的输出只有以下几种形式：
+
+| 形式 | 用于 | 颜色 |
+| --- | --- | --- |
+| 表格 | 列表（`jobs`、`retry`、`submit`、`host list`、`host ping`、`whoami`、`version`） | 表头粗体；STATE 和状态列按取值着色 |
+| `key: value` 行 | 单个对象（`status`、`resolve`、`version` 的本地部分） | key 粗体；状态按取值着色 |
+| `label: message` | 一行结果和提示 | label 绿色（完成）、黄色（提示、警告）、红色（失败）、青色（`hint`） |
+| JSON（`--detail`） | 完整对象 | key 蓝色，字符串绿色，数字青色，`true`/`false`/`null` 品红 |
+
+```
+created: AA-01 in /work/AA-01
+hint: fill every <REQUIRED...> marker, then run `task validate /work/AA-01`
+```
+
+不带 `--detail` 时，错误只在 stderr 输出一行 `error:`，行尾是错误码，stdout 为空：
+
+```
+error: path does not exist: AA-01 (not_found)
+```
+
+带 `--detail` 时，错误以 `{"error": {"code", "message", "host"?, "details"?}}` 输出到 stdout，
+stderr 另有一行 `error:`。
+
+`task -h` 和每个 `task <command> -h` 的格式相同：一行 `usage:`、一句说明、`commands` /
+`arguments` / `options` 几节（粗体），名称在同一青色列中对齐，`-h, --help` 在最后，最后一行
+指出下一步该看哪个帮助。
+
+只给 `<jobid>` 就能找到作业：不带 `--host` 时，`status`、`logs`、`fetch`、`cancel`、`retry` 和
+`resolve` 会向每台已启用的服务器查询这个 jobid（不查已禁用的服务器；找不到时错误信息会列出它们）。多台服务器上都有这个 jobid → `ambiguous`（退出码 2，
+需加 `--host`）；没找到且有服务器连不上 → `incomplete`（退出码 2）。带 `--host` 时不做查询。
 
 `task jobs` 输出表格（按用户决定，偏离需求文档 §16）：
 
@@ -41,11 +85,14 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 - running 作业的入口进程因 GPU 被其他进程占用而退出 75、正在等待重新启动时，STATE 显示为
   `pending (gpu busy)`（见 [[docs/task-package.zh-CN]] 的 GPU 约定）。它的状态仍是 `running`；
   `--detail` 和 `task status` 在 `pending_reason` 中给出原因。
-- 按提交时间（UTC）排序。stdout 是终端时 STATE 带颜色（queued 和 `pending (gpu busy)` 黄、
+- 按提交时间（UTC）排序。所有显示 STATE 的命令中，同一状态颜色相同：queued 和 `pending (gpu busy)` 黄、
   running 青、stopping 品红、unknown 粗体品红、succeeded 绿、failed / invalid_result / timed_out
-  红、cancelled 灰）；设置 `NO_COLOR` 或 `TERM=dumb` 时关闭，`--color always|never` 可强制指定。
+  红、cancelled 灰。
 - 连不上的服务器在 stderr 报告（`warning: H unreachable, ...`）；退出码规则不变（至少一台服务器有
-  响应为 0，否则为 2）。表格模式下的错误只写到 stderr。
+  响应为 0，否则为 2）。
+- 宕机的服务器不会卡住命令：ssh 连接 10 秒后放弃（`ConnectTimeout=10`；服务器在机器列表中自己的
+  `-o ConnectTimeout=N` 优先）；向所有服务器发出的查询（`jobs`、按 jobid 查找、`whoami`、`version`）
+  对每台服务器最多等 30 秒（用 `TASKMGR_QUERY_TIMEOUT=<秒数>` 修改）。
 - `--detail` 改为输出 JSON 对象 `{"complete", "errors", "jobs"}`。
 
 | 退出码 | 含义 |
@@ -54,6 +101,8 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 | 1 | `--wait`：作业以 failed / invalid_result / cancelled / timed_out 结束；`validate`：校验不通过 |
 | 2 | 参数、连接、查询或操作错误；`jobs` 时所有服务器都失败 |
 | 3 | `--wait` 发现作业处于 `unknown` |
+
+以下 JSON 对象是 `--detail` 的输出。
 
 提交回执：`{"host", "jobid", "task_id", "submission_key", "deduplicated", "content_hash",
 "state"}`。如果提交结果不确定（连接失败或没有收到有效回复），stderr 会给出所选的服务器和
@@ -70,9 +119,9 @@ last_gpu_busy_at, identity} 或 null, "progress":
 
 ## 重试与重跑
 
-一个作业最多运行一次。`task retry <jobid> --host H`（只用于终态作业；`unknown` →
+一个作业最多运行一次。`task retry <jobid>`（只用于终态作业；`unknown` →
 `resolve_required`，queued/running/stopping → `not_terminal`，退出码都是 2）用同一个包创建一个
-**新作业**，排到队尾，输出 `{"jobid": <新>, "retry_of": <旧>, "state": "queued", "changed": true,
+**新作业**，排到队尾，输出表格 `JOBID RETRY_OF HOST STATE`；JSON 为 `{"jobid": <新>, "retry_of": <旧>, "state": "queued", "changed": true,
 "enqueue_seq", "host"}`。旧作业的状态、日志和结果保持不变；它的 `retried_as` 列出新作业的
 jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key 重新提交，仍然返回原作业的 jobid。
 
@@ -93,11 +142,32 @@ jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key �
   `no_run`（退出码 2）。作业未结束时 stderr 给出警告，回执中 `partial: true`。回执：
   `{"host", "jobid", "state", "partial", "path", "skipped"}`。
 
-## 添加和更新服务器
+## 服务器
 
-`task add host NAME --ssh USER@HOST` 通过 ssh 配置一台 GPU 服务器，并把它加入机器列表；
-`task add host NAME` 检查一台已有的服务器并更新它（代码、`remote_root`、systemd 用户 unit 和
-服务、linger、机器列表条目）。每一处改动都会先显示，再用 `[y/N]` 询问；`--yes` 回答 yes。
-服务器已是最新状态时，再执行一次不做改动，也不询问。进度和询问写到 stderr；stdout 输出
-`{"host", "steps": [{"name", "status", "detail"}], "complete"}`，所有步骤都是 `ok` 或
-`changed` 时退出码为 0，否则为 2。各步骤见 [[docs/install.zh-CN]]。
+`task host add NAME --ssh USER@HOST` 通过 ssh 配置一台 GPU 服务器，并把它加入机器列表；
+`task host add NAME` 检查一台已有的服务器并更新它（代码、`remote_root`、systemd 用户 unit 和
+服务、linger、机器列表条目，以及删除 zipapp 之前的版本安装的代码目录）。每一处改动都会先显示，再用 `[y/N]` 询问；`--yes` 回答 yes。
+服务器已是最新状态时，再执行一次不做改动，也不询问。进度和询问写到 stderr；stdout 输出各步骤的
+摘要（`--detail`：`{"host", "steps": [{"name", "status", "detail"}], "complete"}`），所有步骤都是
+`ok` 或 `changed` 时退出码为 0，否则为 2。各步骤见 [[docs/install.zh-CN]]。
+
+- `task host list` 列出机器列表。
+- `task host remove NAME` 从机器列表删除一台服务器，不改动服务器本身。
+- `task host disable NAME` 把一台服务器标为禁用，例如它宕机时：轮询提交跳过它，向所有服务器发出的
+  查询（`jobs`、按 jobid 查找、`whoami`、`version`）也不再问它，因此不用等它超时。输出会列出被跳过的
+  服务器（stderr 上 `skipped: disabled, not queried: NAME`；JSON 中的 `"skipped"`）。`--host NAME`
+  仍然可以访问它，`task host ping` 仍会检查它，服务器本身不做任何改动。`task host enable NAME`
+  重新启用。两者都只修改 `machines.json` 中的 `enabled`。
+- `task host ping [NAME]` 调用每台（或指定的一台）服务器，显示是否有响应、往返耗时和已安装的代码
+  版本；有服务器没响应时退出码为 2。
+
+## whoami、update、version
+
+- `task whoami [--host H]` 询问每台服务器，taskmgr 在上面以哪个用户、哪个主机名运行。
+- `task update` 在 CLI 所在的本地仓库执行 `git pull --ff-only`。服务器上的代码不变，直到
+  `task host add NAME` 安装新版本。从 `task.pyz` 运行时报 `not_a_checkout`（退出码 2），需要
+  重新构建压缩包（`python3 -m taskmgr.pyz`，见 [[docs/install.zh-CN]]）。
+- `task version [--host H]` 输出本地版本（pyproject 版本、git commit、代码版本、协议版本；从
+  `task.pyz` 运行时，版本和 commit 是构建压缩包时的值，`dirty` 为 null）和每台
+  服务器上已安装的代码版本，并标出 `up to date` 或 `differs`。代码版本就是 `task host add` 安装的
+  哈希，`differs` 表示 `task host add NAME` 会上传新代码。

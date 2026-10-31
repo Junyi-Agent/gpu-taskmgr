@@ -8,18 +8,12 @@ import sys
 import threading
 import time
 
-from taskmgr.records import override
+from taskmgr.records import Server
 from taskmgr.tests.helpers import TASK, Env
 
 
 class QueryTest(Env):
     servers: tuple[str, ...] = ("s1", "s2", "s3")
-
-    @override
-    def setUp(self) -> None:
-        super().setUp()
-        self.machines[2]["enabled"] = False  # disabled servers are still queried
-        self.write_machines()
 
     def unreachable(self, name: str, on: bool = True) -> None:
         if on:
@@ -28,10 +22,78 @@ class QueryTest(Env):
             _ = self.server(name).pop("local", None)
         self.write_machines()
 
+    def test_a_server_that_does_not_answer_times_out(self) -> None:
+        a = self.submit(self.make_pkg(task_id="AA-01"), host="s1")
+        # connects, never answers (the remote arguments land in $1.. and are ignored)
+        self.server("s2")["remote_command"] = "sh -c 'sleep 60' sh"
+        self.write_machines()
+        env = {"TASKMGR_QUERY_TIMEOUT": "1"}
+        start = time.monotonic()
+        rc, out, err = self.task("jobs", text=True, env=env)
+        self.assertLess(time.monotonic() - start, 15)
+        self.assertEqual(rc, 0)
+        self.assertIn(a, self.text(out))
+        self.assertIn("warning: s2 unreachable, its jobs are not listed: no answer within 1s", err)
+        # The jobid lookup gives up on s2 the same way.
+        st = self.ok("status", a, env=env)
+        self.assertEqual((self.get(st, "host"), self.get(st, "complete")), ("s1", False))
+
+    def test_ssh_connect_timeout(self) -> None:
+        from taskmgr.transport import Remote
+
+        entry: Server = {
+            "name": "gpu1",
+            "transport": "ssh",
+            "ssh": {"host": "gpu1"},
+            "remote_root": "/r",
+            "remote_command": "taskmgr-remote",
+        }
+        argv = Remote(entry).ssh_argv()
+        self.assertIn("ConnectTimeout=10", argv)
+        entry["ssh"] = {"host": "gpu1", "options": ["-o", "ConnectTimeout=3"]}
+        argv = Remote(entry).ssh_argv()
+        self.assertEqual([a for a in argv if "ConnectTimeout" in a], ["ConnectTimeout=3"])
+
+    def test_disabled_servers_are_skipped(self) -> None:
+        a = self.submit(self.make_pkg(task_id="AA-01"), host="s1")
+        c = self.submit(self.make_pkg(task_id="CC-03"), host="s3")
+        self.unreachable("s3")  # down, and disabled: no query waits for it
+        _ = self.ok("host", "disable", "s3")
+        self.server("s3")["enabled"] = False  # the fixture rewrites machines.json from this
+        out = self.ok("jobs")
+        self.assertEqual([j["jobid"] for j in self.objs(out, "jobs")], [a])
+        self.assertEqual(
+            (self.get(out, "skipped"), self.get(out, "errors"), self.get(out, "complete")),
+            (["s3"], [], True),
+        )
+        rc, text, err = self.task("jobs", text=True)
+        self.assertEqual(rc, 0)
+        self.assertIn(a, self.text(text))
+        self.assertEqual(err, "skipped: disabled, not queried: s3\n")
+        # The jobid lookup skips it too, and says so when the job is not found.
+        rc, out, err = self.task("status", c)
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "not_found"))
+        self.assertIn("disabled, not searched: s3", self.text(out, "error", "message"))
+        # --host still reaches a disabled server.
+        self.unreachable("s3", on=False)
+        self.assertEqual(self.get(self.ok("status", c, "--host", "s3"), "state"), "queued")
+        self.assertEqual(len(self.objs(self.ok("jobs", "--host", "s3"), "jobs")), 1)
+        # Every server disabled: an error naming them, unless --host.
+        for name in ("s1", "s2"):
+            _ = self.ok("host", "disable", name)
+        rc, out, _ = self.task("jobs")
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "no_enabled_hosts"))
+        _ = self.ok("host", "enable", "s3")
+        out = self.ok("jobs")
+        self.assertEqual(
+            ([j["jobid"] for j in self.objs(out, "jobs")], self.get(out, "skipped")),
+            ([c], ["s1", "s2"]),
+        )
+
     def test_jobs_across_servers(self) -> None:
         a = self.submit(self.make_pkg(task_id="AA-01"), host="s1")
         b = self.submit(self.make_pkg(task_id="BB-02"), host="s3")
-        out = self.ok("jobs", "--detail")
+        out = self.ok("jobs")
         self.assertTrue(self.get(out, "complete"))
         self.assertEqual(self.get(out, "errors"), [])
         got = {(j["host"], j["jobid"], j["task_id"], j["state"]) for j in self.objs(out, "jobs")}
@@ -41,20 +103,20 @@ class QueryTest(Env):
             self.assertEqual((j["retry_of"], j["retried_as"]), (None, []))
             self.assertNotIn("attempt", j)
             self.assertNotIn("attempt_count", j)
-        out = self.ok("jobs", "--detail", "--host", "s3")
+        out = self.ok("jobs", "--host", "s3")
         self.assertEqual([j["jobid"] for j in self.objs(out, "jobs")], [b])
         _ = self.ok("cancel", a, "--host", "s1")
-        out = self.ok("jobs", "--detail", "--state", "cancelled")
+        out = self.ok("jobs", "--state", "cancelled")
         self.assertEqual([j["jobid"] for j in self.objs(out, "jobs")], [a])
         self.unreachable("s2")
-        out = self.ok("jobs", "--detail")
+        out = self.ok("jobs")
         self.assertFalse(self.get(out, "complete"))
         self.assertEqual([e["host"] for e in self.objs(out, "errors")], ["s2"])
         self.assertIn("timed out", self.text(out, "errors", 0, "error"))
         self.assertEqual(len(self.arr(out, "jobs")), 2)
         self.unreachable("s1")
         self.unreachable("s3")
-        rc, out, _ = self.task("jobs", "--detail")
+        rc, out, _ = self.task("jobs")
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "all_hosts_failed")
 
@@ -64,7 +126,7 @@ class QueryTest(Env):
         b = self.submit(self.make_pkg(task_id="BB-02"), host="s3")
         _ = self.start_daemon("s3")
         _ = self.wait_state(b, "succeeded", name="s3")
-        rc, out, err = self.task("jobs")
+        rc, out, err = self.task("jobs", text=True)
         self.assertEqual((rc, err), (0, ""))
         assert isinstance(out, str)  # a table, not JSON
         lines = out.splitlines()
@@ -80,33 +142,33 @@ class QueryTest(Env):
         starts = [lines[0].index(c) for c in ("TASK_ID", "SUBMITTED", "HOST", "STATE")]
         for line in lines[1:]:
             self.assertTrue(all(line[p - 2 : p] == "  " and line[p] != " " for p in starts))
-        # Color: never on a pipe (auto), on with --color always, and the escape codes
-        # do not change the layout.
+        # Color: on by default (on a pipe too), off with --plain or NO_COLOR, and the
+        # escape codes do not change the layout.
         self.assertNotIn("\x1b[", out)
-        rc, colored, _ = self.task("jobs", "--color", "always")
+        rc, colored, _ = self.task("jobs", text=True, color=True)
         assert isinstance(colored, str)
         self.assertEqual(rc, 0)
         self.assertIn("\x1b[1mJOBID", colored)  # bold header
         self.assertIn("\x1b[33mqueued\x1b[0m", colored)  # yellow state
         self.assertIn("\x1b[32msucceeded\x1b[0m", colored)  # green state
         self.assertEqual(re.sub(r"\x1b\[[0-9;]*m", "", colored), out)
-        rc, out2, _ = self.task("jobs", "--color", "never", env={"TERM": "xterm"})
+        rc, out2, _ = self.task("jobs", text=True, color=True, env={"NO_COLOR": "1"})
         self.assertEqual((rc, out2), (0, out))
-        rc, out, _ = self.task("jobs", "--state", "running")
+        rc, out, _ = self.task("jobs", "--state", "running", text=True)
         self.assertEqual((rc, out), (0, "JOBID  TASK_ID  SUBMITTED  HOST  STATE\n"))
         # Unreachable servers: still a table on stdout, a warning on stderr, exit 0.
         self.unreachable("s2")
-        rc, out, err = self.task("jobs")
+        rc, out, err = self.task("jobs", text=True)
         assert isinstance(out, str)
         self.assertEqual((rc, len(out.splitlines())), (0, 3))
         self.assertIn("warning: s2 unreachable", err)
         # Nothing reachable: exit 2, nothing on stdout.
         self.unreachable("s1")
         self.unreachable("s3")
-        rc, out, err = self.task("jobs")
+        rc, out, err = self.task("jobs", text=True)
         self.assertEqual((rc, out), (2, None))
         self.assertIn("no server could be queried", err)
-        rc, out, err = self.task("jobs", "--host", "nope")
+        rc, out, err = self.task("jobs", "--host", "nope", text=True)
         self.assertEqual((rc, out), (2, None))
         self.assertIn("unknown_host", err)
 

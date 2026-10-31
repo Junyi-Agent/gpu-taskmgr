@@ -212,7 +212,9 @@ def load_libcuda() -> CudaDriver:
     try:
         return LibCuda(ctypes.CDLL("libcuda.so.1"))
     except (OSError, AttributeError) as e:  # library or one of its functions missing
-        raise RuntimeError("cannot load libcuda.so.1 (is the NVIDIA driver installed?): %s" % e)
+        raise RuntimeError(
+            "cannot load libcuda.so.1 (is the NVIDIA driver installed?): %s" % e
+        ) from e
 
 
 # Primary contexts retained by claim_gpu(); never released, so the process keeps its GPUs.

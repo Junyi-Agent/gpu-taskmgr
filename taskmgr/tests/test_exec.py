@@ -347,3 +347,25 @@ class ExecTest(Env):
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "not_terminal"))
         self.assertEqual(self.jobids(), before)
         self.assertEqual(self.job(r)["retried_as"], [])
+
+    def test_retry_prints_a_table(self) -> None:
+        j = self.submit(self.make_pkg(script="exit 1"))
+        _ = self.wait_state(j, "failed")
+        rc, out, err = self.task("retry", j, text=True)  # no --host: found by jobid
+        self.assertEqual((rc, err), (0, ""))
+        assert isinstance(out, str)  # a table, not JSON
+        header, row = out.splitlines()
+        self.assertEqual(header.split(), ["JOBID", "RETRY_OF", "HOST", "STATE"])
+        new = row.split()[0]
+        self.assertEqual(row.split(), [new, j, "s1", "queued"])
+        self.assertEqual(self.job(new)["retry_of"], j)
+        self.assertEqual(header.index("RETRY_OF"), row.index(j))  # columns line up
+        rc, colored, _ = self.task("retry", j, text=True, color=True)
+        assert isinstance(colored, str)
+        self.assertEqual(rc, 0)
+        self.assertIn("\x1b[1mJOBID", colored)  # bold header
+        self.assertIn("\x1b[33mqueued\x1b[0m", colored)  # yellow state
+        # Without --detail an error is one line on stderr; stdout stays empty.
+        rc, out, err = self.task("retry", "0123456789abcdef", text=True)
+        self.assertEqual((rc, out), (2, None))
+        self.assertEqual(err, "error: job 0123456789abcdef not found on any server (not_found)\n")

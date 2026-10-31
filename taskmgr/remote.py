@@ -3,15 +3,17 @@
 Invoked by the local CLI as
     ssh <host> taskmgr-remote --root <remote_root> --protocol-version N <subcommand> ...
 Every subcommand except `logs`, `fetch`, `serve` and `shim` prints one JSON object.
-`inspect` is read-only and creates nothing, so `task add host` can run it on any root.
+`inspect` is read-only and creates nothing, so `task host add` can run it on any root.
 """
 
 import argparse
 import fcntl
+import getpass
 import json
 import os
 import secrets
 import shutil
+import socket
 import sys
 import tarfile
 import time
@@ -20,6 +22,7 @@ from typing import IO, cast
 
 from . import package
 from .common import (
+    CODE_ROOT,
     GPU_HOLDING_STATES,
     JOB_DIRS,
     JOBID_RE,
@@ -30,6 +33,7 @@ from .common import (
     TaskmgrError,
     atomic_write_json,
     fsync_dir,
+    read_code_file,
     read_json,
     try_read_json,
     utcnow_iso,
@@ -483,7 +487,7 @@ def cmd_fetch(store: Store, args: Args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# inspect (read-only; used by `task add host`, desc-2 D18)
+# inspect (read-only; used by `task host add`, desc-2 D18)
 
 # Keys every job.json of the current layout has (protocol 2, desc-2 D16).
 JOB_REQUIRED_KEYS: tuple[str, ...] = tuple(sorted(Job.__required_keys__))
@@ -564,6 +568,19 @@ def inspect_root(root: str) -> dict[str, object]:
     }
 
 
+def version_info() -> dict[str, object]:
+    """`version`: the installed code version (written by `task host add`) and who we run as."""
+    # Written by `task host add` and by the .pyz build; missing in a plain checkout (tests).
+    code_version = (read_code_file(".taskmgr-code-version") or "").strip() or None
+    return {
+        "ok": True,
+        "code_version": code_version,
+        "code_dir": CODE_ROOT,
+        "user": getpass.getuser(),
+        "hostname": socket.gethostname(),
+    }
+
+
 def cmd_inspect(store: Store, _args: Args) -> int:
     return emit(inspect_root(store.root))
 
@@ -634,7 +651,7 @@ def main(argv: list[str] | None = None) -> int:
                 % (args.protocol_version, remote_protocol_version()),
             )
         if args.cmd == "version":
-            return emit({"ok": True})
+            return emit(version_info())
         if args.cmd == "inspect":  # read-only: no ensure_layout
             return cmd_inspect(store, args)
         store.ensure_layout()

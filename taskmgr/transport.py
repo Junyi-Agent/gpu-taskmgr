@@ -1,15 +1,45 @@
 """Machine list and transports: run taskmgr-remote subcommands and shell scripts on a
 server over ssh (or locally for the test-only transport "local")."""
 
+import concurrent.futures
 import json
 import os
 import shlex
 import subprocess
 from collections.abc import Sequence
-from typing import IO, cast
+from typing import IO, TypedDict, cast
 
 from .common import PROTOCOL_VERSION, TaskmgrError, read_json
 from .records import JsonDict, JsonValue, LocalInjection, Server, SshConfig
+
+
+class HostError(TypedDict):
+    """One unreachable server in a multi-server query."""
+
+    host: str
+    error: str
+    code: str
+
+
+# ssh gives up connecting after this many seconds (a machine entry's own
+# `-o ConnectTimeout=N` wins).
+CONNECT_TIMEOUT = 10
+# A query to every server (jobs, the jobid lookup, whoami, version) waits at most this long
+# for each server; TASKMGR_QUERY_TIMEOUT overrides it.
+QUERY_TIMEOUT = 30.0
+
+
+def query_timeout() -> float:
+    try:
+        return float(os.environ.get("TASKMGR_QUERY_TIMEOUT", QUERY_TIMEOUT))
+    except ValueError:
+        return QUERY_TIMEOUT
+
+
+def ssh_error(stderr: str) -> str:
+    """The message of a failed ssh connection: its stderr, prefixed with "ssh: " once."""
+    err = stderr.strip() or "connection failed"
+    return err if err.startswith("ssh: ") else "ssh: " + err
 
 
 class ConnError(TaskmgrError):
@@ -46,7 +76,7 @@ def load_machines(home: str) -> list[Server]:
     try:
         data = read_json(path)
     except ValueError as e:
-        raise TaskmgrError("bad_machines", "%s is not valid JSON: %s" % (path, e))
+        raise TaskmgrError("bad_machines", "%s is not valid JSON: %s" % (path, e)) from e
     if data is None:
         raise TaskmgrError(
             "no_machines",
@@ -101,7 +131,10 @@ class Remote:
         identity_file = ssh.get("identity_file")
         if identity_file:
             cmd += ["-i", os.path.expanduser(identity_file)]
-        cmd += list(ssh.get("options") or [])
+        options = list(ssh.get("options") or [])
+        cmd += options
+        if not any("connecttimeout" in o.lower() for o in options):
+            cmd += ["-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT]
         host = ssh.get("host") or self.name
         user = ssh.get("user")
         cmd += ["%s@%s" % (user, host) if user else host]
@@ -151,19 +184,18 @@ class Remote:
             p = subprocess.run(
                 self.shell_argv(script),
                 input=stdin or b"",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 env=self._env(),
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
-            raise ConnError("remote command timed out", self.name)
+            raise ConnError("remote command timed out", self.name) from None
         except OSError as e:
-            raise ConnError("cannot run transport: %s" % e, self.name)
+            raise ConnError("cannot run transport: %s" % e, self.name) from e
         out = p.stdout.decode(errors="replace")
         err = p.stderr.decode(errors="replace")
         if self._is_conn_failure(p.returncode):
-            raise ConnError("ssh: %s" % (err.strip() or "connection failed"), self.name)
+            raise ConnError(ssh_error(err), self.name)
         return p.returncode, out, err
 
     def _is_conn_failure(self, rc: int) -> bool:
@@ -182,21 +214,20 @@ class Remote:
             p = subprocess.run(
                 self.argv(args),
                 stdin=upload if upload is not None else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 env=self._env(),
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
-            raise ConnError("remote call timed out", self.name)
+            raise ConnError("no answer within %gs" % timeout, self.name) from None
         except OSError as e:
-            raise ConnError("cannot run transport: %s" % e, self.name)
+            raise ConnError("cannot run transport: %s" % e, self.name) from e
         finally:
             if upload is not None:
                 upload.close()
         err = p.stderr.decode(errors="replace").strip()
         if self._is_conn_failure(p.returncode):
-            raise ConnError("ssh: %s" % (err or "connection failed"), self.name)
+            raise ConnError(ssh_error(err), self.name)
         obj: JsonValue = None
         for line in reversed(p.stdout.decode(errors="replace").splitlines()):
             if line.strip():
@@ -227,10 +258,10 @@ class Remote:
                 env=self._env(),
             )
         except OSError as e:
-            raise ConnError("cannot run transport: %s" % e, self.name)
+            raise ConnError("cannot run transport: %s" % e, self.name) from e
         err = p.stderr.decode(errors="replace").strip()
         if self._is_conn_failure(p.returncode):
-            raise ConnError("ssh: %s" % (err or "connection failed"), self.name)
+            raise ConnError(ssh_error(err), self.name)
         if p.returncode != 0:
             obj: JsonValue = None
             for line in reversed(err.splitlines()):
@@ -257,3 +288,26 @@ def check_protocol(obj: JsonDict, host: str | None) -> None:
             2,
             host,
         )
+
+
+def query_all(
+    servers: list[Server], args: Sequence[object]
+) -> tuple[dict[str, JsonDict], list[HostError]]:
+    """Call a JSON subcommand on every server in parallel: ({name: obj}, [errors])."""
+    results: dict[str, JsonDict] = {}
+    errors: list[HostError] = []
+    if not servers:
+        return results, errors
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(servers))) as ex:
+        futs: dict[concurrent.futures.Future[JsonDict], str] = {
+            ex.submit(Remote(s).call, args, None, query_timeout()): s["name"] for s in servers
+        }
+        for f in concurrent.futures.as_completed(futs):
+            name = futs[f]
+            try:
+                results[name] = f.result()
+            except TaskmgrError as e:
+                errors.append({"host": name, "error": e.message, "code": e.code})
+    order: list[str] = [s["name"] for s in servers]
+    errors.sort(key=lambda e: order.index(e["host"]))
+    return results, errors

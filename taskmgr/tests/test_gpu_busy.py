@@ -72,14 +72,14 @@ class GpuBusyTest(Env):
         _ = self.wait_for(lambda: self.pending(j), 20, "pending_reason")
         self.assertEqual(self.job(j)["state"], "running")
         self.assertIn("GPU busy", self.text(self.job(j), "pending_reason"))
-        rc, out, _ = self.task("jobs")
+        rc, out, _ = self.task("jobs", text=True)
         assert isinstance(out, str)
         self.assertEqual(rc, 0)
         self.assertTrue(out.splitlines()[1].endswith("  pending (gpu busy)"), out)
-        rc, colored, _ = self.task("jobs", "--color", "always")
+        rc, colored, _ = self.task("jobs", text=True, color=True)
         assert isinstance(colored, str)
         self.assertIn("\x1b[33mpending (gpu busy)\x1b[0m", colored)
-        detail = self.ok("jobs", "--detail")
+        detail = self.ok("jobs")
         self.assertIn("GPU busy", self.text(detail, "jobs", 0, "pending_reason"))
         st = self.ok("status", j, "--host", "s1")
         self.assertEqual(self.get(st, "state"), "running")
@@ -108,7 +108,7 @@ class GpuBusyTest(Env):
             ["err 1", sep % 1, "err 2", sep % 2, "err 3"],
         )
         self.assertIn("(GPU busy); relaunch #2", self.read(os.path.join(jd, "shim.log")))
-        rc, out, _ = self.task("jobs")
+        rc, out, _ = self.task("jobs", text=True)
         assert isinstance(out, str)
         self.assertTrue(out.splitlines()[1].endswith("  succeeded"), out)
 
@@ -226,8 +226,7 @@ class GpuBusyTest(Env):
         p = subprocess.run(
             [sys.executable, "-c", "import taskmgr_task as tt; tt.gpu_busy('held by pid 9')"],
             cwd=TEMPLATE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=30,
         )
         self.assertEqual(p.returncode, 75)

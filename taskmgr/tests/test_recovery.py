@@ -222,7 +222,17 @@ class RecoveryTest(Env):
         seq = self.job(j)["enqueue_seq"]
         _ = self.wait_runner(j, "pgid")
         waiter = subprocess.Popen(
-            [sys.executable, TASK, "status", j, "--wait", "--poll-interval", "0.2"],
+            [
+                sys.executable,
+                TASK,
+                "status",
+                j,
+                "--detail",
+                "--plain",
+                "--wait",
+                "--poll-interval",
+                "0.2",
+            ],
             env=self.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
