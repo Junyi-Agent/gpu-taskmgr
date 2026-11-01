@@ -38,6 +38,14 @@ docker run --rm --init -v "$PWD":/src:ro python:3.10-slim \
 要断言某个任务在调度器处理过之后"仍在排队"，用 `Env.wait_scheduler_passes(n)` 代替固定的
 sleep：它提交空操作的探测任务并等每个都成功；调度出探测任务的那一轮已经考虑过排在它前面的所有任务。
 
+要在任务处于某个状态时读取它，让任务脚本等待一个 gate 文件（`while [ ! -f GATE ]; do sleep 0.05; done`），
+断言完成后再创建这个文件；脚本里用固定的 sleep，测试在慢机器上会失败。要在命令执行到某一步之后再改变环境
+（例如第一次查询失败后让服务器恢复），用 `Env.task_when(marker, action, *args)`：它运行 `task`，
+在 stderr 出现 `marker` 时调用 `action`。
+
+故障注入在 root 下也必须成立（上面的 Docker 命令以 root 运行）：root 不受权限位限制，`chmod 0500`
+挡不住写入。要让写入某个目录失败，把这个目录换成一个普通文件（写入报 ENOTDIR 或 EEXIST）。
+
 **仅用于测试的覆盖项**（不要在生产环境使用）：
 
 | 变量 / 配置 | 作用 |

@@ -44,6 +44,18 @@ To assert that a job is "still queued" after the scheduler had its chance, use
 waits until each has succeeded; the pass that dispatches a probe has considered every job
 queued before it.
 
+To read a job while it is in a given state, let its script wait for a gate file
+(`while [ ! -f GATE ]; do sleep 0.05; done`) and create the file after the assertions; a
+fixed sleep in the script makes the test fail on a slow machine. To change something once a
+command has reached a given point (for example, bring a server back after the first failed
+query), use `Env.task_when(marker, action, *args)`: it runs `task` and calls `action` when
+`marker` appears on its stderr.
+
+Fault injection must also hold for root (the Docker command above runs as root): root
+ignores permission bits, so `chmod 0500` does not stop writes. To make writes into a
+directory fail, put a regular file where the directory was (writes fail with ENOTDIR or
+EEXIST).
+
 **Test-only overrides** (do not use in production):
 
 | Variable / setting | Effect |
