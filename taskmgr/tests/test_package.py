@@ -459,10 +459,11 @@ class ExcludedEntriesAndSizeTest(Env):
         self.assertEqual(self.job(jobid)["state"], "invalid_result")
 
     def test_root_exclusion_matches_exact_names(self) -> None:
-        kept = ["result.jsonl", "result.json.bak", "result.json.d/x", "sub/result.json.lock"]
+        kept = ["result.jsonl", "result.json.bak", "result.json.d/x", "sub/result.json"]
         dropped = [
             "result.json",
             "result.json.lock",
+            "sub/x.json.lock",
             "result.json.corrupt",
             "result.json.corrupt.2",
         ]

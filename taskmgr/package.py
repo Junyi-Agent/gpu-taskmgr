@@ -29,11 +29,11 @@ DEFAULT_MAX_PACKAGE_BYTES: int | None = DEFAULT_REMOTE_CONFIG["max_package_bytes
 
 # Never packed or hashed: caches, VCS data, editor junk and files a run leaves behind.
 EXCLUDED_NAMES = ("__pycache__", ".git", ".DS_Store")
-EXCLUDED_SUFFIXES = (".pyc",)
+EXCLUDED_SUFFIXES = (".pyc", ".json.lock")  # .json.lock: flock files of taskmgr_task.py
 EXCLUDED_PREFIXES = (".tmp-",)  # in-flight atomic writes
-# At the package root only: runner output and the flock files of taskmgr_task.py, and the
-# result.json.corrupt[.N] copies the server keeps of a corrupt result.json.
-EXCLUDED_ROOT_NAMES = ("result.json", "result.json.lock", "progress.json.lock")
+# At the package root only: runner output and the result.json.corrupt[.N] copies the
+# server keeps of a corrupt result.json.
+EXCLUDED_ROOT_NAMES = ("result.json",)
 EXCLUDED_ROOT_PREFIXES = ("result.json.corrupt",)
 
 
@@ -41,7 +41,9 @@ def is_excluded(rel: str) -> bool:
     """True if a package-relative POSIX path is left out of packing and the content hash.
 
     A path is excluded when any component is excluded, so callers may prune whole
-    directories. `task init` copies the template with a subset of these rules.
+    directories. `*.json.lock` is excluded at any depth; `result.json` and
+    `result.json.corrupt*` only at the package root. `task init` copies the template with
+    a subset of these rules.
     """
     parts = rel.split("/")
     if parts[0] in EXCLUDED_ROOT_NAMES or parts[0].startswith(EXCLUDED_ROOT_PREFIXES):

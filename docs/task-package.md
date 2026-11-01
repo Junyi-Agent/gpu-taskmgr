@@ -84,9 +84,9 @@ the daemon's recovery or tracking of the job failed repeatedly, see [[docs/recov
 after the upload.
 
 - Left out of the packed archive and of the content hash: every path with a component
-  named `__pycache__`, `.git` or `.DS_Store`, ending in `.pyc` or starting with `.tmp-`
-  (unfinished atomic writes); at the package root also `result.json`, `result.json.lock`,
-  `progress.json.lock` (from a local test run with `taskmgr_task.py`) and names starting
+  named `__pycache__`, `.git` or `.DS_Store`, ending in `.pyc` or `.json.lock` (flock
+  files of `taskmgr_task.py`, e.g. from a local test run) or starting with `.tmp-`
+  (unfinished atomic writes); at the package root also `result.json` and names starting
   with `result.json.corrupt`. Other names such as `result.jsonl` are packed. The server
   deletes these entries from an uploaded archive before it computes the content hash, so
   a stale `result.json` in an archive never becomes a run's result. `task validate` lists
