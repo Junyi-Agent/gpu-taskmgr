@@ -155,10 +155,9 @@ class PrecompileTest(Env):
         runner = {"jobid": j, "phase": "precompile", "pgid": 1, "exited": True, "return_code": 0}
         with open(os.path.join(jd, "runner.json"), "w") as f:
             json.dump(runner, f)
-        os.makedirs(os.path.join(jd, "workdir"))
-        _ = shutil.copytree(
-            os.path.join(jd, "package"), os.path.join(jd, "workdir"), dirs_exist_ok=True
-        )
+        from taskmgr.shim import prepare_workdir
+
+        _ = prepare_workdir(jd)
         _ = self.start_daemon()
         _ = self.wait_state(j, "succeeded")
         self.assertTrue(os.path.exists(os.path.join(self.job_dir(j), "runner.prev-1.json")))
