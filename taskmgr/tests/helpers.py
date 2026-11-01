@@ -7,12 +7,14 @@ platforms the Env-based tests are skipped; run them in Docker (docs/testing.md).
 import atexit
 import json
 import os
+import queue
 import shutil
 import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from collections.abc import Callable, Iterable
@@ -277,25 +279,95 @@ class Env(unittest.TestCase):
         (except for `logs`, which has no --detail); without color=True, --plain."""
         e = dict(self.env)
         e.update(env or {})
+        p = subprocess.run(
+            self._task_argv(args, text, color),
+            env=e,
+            capture_output=True,
+            timeout=timeout,
+        )
+        return p.returncode, self._parse_out(p.stdout.decode()), p.stderr.decode()
+
+    def _task_argv(self, args: tuple[object, ...], text: bool, color: bool) -> list[str]:
         argv = [str(a) for a in args]
         at = min(2 if argv[:1] == ["host"] else 1, len(argv))  # after the (sub)command name
         if not text and argv and argv[0] != "logs" and "--detail" not in argv:
             argv.insert(at, "--detail")
         if not color:
             argv.insert(at, "--plain")
-        p = subprocess.run(
-            [sys.executable, TASK] + argv,
-            env=e,
-            capture_output=True,
-            timeout=timeout,
-        )
-        out = p.stdout.decode()
-        obj: JsonValue
+        return [sys.executable, TASK] + argv
+
+    def _parse_out(self, out: str) -> JsonValue:
         try:
-            obj = cast(JsonValue, json.loads(out)) if out.strip() else None
+            return cast(JsonValue, json.loads(out)) if out.strip() else None
         except ValueError:
-            obj = out
-        return p.returncode, obj, p.stderr.decode()
+            return out
+
+    def task_when(
+        self,
+        marker: str,
+        action: Callable[[], object],
+        *args: object,
+        timeout: float = 120,
+    ) -> tuple[int, JsonValue, str]:
+        """Run `task` like task(), and call `action` once `marker` appears on its stderr.
+
+        Use it instead of a timer when the test must change something (bring a server back,
+        open a gate) only after the command has reached a given point. Fails if the command
+        exits or `timeout` passes before the marker appears.
+        """
+        p = subprocess.Popen(
+            self._task_argv(args, False, False),
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout, stderr = cast(IO[bytes], p.stdout), cast(IO[bytes], p.stderr)
+        out_chunks: list[bytes] = []
+        lines: queue.Queue[str] = queue.Queue()
+
+        def read_err() -> None:
+            for raw in stderr:  # the command flushes every stderr note
+                lines.put(raw.decode())
+            lines.put("")  # EOF
+
+        readers = [
+            threading.Thread(target=lambda: out_chunks.append(stdout.read())),
+            threading.Thread(target=read_err),
+        ]
+        for t in readers:
+            t.start()
+        err: list[str] = []
+        found = False
+        end = time.monotonic() + timeout
+        try:
+            while not found:
+                try:
+                    line = lines.get(timeout=max(0.0, end - time.monotonic()))
+                except queue.Empty:
+                    break
+                if not line:  # EOF: the command exited
+                    break
+                err.append(line)
+                found = marker in line
+            if found:
+                _ = action()
+                _ = p.wait(max(1.0, end - time.monotonic()))
+        finally:
+            if p.poll() is None:
+                p.kill()
+                _ = p.wait()
+            for t in readers:
+                t.join()
+            stdout.close()
+            stderr.close()
+        while not lines.empty():
+            err.append(lines.get())
+        if not found:
+            self.fail(
+                "%r never appeared on stderr of task %s\nstderr=%s" % (marker, args, "".join(err))
+            )
+        out = b"".join(out_chunks).decode()
+        return p.returncode, self._parse_out(out), "".join(err)
 
     def ok(
         self,

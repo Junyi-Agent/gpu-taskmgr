@@ -70,7 +70,10 @@ class GpuBusyTest(Env):
 
     def test_busy_exits_are_relaunched_then_succeed(self) -> None:
         _ = self.start_daemon()
-        j = self.submit(self.make_pkg(script=self.busy_script(busy=2), gpus=[0]))
+        # At least two busy exits, then busy until `gate` exists: the job stays pending
+        # while its state is read below, however slow the machine is.
+        gate = os.path.join(self.tmp, "gate")
+        j = self.submit(self.make_pkg(script=self.busy_script(busy=2, gate=gate), gpus=[0]))
         _ = self.wait_for(lambda: self.pending(j), 20, "pending_reason")
         self.assertEqual(self.job(j)["state"], "running")
         self.assertIn("GPU busy", self.text(self.job(j), "pending_reason"))
@@ -88,28 +91,31 @@ class GpuBusyTest(Env):
         self.assertIn("GPU busy", self.text(st, "pending_reason"))
         self.assertGreaterEqual(self.num(st, "run", "gpu_busy_retries"), 1)
 
+        open(gate, "w").close()
         job = self.wait_state(j, "succeeded", timeout=30)
         self.assertNotIn("pending_reason", job)
-        self.assertEqual(self.count(), 3)
-        # The workdir is reused: launches 2 and 3 saw the file launch 1 left behind.
-        self.assertEqual(self.read(os.path.join(self.tmp, "dirty")), "dirty\ndirty\n")
+        n = self.count()  # n - 1 busy exits, then the launch that succeeded
+        self.assertGreaterEqual(n, 3)
+        # The workdir is reused: every relaunch saw the file launch 1 left behind.
+        self.assertEqual(self.read(os.path.join(self.tmp, "dirty")), "dirty\n" * (n - 1))
         r = self.runner(j)
-        self.assertEqual(self.get(r, "gpu_busy_retries"), 2)
+        self.assertEqual(self.get(r, "gpu_busy_retries"), n - 1)
         self.assertIsNotNone(self.get(r, "last_gpu_busy_at"))
         self.assertEqual((self.get(r, "status"), self.get(r, "return_code")), ("succeeded", 0))
         self.assertEqual((job["retried_as"], job["auto_restarts"]), ([], 0))
         self.assertEqual(self.jobids(), {j})
         jd = self.job_dir(j)
         sep = "--- taskmgr: relaunch #%d after GPU busy ---"
-        self.assertEqual(
-            self.read(os.path.join(jd, "stdout.log")).splitlines(),
-            ["launch 1", sep % 1, "launch 2", sep % 2, "launch 3"],
-        )
-        self.assertEqual(
-            self.read(os.path.join(jd, "stderr.log")).splitlines(),
-            ["err 1", sep % 1, "err 2", sep % 2, "err 3"],
-        )
-        self.assertIn("(GPU busy); relaunch #2", self.read(os.path.join(jd, "shim.log")))
+
+        def expected(word: str) -> list[str]:
+            lines = ["%s 1" % word]
+            for i in range(2, n + 1):
+                lines += [sep % (i - 1), "%s %d" % (word, i)]
+            return lines
+
+        self.assertEqual(self.read(os.path.join(jd, "stdout.log")).splitlines(), expected("launch"))
+        self.assertEqual(self.read(os.path.join(jd, "stderr.log")).splitlines(), expected("err"))
+        self.assertIn("(GPU busy); relaunch #%d" % (n - 1), self.read(os.path.join(jd, "shim.log")))
         rc, out, _ = self.task("jobs", text=True)
         assert isinstance(out, str)
         self.assertTrue(out.splitlines()[1].endswith("  succeeded"), out)

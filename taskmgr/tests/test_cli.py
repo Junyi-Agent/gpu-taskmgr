@@ -123,8 +123,13 @@ class CliTest(Env):
         self.assertEqual((rc, self.get(obj, "error", "code")), (2, "not_found"))
 
     def test_job_commands_find_the_host_by_jobid(self) -> None:
+        # The job waits for `gate`: the first run finds it, the re-run (after the gate is
+        # removed) waits, so it is still queued or running when it is cancelled.
+        gate = os.path.join(self.tmp, "gate")
+        open(gate, "w").close()
+        wait = "while [ ! -f %s ]; do sleep 0.05; done; " % gate
         rc, out, _ = self.plain(
-            "submit", "--host", "s2", self.make_pkg(script="echo hi; " + OK_RESULT)
+            "submit", "--host", "s2", self.make_pkg(script=wait + "echo hi; " + OK_RESULT)
         )
         self.assertEqual(rc, 0)
         header, row = out.splitlines()
@@ -145,6 +150,7 @@ class CliTest(Env):
         rc, out, _ = self.plain("fetch", j, "--output", os.path.join(self.tmp, "r"))
         self.assertEqual(rc, 0)
         self.assertIn("fetched: job %s from s2 into " % j, out)
+        os.unlink(gate)
         rc, out, _ = self.plain("retry", j)
         self.assertEqual(rc, 0)
         new = out.splitlines()[1].split()[0]

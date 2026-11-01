@@ -6,7 +6,6 @@ import re
 import shutil
 import subprocess
 import sys
-import threading
 import time
 from typing import cast
 from unittest import mock
@@ -264,9 +263,19 @@ class QueryTest(Env):
             self.make_pkg(script="sleep 2; echo '{\"outputs\": {}}' > $TASKMGR_RESULT_FILE")
         )
         open(flag, "w").close()
-        threading.Timer(1.5, lambda: os.unlink(flag)).start()
-        rc, out, err = self.task(
-            "status", j, "--host", "s1", "--wait", "--poll-interval", "0.2", "--retry-timeout", "30"
+        # The server comes back once the CLI has reported a failed query.
+        rc, out, err = self.task_when(
+            "retrying",
+            lambda: os.unlink(flag),
+            "status",
+            j,
+            "--host",
+            "s1",
+            "--wait",
+            "--poll-interval",
+            "0.2",
+            "--retry-timeout",
+            "30",
         )
         self.assertEqual(rc, 0, err)
         self.assertIn("retrying", err)

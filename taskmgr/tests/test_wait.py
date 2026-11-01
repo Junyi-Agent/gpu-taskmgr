@@ -1,7 +1,6 @@
 """`task status --wait` without --host: the jobid lookup retries unreachable servers."""
 
 import os
-import threading
 import time
 
 from taskmgr.tests.helpers import OK_RESULT, Env
@@ -19,9 +18,17 @@ class WaitLookupTest(Env):
         self.write_machines()
         j = self.submit(self.make_pkg(script="sleep 1; " + OK_RESULT))
         open(flag, "w").close()
-        threading.Timer(1.5, lambda: os.unlink(flag)).start()
-        rc, out, err = self.task(
-            "status", j, "--wait", "--poll-interval", "0.2", "--retry-timeout", "30"
+        # The server comes back once the CLI has reported a failed query.
+        rc, out, err = self.task_when(
+            "retrying",
+            lambda: os.unlink(flag),
+            "status",
+            j,
+            "--wait",
+            "--poll-interval",
+            "0.2",
+            "--retry-timeout",
+            "30",
         )
         self.assertEqual(rc, 0, err)
         self.assertIn("retrying", err)
