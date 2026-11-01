@@ -184,11 +184,18 @@ class ExecTest(Env):
             self.assertEqual(f.read(), "[1\n")
 
     def test_progress_written_by_task_only(self) -> None:
+        """status shows what the task wrote to progress.json, and taskmgr never rewrites the
+        file: after the job ended it holds the task's bytes unchanged."""
+        gate = os.path.join(self.tmp, "gate")
+        progress = (
+            '{"schema_version": 1, "stage": "half", '
+            + '"updated_at": "2026-10-29T08:15:00Z", "percent": 50}\n'
+        )
         j = self.submit(
             self.make_pkg(
-                script='python3 -c \'import json,os;json.dump({"schema_version":1,"stage":"half",'
-                + '"updated_at":"2026-10-29T08:15:00Z","percent":50},'
-                + 'open(os.environ["TASKMGR_PROGRESS_FILE"],"w"))\'; sleep 2'
+                script='printf \'%s\' "$P" > "$TASKMGR_PROGRESS_FILE"; '
+                + "while [ ! -f %s ]; do sleep 0.05; done" % gate,
+                env={"P": progress},
             )
         )
 
@@ -204,7 +211,10 @@ class ExecTest(Env):
         self.assertNotIn("attempt", self.obj(st))
         self.assertEqual((self.get(st, "retry_of"), self.get(st, "retried_as")), (None, []))
         self.assertEqual(self.get(st, "progress", "percent"), 50)
-        _ = self.wait_state(j, "invalid_result")
+        open(gate, "w").close()
+        _ = self.wait_state(j, "invalid_result")  # the task wrote no result.json
+        with open(os.path.join(self.job_dir(j), "workdir", "progress.json")) as f:
+            self.assertEqual(f.read(), progress)
 
     def test_prestart_check_failures(self) -> None:
         cases = {
@@ -283,9 +293,21 @@ class ExecTest(Env):
             self.assertEqual(f.read(), "")  # no "yes: standard output: Broken pipe"
 
     def test_timeout_with_term_and_kill(self) -> None:
-        polite = self.submit(self.make_pkg(script="sleep 60", timeout=1))
+        """A timeout sends SIGTERM first; SIGKILL follows only for a group still alive after
+        the grace period."""
+        polite_mark = os.path.join(self.tmp, "polite-term")
+        stubborn_mark = os.path.join(self.tmp, "stubborn-term")
+        loop = "while true; do sleep 0.1; done"
+        polite = self.submit(
+            self.make_pkg(
+                script="trap 'echo term > %s; exit 0' TERM; %s" % (polite_mark, loop), timeout=1
+            )
+        )
+        # Records the SIGTERM and keeps running, so only SIGKILL ends it.
         stubborn = self.submit(
-            self.make_pkg(script="trap '' TERM; while true; do sleep 0.1; done", timeout=1)
+            self.make_pkg(
+                script="trap 'echo term >> %s' TERM; %s" % (stubborn_mark, loop), timeout=1
+            )
         )
         for j in (polite, stubborn):
             job = self.wait_state(j, "timed_out", timeout=20)
@@ -293,6 +315,17 @@ class ExecTest(Env):
             r = self.runner(j)
             self.assertFalse(pid_alive(self.num(r, "leader_pid")))
             self.assertEqual(self.get(self.result(j), "_taskmgr", "status"), "timed_out")
+        # The polite task got SIGTERM and exited by itself.
+        with open(polite_mark) as f:
+            self.assertEqual(f.read(), "term\n")
+        r = self.runner(polite)
+        self.assertEqual((self.get(r, "return_code"), self.get(r, "signal")), (0, None))
+        # The stubborn one got SIGTERM, survived it, and was killed by SIGKILL.
+        with open(stubborn_mark) as f:
+            self.assertEqual(f.read(), "term\n")
+        r = self.runner(stubborn)
+        self.assertEqual((self.get(r, "return_code"), self.get(r, "signal")), (None, 9))
+        self.assertEqual(self.get(self.result(stubborn), "_taskmgr", "signal"), 9)
 
     def test_cancel_queued_running_and_terminal(self) -> None:
         self.stop_daemon()

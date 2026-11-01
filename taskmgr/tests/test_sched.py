@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 
+from taskmgr.common import TERMINAL_STATES
 from taskmgr.tests.helpers import GPUS, OK_RESULT, REMOTE, Env
 
 
@@ -121,18 +122,47 @@ class SchedTest(Env):
         )
         self.assertEqual(p.returncode, 2)
         self.stop_daemon()
-        # Bypass daemon.lock: state.lock alone must prevent double dispatch.
+        # Bypass daemon.lock: state.lock alone must prevent double dispatch. Every launch
+        # appends a line to runs/<jobid>, outside the job's directory.
+        runs = os.path.join(self.tmp, "runs")
+        os.makedirs(runs)
+        log_run = 'echo x >> %s/"$TASKMGR_JOBID"; ' % runs
         ids = [
-            self.submit(self.make_pkg(script="sleep 0.2; " + OK_RESULT, gpus=[i % 4]))
+            self.submit(self.make_pkg(script=log_run + "sleep 0.2; " + OK_RESULT, gpus=[i % 4]))
             for i in range(12)
-        ] + [self.submit(self.make_pkg(script="sleep 0.1; " + OK_RESULT)) for _ in range(6)]
+        ] + [
+            self.submit(self.make_pkg(script=log_run + "sleep 0.1; " + OK_RESULT)) for _ in range(6)
+        ]
         env = {"TASKMGR_TEST_SKIP_DAEMON_LOCK": "1"}
-        for _ in range(3):
-            _ = self.start_daemon(env=env)
+        daemons = [self.start_daemon(env=env) for _ in range(3)]
+
+        def launches() -> dict[str, int]:
+            out: dict[str, int] = {}
+            for j in os.listdir(runs):
+                with open(os.path.join(runs, j)) as f:
+                    out[j] = len(f.read().splitlines())
+            return out
+
+        def settled() -> bool:
+            # Stop waiting as soon as a job was launched twice or a daemon exited (one that
+            # lost a race for a job crashes on the rename), so the assertions below report
+            # it (and not a timeout); else once every job has ended.
+            if any(n > 1 for n in launches().values()):
+                return True
+            if any(d.poll() is not None for d in daemons):
+                return True
+            try:
+                return all(self.job(j)["state"] in TERMINAL_STATES for j in ids)
+            except (OSError, ValueError):  # a directory is being renamed
+                return False
+
+        _ = self.wait_for(settled, 60, "every job to end")
+        self.assertEqual(launches(), dict.fromkeys(ids, 1))  # each job was launched once
+        self.assertEqual([d.poll() for d in daemons], [None] * 3, self.daemon_log())
+        self.assertNotIn("Traceback", self.daemon_log())
         for j in ids:
-            _ = self.wait_state(j, "succeeded", timeout=60)
-            job = self.job(j)
+            job = self.wait_state(j, "succeeded")
             self.assertEqual(job["retried_as"], [], job)
             self.assertIsNotNone(job["dispatched_at"], job)
             self.assertEqual(self.get(self.runner(j), "jobid"), j)
-        self.assertEqual(self.jobids(), set(ids))  # each job ran once, nothing was cloned
+        self.assertEqual(self.jobids(), set(ids))  # nothing was cloned

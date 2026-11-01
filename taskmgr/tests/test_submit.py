@@ -164,20 +164,14 @@ class SubmitTest(Env):
         self.assertEqual((r["jobid"], r["deduplicated"]), (self.get(ack, "jobid"), True))
 
     def test_protocol_version_mismatch(self) -> None:
+        # The remote refuses a client of another version and names its own.
         rc, out, _ = self.remote("--protocol-version", "99", "jobs")
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "protocol_mismatch"))
+        self.assertEqual(self.get(out, "protocol_version"), 2)
         rc, out, _ = self.task("jobs", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "99"})
-        self.assertEqual(rc, 2)
-        p = subprocess.run(
-            [sys.executable, REMOTE, "--root", self.root(), "--protocol-version", "99", "jobs"],
-            env=self.env,
-            stdout=subprocess.PIPE,
-        )
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(
-            self.get(cast(JsonValue, json.loads(p.stdout)), "error", "code"), "protocol_mismatch"
-        )
-        self.assertEqual(self.get(cast(JsonValue, json.loads(p.stdout)), "protocol_version"), 2)
+        # jobs lists every target; the per-server error carries the reason.
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "all_hosts_failed"))
+        self.assertEqual(self.get(out, "errors", 0, "code"), "protocol_mismatch")
         # Protocol 1 (attempt-based) clients and remotes are rejected in both directions.
         for verb in (["jobs"], ["retry", "0123456789abcdef"], ["logs", "0123456789abcdef"]):
             rc, out, err = self.remote("--protocol-version", "1", *verb)
@@ -202,6 +196,33 @@ class SubmitTest(Env):
         )
         self.assertEqual(rc, 2)
         self.assertEqual(os.listdir(self.root()), ["config.json"])  # never reached receive
+
+    def test_client_refuses_a_reply_of_another_protocol_version(self) -> None:
+        """The client checks protocol_version itself: a remote that answers with another
+        version is refused even when the reply is otherwise well-formed (query), and an
+        error from a streaming command reports the mismatch instead (logs)."""
+        fake = os.path.join(self.tmp, "fake-remote")
+        error = '{"protocol_version": 1, "error": {"code": "not_found", "message": "gone"}}'
+        reply = '{"protocol_version": 1, "jobs": [], "complete": true}'
+        with open(fake, "w") as f:
+            _ = f.write(
+                "#!/bin/sh\n"
+                + 'case " $* " in *" logs "*) echo \'%s\' >&2; exit 2;; esac\n' % error
+                + "echo '%s'\n" % reply
+            )
+        os.chmod(fake, 0o755)
+        self.server("s1")["remote_command"] = fake
+        self.write_machines()
+        rc, out, err = self.task("jobs", "--host", "s1")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.get(out, "error", "code"), "all_hosts_failed", err)
+        self.assertEqual(self.get(out, "errors", 0, "code"), "protocol_mismatch")
+        rc, out, err = self.task("status", "0123456789abcdef", "--host", "s1")
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "protocol_mismatch"), err)
+        rc, _, err = self.task("logs", "0123456789abcdef", "--host", "s1")
+        self.assertEqual(rc, 2)
+        self.assertIn("protocol_mismatch", err)
+        self.assertNotIn("not_found", err)
 
     def test_daemon_restart_keeps_in_progress_upload(self) -> None:
         pkg = self.make_pkg()

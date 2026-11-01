@@ -70,11 +70,28 @@ class PackageTest(Env):
         self.assertEqual(self.get(v1, "content_hash"), self.get(v2, "content_hash"))
 
     def test_hash_sees_exec_bit_and_content(self) -> None:
-        pkg = self.make_pkg(files={"x.sh": "echo\n"})
-        h1 = package.content_hash(pkg)
-        os.chmod(os.path.join(pkg, "x.sh"), 0o755)
-        h2 = package.content_hash(pkg)
-        self.assertNotEqual(h1, h2)
+        """Each change to what the package holds gives another hash: the exec bit, one byte
+        of a file, a file name, a symlink target."""
+        pkg = self.make_pkg(files={"x.sh": "echo a\n"})
+        os.symlink("x.sh", os.path.join(pkg, "link"))
+        x = os.path.join(pkg, "x.sh")
+        seen = [package.content_hash(pkg)]
+
+        def changed(what: str) -> None:
+            h = package.content_hash(pkg)
+            self.assertNotIn(h, seen, what)
+            seen.append(h)
+
+        os.chmod(x, 0o755)
+        changed("exec bit")
+        with open(x, "w") as f:
+            _ = f.write("echo b\n")  # same size, one byte differs
+        changed("content")
+        os.rename(x, os.path.join(pkg, "y.sh"))
+        changed("file name")
+        os.unlink(os.path.join(pkg, "link"))
+        os.symlink("y.sh", os.path.join(pkg, "link"))
+        changed("symlink target")
 
     def test_init_and_validate_exit_codes(self) -> None:
         target = os.path.join(self.tmp, "AA-01")
