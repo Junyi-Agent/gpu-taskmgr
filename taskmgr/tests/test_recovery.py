@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from typing import cast
 
 from taskmgr import procutil
@@ -445,19 +446,27 @@ class RecoveryTest(Env):
         # TASKMGR_TEST_IGNORE_KILL makes the stop procedure's signals no-ops, standing in
         # for a process that survives SIGKILL (e.g. stuck in uninterruptible sleep).
         _ = self.start_daemon(env={"TASKMGR_TEST_IGNORE_KILL": "1"})
-        j = self.submit(self.make_pkg(script="sleep 60", gpus=[0]))
+        # The task runs until the test kills its group.
+        j = self.submit(self.make_pkg(script="sleep 3600", gpus=[0]))
         r = self.wait_runner(j, "pgid")
         b = self.submit(self.make_pkg(gpus=[0]))
         _ = self.ok("cancel", j, "--host", "s1")
-        job = self.wait_state(j, "unknown", timeout=20)
+        job = self.wait_state(j, "unknown", timeout=60)
         self.assertEqual(self.get(job, "error", "kind"), "stop_unconfirmed")
         self.assertTrue(pid_alive(self.num(r, "leader_pid")))
-        time.sleep(1)
+        _ = self.wait_scheduler_passes()  # GPU 0 stays held by the unknown job
         self.assertEqual(self.job(b)["state"], "queued")
-        kill_quiet(self.num(r, "pgid"), group=True)
-        _ = self.wait_for(lambda: not pid_alive(self.num(r, "leader_pid")), 10, "manual kill")
+        pgid, start = self.num(r, "pgid"), self.num(r, "leader_start_time")
+        kill_quiet(pgid, group=True)
+        # Wait for what resolve checks: no live process left in the group (the leader
+        # can be gone while another member is still exiting).
+        _ = self.wait_for(
+            lambda: not procutil.group_members(pgid, start, j), 30, "the group to be gone"
+        )
         out = self.ok("resolve", j, "--host", "s1")
-        self.assertEqual(self.get(out, "state"), "cancelled")
+        # (The daemon log tells whether a health check took over the job after the shim
+        # had marked it unknown: resolve then answers shim_alive while that takeover runs.)
+        self.assertEqual(self.get(out, "state"), "cancelled", "%s\n%s" % (out, self.daemon_log()))
         _ = self.wait_state(b, "succeeded")
 
     def test_resolve_hands_decidable_unknown_back_to_takeover(self) -> None:
@@ -531,8 +540,7 @@ class RecoveryTest(Env):
         r = self.kill_shim(a)
         kill_quiet(self.num(r, "leader_pid"), group=True)
         _ = self.wait_for(lambda: not pid_alive(self.num(r, "leader_pid")), 10, "task death")
-        workdir = os.path.join(self.job_dir(a), "workdir")
-        os.chmod(workdir, 0o500)  # result.json cannot be written
+        _ = self.block_workdir(a)  # result.json cannot be written
         b = self.submit(self.make_pkg())
         _ = self.start_daemon()
         _ = self.wait_state(b, "succeeded", timeout=20)
@@ -540,6 +548,22 @@ class RecoveryTest(Env):
         self.assertEqual(self.get(job, "error", "kind"), "recovery_error")
         self.assertIn("failed 3 times", self.text(job, "error", "message"))
         self.assertIsNone(self.daemons["s1"][-1].poll())  # the daemon keeps running
+
+    def block_workdir(self, jobid: str) -> Callable[[], None]:
+        """Make writing result.json fail: the workdir is moved aside and a regular file
+        takes its name, so write_result's makedirs fails with EEXIST (and any path below
+        it with ENOTDIR). Unlike chmod 0500 this also holds for root: these errors come
+        from the file type, not from permissions. Returns the function that puts it back."""
+        workdir = os.path.join(self.job_dir(jobid), "workdir")
+        saved = workdir + ".saved"
+        os.rename(workdir, saved)
+        open(workdir, "w").close()
+
+        def restore() -> None:
+            os.unlink(workdir)
+            os.rename(saved, workdir)
+
+        return restore
 
     # -- unknown jobs are never re-run (review P0-2, P0-3) ----------------------
     def assert_no_rerun(self, jobid: str) -> None:
@@ -561,13 +585,12 @@ class RecoveryTest(Env):
         u, proc = self.make_unknown()
         kill_quiet(proc.pid)
         _ = proc.wait()
-        workdir = os.path.join(self.job_dir(u), "workdir")
-        os.chmod(workdir, 0o500)  # result.json cannot be written
+        restore = self.block_workdir(u)  # result.json cannot be written
         rc, out, _ = self.task("resolve", u, "--host", "s1", "--as", "stopped", "--confirm", u)
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "internal_error"))
         self.assertEqual(self.job(u)["state"], "unknown")
         self.assertFalse(self.runner(u).get("final"))  # the run record is unchanged
-        os.chmod(workdir, 0o700)
+        restore()
         out = self.ok("resolve", u, "--host", "s1")
         self.assertEqual(self.get(out, "state"), "failed")
         self.assert_no_rerun(u)
