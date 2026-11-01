@@ -85,7 +85,7 @@ task host add gpu1                                # 已有条目：检查并更�
 | 步骤 | 检查 | 改动（每项都会询问） |
 | --- | --- | --- |
 | `ssh` | ssh 能连通（BatchMode）、Linux、`python3` >= 3.10、`systemctl --user` 可用、linger、已安装的代码版本、unit 文件、服务状态、`remote_root` 所在文件系统（NFS、CIFS、FUSE 等给出警告） | 无；检查失败则停止 |
-| `code` | 构建好的 `taskmgr-remote.pyz`（`--pyz`，默认位置见上文）存在，且 code version 与当前运行的 `task` 相同（否则这一步失败：用 `python3 -m taskmgr.pyz -o dist` 重新构建）；再比较 `<remote_root>/taskmgr-remote.pyz` 内的代码版本和它 | 上传这个文件到 `<remote_root>/versions/<版本>.pyz.new-*`；`data` 步骤之后改名为 `<remote_root>/versions/<版本>.pyz`，并把符号链接 `<remote_root>/taskmgr-remote.pyz` 切换过去（一次 rename）。链接原来指向的压缩包保留。超过 10 分钟的上传文件 `*.new-*`（中断的运行留下的）会被删除 |
+| `code` | 构建好的 `taskmgr-remote.pyz`（`--pyz`，默认位置见上文）存在，且 code version 与当前运行的 `task` 相同（否则这一步失败：用 `python3 -m taskmgr.pyz -o dist` 重新构建）；再比较 `<remote_root>/taskmgr-remote.pyz` 内的代码版本和它 | 上传这个文件到 `<remote_root>/versions/<版本>.pyz.new-*`；`data` 步骤之后改名为 `<remote_root>/versions/<版本>.pyz`，并把符号链接 `<remote_root>/taskmgr-remote.pyz` 切换过去（一次 rename）。链接原来指向的压缩包保留。超过 10 分钟的上传文件 `*.new-*`（中断的运行留下的）作为这项改动的一部分，在确认后删除；服务器已是最新时只在 detail 中列出 |
 | `remote_root` | `remote_root` 和 `config.json` 是否存在 | `mkdir -p`；`config.json` 不存在时写入默认配置；已有的 `config.json` 永远不会被覆盖 |
 | `data` | `taskmgr-remote inspect`（只读）：新代码无法处理的作业目录（协议 1 的 `attempts/`、`job.json` 缺少当前字段） | 停止服务，然后把这些目录（以及对应的 `submission-keys/*.json`）移到 `<remote_root>/backups/<UTC 时间>/`；不删除任何东西。可能仍在运行的作业（running、stopping、unknown，或位于 `in-progress/`）永远不会被移动：这一步失败并列出它们 |
 | `unit` | 比较 `~/.config/systemd/user/taskmgr-remote.service` 和生成的 unit（显示 diff） | 写入文件，执行 `systemctl --user daemon-reload` |

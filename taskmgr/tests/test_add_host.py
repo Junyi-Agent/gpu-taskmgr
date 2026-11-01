@@ -646,9 +646,12 @@ class AddHostTest(Env):
         self.assertIn("removed older archives", self.detail(out, "code"))
         self.assertEqual(self.store(), sorted([current, c[:16] + ".pyz"]))
 
-    def test_interrupted_uploads_are_removed(self) -> None:
+    def test_interrupted_uploads_are_removed_only_with_a_confirmed_update(self) -> None:
+        """Review P1-7: removing old uploads is a change: an up-to-date server is left as it
+        is (and nothing is asked); otherwise the removal is part of the confirmed update."""
         rc, _, err = self.add("--yes")
         self.assertEqual(rc, 0, err)
+        current_version = self.installed_version()
         store = os.path.join(self.rroot(), hostsetup.CODE_STORE)
         old = os.path.join(store, "0123456789abcdef.pyz.new-abc123")
         fresh = os.path.join(store, "0123456789abcdef.pyz.new-def456")
@@ -656,12 +659,38 @@ class AddHostTest(Env):
             open(path, "w").close()
         hour_ago = time.time() - 3600
         os.utime(old, (hour_ago, hour_ago))
+        for flags in ((), ("--yes",)):  # without --yes stdin is not a terminal: no question
+            rc, out, err = self.add(*flags, new=False)
+            self.assertEqual(rc, 0, err)
+            self.expect(out, err)
+            self.assertIn("interrupted upload", self.detail(out, "code"))
+            self.assertNotIn("proceed?", err)
+            self.assertTrue(os.path.exists(old))
+        self.set_installed_version("1" * 64)
+        rc, out, err = self.add(new=False, answers="n\n")
+        self.assertEqual(rc, 2, err)
+        self.assertEqual(self.statuses(out)["code"], "declined")
+        self.assertIn("0123456789abcdef.pyz.new-abc123", err)  # named in the question
+        self.assertTrue(os.path.exists(old))
         rc, out, err = self.add("--yes", new=False)
         self.assertEqual(rc, 0, err)
-        self.expect(out, err)
         self.assertIn("removed interrupted uploads", self.detail(out, "code"))
         self.assertFalse(os.path.exists(old))
         self.assertTrue(os.path.exists(fresh))  # may be an upload in progress
+        self.assertEqual(self.installed_version(), current_version)
+
+    def test_leftover_link_new_does_not_block_the_switch(self) -> None:
+        """Review P2-5: a run cut off between `ln -s` and `mv -f` leaves .link-new behind."""
+        rc, _, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
+        current_version = self.installed_version()
+        self.set_installed_version("2" * 64)
+        os.symlink("nowhere", self.rcode() + ".link-new")
+        rc, out, err = self.add("--yes", new=False)
+        self.expect(out, err, code="changed", service="changed")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.installed_version(), current_version)
+        self.assertFalse(os.path.lexists(self.rcode() + ".link-new"))
 
     def test_a_second_run_does_not_interleave(self) -> None:
         """While another run holds the server's setup lock, a run stops after step ssh."""

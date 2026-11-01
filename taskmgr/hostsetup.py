@@ -297,6 +297,7 @@ class HostSetup:
         self.staged: str | None = None  # uploaded archive waiting for the data check
         self.code_changed: bool = False
         self.previous_code: str | None = None  # the archive the link pointed to before
+        self.uploads_removed: str = ""  # detail suffix of step code: removed stale uploads
         self.unit_changed: bool = False
         self.locker: subprocess.Popen[bytes] | None = None  # holds the server's setup lock
         self.steps: list[Step] = []
@@ -614,9 +615,15 @@ class HostSetup:
         installed = self.probe.get("code_version")
         short = self.version[:12]
         self.ui.info("local version %s; installed: %s" % (short, (installed or "none")[:12]))
-        cleaned = self._remove_stale_uploads()
-        if installed == self.version:
-            return "ok", "already up to date (%s)%s" % (short, cleaned)
+        stale = self._stale_uploads()
+        if installed == self.version:  # no change, so no question: leftovers are only named
+            left = (
+                "; interrupted uploads left in %s: %s (removed with the next update)"
+                % (self.store_path(), ", ".join(stale))
+                if stale
+                else ""
+            )
+            return "ok", "already up to date (%s)%s" % (short, left)
         path = self.code_path()
         store = self.store_path()
         final = "%s/%s" % (store, self.archive_name())
@@ -630,7 +637,9 @@ class HostSetup:
             % (what, CODE_FILE, size // 1024, self.files, store, path)
             + "%s (the previous archive is kept; once the service runs the new code, " % final
             + "older ones that no running job uses are removed)"
+            + ("; remove interrupted uploads %s" % ", ".join(stale) if stale else "")
         )
+        cleaned = self.uploads_removed = self._remove_uploads(stale)
         with open(self.pyz, "rb") as f:
             data = f.read()
         script = (
@@ -654,20 +663,25 @@ class HostSetup:
             cleaned,
         )
 
-    def _remove_stale_uploads(self) -> str:
-        """Remove what interrupted uploads left in CODE_STORE (the setup lock keeps
-        uploads of other runs out; the age is a second guard). Returns a detail suffix."""
+    def _stale_uploads(self) -> list[str]:
+        """The names of what interrupted uploads left in CODE_STORE (the setup lock keeps
+        uploads of other runs out; the age is a second guard)."""
         store = self.store_path()
         out = self.sh(
             "if [ -d %s ]; then find %s -maxdepth 1 -type f -name '*.new-*' -mmin +%d "
             % (q(store), q(store), STALE_UPLOAD_MINUTES)
-            + "-print -delete; fi\n"
+            + "-print; fi\n"
         )
-        removed = [os.path.basename(line) for line in out.splitlines() if line.strip()]
-        if not removed:
+        return sorted(os.path.basename(line) for line in out.splitlines() if line.strip())
+
+    def _remove_uploads(self, names: list[str]) -> str:
+        """Remove the confirmed _stale_uploads(). Returns a detail suffix."""
+        if not names:
             return ""
-        self.ui.info("removed interrupted uploads: %s" % ", ".join(removed))
-        return "; removed interrupted uploads %s" % ", ".join(removed)
+        store = self.store_path()
+        _ = self.sh("rm -f -- %s\n" % " ".join(q("%s/%s" % (store, n)) for n in names))
+        self.ui.info("removed interrupted uploads: %s" % ", ".join(names))
+        return "; removed interrupted uploads %s" % ", ".join(names)
 
     def _install_staged(self) -> None:
         staged = self.staged
@@ -683,6 +697,8 @@ class HostSetup:
             + "prev=$(readlink %s 2>/dev/null || true)\n" % q(path)
             + "if [ -e %s ]; then rm -f %s; else mv %s %s; fi\n"
             % (q(final), q(staged), q(staged), q(final))
+            # rm -f: a run cut off before the mv leaves the .link-new behind
+            + "rm -f %s\n" % q(path + ".link-new")
             + "ln -s %s %s\n" % (q("%s/%s" % (CODE_STORE, name)), q(path + ".link-new"))
             + "mv -f %s %s\n" % (q(path + ".link-new"), q(path))
             + 'echo "prev=$prev"\n'
@@ -696,7 +712,12 @@ class HostSetup:
             raise StepFailed(
                 "after the switch %s reports version %r" % (path, p.get("code_version"))
             )
-        detail = "installed version %s: %s -> %s" % (self.version[:12], path, final)
+        detail = "installed version %s: %s -> %s%s" % (
+            self.version[:12],
+            path,
+            final,
+            self.uploads_removed,
+        )
         if prev and prev != name and prev in (p.get("code_store") or []):
             self.previous_code = prev
             detail += "; previous archive kept: %s/%s" % (store, prev)
