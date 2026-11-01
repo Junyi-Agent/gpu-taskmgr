@@ -35,7 +35,11 @@ up: "[[taskmgr/README.zh-CN]]"
    5. 同一次启动内，没有存活成员 → `failed` / `exit_code_lost`，保留 result.json 中的业务字段；
       如果作业原先处于 stopping（或已请求取消）→ cancelled / timed_out。
    6. 无法判断（`/proc` 不可读、记录损坏或不完整）→ `unknown`。
-5. 重跑：`runner.json` 标记为 `interrupted`；若 `cancel_requested` → cancelled；
+5. 重跑：`runner.json` 标记为 `interrupted`；若 `cancel_requested` → cancelled；作业正在因超时
+   停止（`stop_reason = "timeout"`）→ `timed_out`；运行记录已被操作者标记为停止
+   （`interrupted_reason = "operator_marked_stopped"`，由中途失败的 `resolve --as stopped` 留下）→
+   `failed` / `operator_marked_stopped`；对 `unknown` 作业执行 `task resolve` → `failed` /
+   `interrupted`，不创建重跑作业（需要重跑时执行 `task retry`）；
    `auto_restarts` 已达 `max_auto_restarts` → `failed` / `too_many_interruptions`；否则作业以
    `failed` 结束，`error.kind = "interrupted"`，并用它的包新建一个作业（硬链接到同一批文件；自动重试）：新作业
    保留原 `enqueue_seq`，`auto_restarts` 加 1，`retry_of` 指向被中断的作业，被中断作业的
@@ -58,7 +62,9 @@ up: "[[taskmgr/README.zh-CN]]"
 退出码 75 结束为 `failed`）。
 
 1. `task resolve <jobid> --host H` 重新执行检查。如果进程组已全部退出，按上面的规则结束作业（已
-   请求取消的标记为 cancelled）。如果仍有进程存活，或记录无法读取，作业保持 unknown，输出中会给出
+   请求取消的标记为 cancelled）；机器重启过或入口命令从未执行时，作业以 `failed` / `interrupted`
+   结束（正在因超时停止的作业为 `timed_out`），不创建重跑作业。如果仍有进程存活，或记录无法读取，
+   作业保持 unknown，输出中会给出
    `identity`（`boot_id`、`pgid`、`leader_pid`、`leader_start_time`、`shim_pid` 等）和
    `alive_pids`。
 2. 在服务器上排查：`ps -o pid,pgid,lstart,stat,cmd -g <pgid>`、
@@ -67,5 +73,6 @@ up: "[[taskmgr/README.zh-CN]]"
    先修复底层设备或驱动问题，或者重启机器。
 4. 再执行一次 `task resolve <jobid> --host H`；或者在确认所有进程都已退出后执行
    `task resolve <jobid> --host H --as stopped --confirm <jobid>` → `failed`
-   （`operator_marked_stopped`）或 `cancelled`；GPU 被释放，不会自动重跑。
+   （`operator_marked_stopped`）或 `cancelled`；GPU 被释放，不会自动重跑。`runner.json` 在
+   `result.json` 和 `job.json` 之后写入：命令失败时作业保持 unknown，运行记录不变。
 5. 如需再次运行，执行 `task retry <jobid> --host H`（会创建一个新作业）。

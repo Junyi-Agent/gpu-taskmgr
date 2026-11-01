@@ -2,12 +2,14 @@
 
 import contextlib
 import datetime
+import errno
 import fcntl
 import fnmatch
 import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import zipfile
 from collections.abc import Generator, Sequence
@@ -157,15 +159,55 @@ def read_json(path: str, default: JsonValue = None) -> JsonValue:
         return default
 
 
-def try_read_json(path: str) -> tuple[JsonValue, str | None]:
-    """Return (obj, error_string). obj is None on missing or corrupt files."""
+class NotRegularFile(OSError):
+    """The path exists but is not a regular file (a directory, FIFO, device, socket, or a
+    symlink when links are not followed)."""
+
+
+def read_regular_file(path: str, follow_symlinks: bool = True) -> bytes:
+    """Read a regular file without ever blocking on what is there instead.
+
+    A task can replace its result.json or progress.json with a FIFO, a directory or a
+    symlink. The file is opened with O_NONBLOCK (and O_NOFOLLOW unless follow_symlinks)
+    and checked with fstat before reading. Raises FileNotFoundError when nothing is at
+    `path` and NotRegularFile when something other than a regular file is.
+    """
+    flags = os.O_RDONLY | os.O_NONBLOCK | (0 if follow_symlinks else os.O_NOFOLLOW)
+    st = os.stat(path) if follow_symlinks else os.lstat(path)
+    if not stat.S_ISREG(st.st_mode):
+        raise NotRegularFile("not a regular file: %s" % path)
     try:
-        with open(path, "rb") as f:
-            return cast(JsonValue, json.loads(f.read().decode("utf-8"))), None
+        fd = os.open(path, flags)
+    except OSError as e:
+        if e.errno == errno.ELOOP:  # O_NOFOLLOW on a symlink
+            raise NotRegularFile("not a regular file: %s" % path) from e
+        raise
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):  # replaced since the stat above
+            raise NotRegularFile("not a regular file: %s" % path)
+        chunks: list[bytes] = []
+        while True:
+            b = os.read(fd, 1 << 20)
+            if not b:
+                return b"".join(chunks)
+            chunks.append(b)
+    finally:
+        os.close(fd)
+
+
+def try_read_json(path: str, follow_symlinks: bool = True) -> tuple[JsonValue, str | None]:
+    """Return (obj, error_string). obj is None on missing, corrupt or unreadable files
+    (including anything that is not a regular file, see read_regular_file)."""
+    try:
+        return cast(
+            JsonValue, json.loads(read_regular_file(path, follow_symlinks).decode("utf-8"))
+        ), None
     except FileNotFoundError:
         return None, "missing"
-    except (ValueError, UnicodeDecodeError) as e:
+    except (ValueError, UnicodeDecodeError, RecursionError) as e:
         return None, "corrupt: %s" % e
+    except NotRegularFile:
+        return None, "unreadable: not a regular file"
     except OSError as e:
         return None, "unreadable: %s" % e
 

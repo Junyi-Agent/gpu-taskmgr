@@ -61,13 +61,15 @@ up: "[[taskmgr/README.zh-CN]]"
 ```
 
 结果有效的条件：是一个 JSON 对象，含有 `outputs` 对象，且 `outputs` 包含 `required_outputs`
-中列出的每个键。文件不存在时生成 `{"schema_version", "_taskmgr"}`；文件损坏时原文件保留为
-`result.json.corrupt`，并在 `validation_errors` 中报告；任务自己写的 `_taskmgr` 会被丢弃，并记录
+中列出的每个键。文件不存在时生成 `{"schema_version", "_taskmgr"}`；文件损坏（包括嵌套过深、无法
+解析的 JSON），或 `result.json` 不是普通文件（目录、FIFO、符号链接：不跟随链接）时，原文件保留为
+`result.json.corrupt`，并在 `validation_errors` 中报告。`progress.json` 不是普通文件时，
+`task status` 中显示为 `{"error": ...}`。任务自己写的 `_taskmgr` 会被丢弃，并记录
 警告 `task_wrote_taskmgr`。
 
 `error.kind` 的取值：`setup`、`precompile`（预编译命令失败）、`shim_start_failed`、`shim_error`（shim 在启动入口命令之前出错；
 作业以 `failed` 结束，不会重跑）、`exit_code`、`signal`、`exit_code_lost`、
-`interrupted`（运行被中断，已创建自动重跑作业）、
+`interrupted`（运行被中断；除 `task resolve` 结束的 `unknown` 作业外，已创建自动重跑作业）、
 `too_many_interruptions`、`operator_marked_stopped`、`stop_unconfirmed`（作业处于 unknown）、
 `record_incomplete` / `undeterminable`（恢复后处于 unknown）、`recovery_error`（处于 unknown：
 守护进程对该作业的恢复或跟踪反复出错，见 [[docs/recovery.zh-CN]]）。

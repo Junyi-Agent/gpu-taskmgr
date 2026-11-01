@@ -105,7 +105,7 @@ running/stopping --守护进程对该作业的恢复或接管连续失败 3 次-
 running --发现取消请求 / 超时--> stopping --进程组已全部退出--> cancelled | timed_out
 stopping --SIGKILL 后仍有进程存活--> unknown
 running/stopping --重启恢复--> 见下文
-unknown --resolve（检查得出结论）--> 见下文
+unknown --resolve（检查得出结论）--> 见下文（从不创建重跑作业）
 unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 终态 --retry--> （不变；新建一个 queued 作业，retry_of = 本作业）
 ```

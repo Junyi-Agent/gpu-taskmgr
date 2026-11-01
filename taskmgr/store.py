@@ -21,10 +21,12 @@ from .common import (
     SCHEMA_VERSION,
     STATE_DIRS,
     TERMINAL_STATES,
+    NotRegularFile,
     TaskmgrError,
     atomic_write_json,
     fsync_dir,
     read_json,
+    read_regular_file,
     try_read_json,
     utcnow_iso,
 )
@@ -335,6 +337,17 @@ def validate_outputs(result: object, task: TaskSpec) -> list[str]:
     return errs
 
 
+def keep_aside(p: str) -> str:
+    """Rename p (a corrupt result.json, or something that is not a regular file) to the
+    first free p.corrupt[.N]; returns the new path."""
+    keep, i = p + ".corrupt", 0
+    while os.path.lexists(keep):
+        i += 1
+        keep = "%s.corrupt.%d" % (p, i)
+    os.replace(p, keep)
+    return keep
+
+
 def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, list[str], list[str]]:
     """Read the task-written result.json per Section 10.3.
 
@@ -346,22 +359,26 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
     warnings: list[str] = []
     verrs: list[str] = []
     try:
-        with open(p, "rb") as f:
-            raw = f.read()
+        raw = read_regular_file(p, follow_symlinks=False)
     except FileNotFoundError:
         return {"schema_version": SCHEMA_VERSION}, ["result.json was not written"], warnings
+    except NotRegularFile:
+        keep = keep_aside(p)
+        return (
+            {"schema_version": SCHEMA_VERSION},
+            ["result.json is not a regular file (kept as %s)" % os.path.basename(keep)],
+            warnings,
+        )
     except OSError as e:
         return {"schema_version": SCHEMA_VERSION}, ["result.json unreadable: %s" % e], warnings
     try:
         parsed = cast(JsonValue, json.loads(raw.decode("utf-8")))
         if not isinstance(parsed, dict):
             raise ValueError("top level is not a JSON object")
-    except (ValueError, UnicodeDecodeError) as e:
-        keep, i = p + ".corrupt", 0
-        while os.path.lexists(keep):
-            i += 1
-            keep = "%s.corrupt.%d" % (p, i)
-        os.replace(p, keep)
+    except (ValueError, UnicodeDecodeError, RecursionError) as e:
+        if isinstance(e, RecursionError):
+            e = ValueError("nested too deeply")
+        keep = keep_aside(p)
         return (
             {"schema_version": SCHEMA_VERSION},
             ["result.json is corrupt (kept as %s): %s" % (os.path.basename(keep), e)],
@@ -447,7 +464,11 @@ def write_result(jobdir: str, business: JsonDict, meta: TaskmgrMeta) -> None:
     _ = res.pop("_taskmgr", None)
     _ = res.setdefault("schema_version", SCHEMA_VERSION)
     res["_taskmgr"] = meta
-    atomic_write_json(os.path.join(workdir, "result.json"), res)
+    p = os.path.join(workdir, "result.json")
+    with contextlib.suppress(FileNotFoundError):
+        if not stat.S_ISREG(os.lstat(p).st_mode):
+            _ = keep_aside(p)  # os.replace cannot replace a directory
+    atomic_write_json(p, res)
 
 
 def _settled(job: Job) -> bool:
@@ -571,14 +592,21 @@ def queue_for_gpus(store: Store, jobdir: str, job: Job) -> Job:
 
 
 def result_complete(jobdir: str) -> bool:
-    obj, _ = try_read_json(os.path.join(jobdir, "workdir", "result.json"))
+    obj, _ = try_read_json(os.path.join(jobdir, "workdir", "result.json"), follow_symlinks=False)
     res = _as_dict(obj)
     meta = _as_dict(res.get("_taskmgr")) if res is not None else None
     return meta is not None and meta.get("final") is True and "status" in meta
 
 
-def mark_run_interrupted(store: Store, jobdir: str, jobid: str, reason: str) -> Runner:
-    """Make the run record final with status "interrupted" (its processes are gone)."""
+OPERATOR_MARKED_STOPPED = "operator_marked_stopped"  # `task resolve --as stopped`
+OPERATOR_STOPPED_ERROR: ErrorInfo = {
+    "kind": OPERATOR_MARKED_STOPPED,
+    "message": "operator confirmed all processes are gone",
+}
+
+
+def interrupted_runner(store: Store, jobdir: str, jobid: str, reason: str) -> Runner:
+    """The run record made final with status "interrupted" (not written)."""
     raw_runner, _ = store.read_runner(jobdir)
     runner: Runner = raw_runner or {"jobid": jobid}
     runner.update(
@@ -589,55 +617,64 @@ def mark_run_interrupted(store: Store, jobdir: str, jobid: str, reason: str) -> 
             "ended_at": runner.get("ended_at") or utcnow_iso(),
         }
     )
+    return runner
+
+
+def mark_run_interrupted(store: Store, jobdir: str, jobid: str, reason: str) -> Runner:
+    """Make the run record final with status "interrupted" (its processes are gone)."""
+    runner = interrupted_runner(store, jobdir, jobid, reason)
     store.write_runner(jobdir, runner)
     return runner
 
 
-def interrupt_run(store: Store, jobid: str, reason: str) -> Job:
+def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) -> Job:
     """Section 12.2 step 5: mark the run interrupted, then cancel / fail / re-run.
 
     A re-run is a new job (an automatic retry, see `clone_job`); the interrupted job
     itself ends as failed with error.kind "interrupted" and points to it via
-    `retried_as`. Returns the interrupted job.
+    `retried_as`. No re-run is created when a cancel was requested (cancelled), when the
+    job was being stopped for its timeout (timed_out), when an operator marked the run
+    stopped (failed / operator_marked_stopped), or with rerun=False: `task resolve` of an
+    unknown job, which never re-runs (failed / interrupted; `task retry` re-runs it).
+    Returns the interrupted job.
     """
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
         if _settled(job):
             return job
+        stop_reason = job.get("stop_reason") if job["state"] in ("stopping", "unknown") else None
         runner = mark_run_interrupted(store, jobdir, jobid, reason)
-        maxr = int(store.config.get("max_auto_restarts", 2))
-        restarts = job.get("auto_restarts", 0)
         if job.get("cancel_requested"):
             _ = end_without_result(store, jobdir, job, "cancelled", None, runner)
+            return job
+        if stop_reason == "timeout":
+            _ = end_without_result(store, jobdir, job, "timed_out", None, runner)
+            return job
+        if reason == OPERATOR_MARKED_STOPPED:
+            _ = end_without_result(store, jobdir, job, "failed", OPERATOR_STOPPED_ERROR, runner)
+            return job
+        # A crash after the clone was renamed into queue/ but before this job was saved
+        # leaves the clone behind; reuse it instead of cloning twice. Only this step
+        # creates a job with retry_of == jobid while jobid is not terminal.
+        rerun_job = next((j for _, j in store.iter_jobs() if j.get("retry_of") == jobid), None)
+        maxr = int(store.config.get("max_auto_restarts", 2))
+        restarts = job.get("auto_restarts", 0)
+        error: ErrorInfo = {"kind": "interrupted", "message": reason}
+        if rerun_job is not None:
+            if rerun_job["jobid"] not in job.get("retried_as", []):
+                job["retried_as"] = job.get("retried_as", []) + [rerun_job["jobid"]]
+        elif not rerun:
+            error["message"] = "%s; not re-run (the job was unknown)" % reason
         elif restarts >= maxr:
-            _ = end_without_result(
-                store,
-                jobdir,
-                job,
-                "failed",
-                {
-                    "kind": "too_many_interruptions",
-                    "message": "interrupted %d times (max_auto_restarts=%d); last: %s"
-                    % (restarts + 1, maxr, reason),
-                },
-                runner,
-            )
+            error = {
+                "kind": "too_many_interruptions",
+                "message": "interrupted %d times (max_auto_restarts=%d); last: %s"
+                % (restarts + 1, maxr, reason),
+            }
         else:
-            # A crash after the clone was renamed into queue/ but before this job was
-            # saved leaves the clone behind; reuse it instead of cloning twice. Only this
-            # step creates a job with retry_of == jobid while jobid is not terminal.
-            rerun = next(
-                (j for _, j in store.iter_jobs() if j.get("retry_of") == jobid),
-                None,
-            )
-            if rerun is None:
-                rerun = clone_job(store, jobdir, job, automatic=True)
-            elif rerun["jobid"] not in job.get("retried_as", []):
-                job["retried_as"] = job.get("retried_as", []) + [rerun["jobid"]]
+            _ = clone_job(store, jobdir, job, automatic=True)
             jobdir = cast(str, store.find_job_dir(jobid))
-            _ = end_without_result(
-                store, jobdir, job, "failed", {"kind": "interrupted", "message": reason}, runner
-            )
+        _ = end_without_result(store, jobdir, job, "failed", error, runner)
         return job
 
 

@@ -49,8 +49,8 @@ up: "[[taskmgr/README.zh-CN]]"
 14. `max_cpu_jobs` 统计处于 running、stopping 和 unknown 的仅 CPU 作业。
 15. jobid 唯一性针对该服务器上所有作业目录检查。`receive` 在解包和计算哈希后、解析 GPU 和校验
     之前，就对已知的 submission key 作出响应（去重或冲突），因此即使机器上的 GPU 发生了变化，
-    ACK 丢失后的重试也能成功。损坏的 `result.json` 保留为 `result.json.corrupt`（该名字被占用时
-    用 `.corrupt.N`）。
+    ACK 丢失后的重试也能成功。损坏的或不是普通文件的 `result.json` 保留为 `result.json.corrupt`
+    （该名字被占用时用 `.corrupt.N`）。
 16. `_taskmgr.host` 是远程机器的主机名。
 17. 额外的配置键 `scheduler_poll_seconds`；额外的命令 `task host list|enable|disable|remove|ping`、`task whoami`、`task update`、`task version`。
 18. 重试或自动重跑的作业有自己的 `submitted_at`（创建时间），所以 `task jobs` 把它列为单独一行，

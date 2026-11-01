@@ -59,8 +59,8 @@ Other language: [[docs/assumptions.zh-CN]]
 15. jobid uniqueness is checked against all job directories on the server.
     `receive` answers a known submission key (dedup or conflict) right after extraction and
     hashing, before GPU resolution and validation, so a retry after a lost ACK succeeds even
-    if the machine's GPUs changed. A corrupt `result.json` is kept as
-    `result.json.corrupt` (or `.corrupt.N` if that name is taken).
+    if the machine's GPUs changed. A corrupt `result.json`, or one that is not a regular
+    file, is kept as `result.json.corrupt` (or `.corrupt.N` if that name is taken).
 16. `_taskmgr.host` is the remote machine's hostname.
 17. Extra config key `scheduler_poll_seconds`; extra commands `task host list|enable|disable|remove|ping`, `task whoami`, `task update`, `task version`.
 18. A retry or automatic re-run job gets its own `submitted_at` (the time it was created),

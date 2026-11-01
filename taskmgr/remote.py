@@ -36,17 +36,19 @@ from .common import (
 )
 from .gpu import resolve_declarations
 from .monitor import assess, identity_of
-from .records import ErrorInfo, Job, JsonValue, KeyMapping, Runner
+from .records import Job, JsonValue, KeyMapping, Runner
 from .store import (
+    OPERATOR_MARKED_STOPPED,
+    OPERATOR_STOPPED_ERROR,
     Store,
     clone_job,
     end_without_result,
     enqueue_staged,
     has_run,
     initial_phase,
+    interrupted_runner,
     job_summary,
     make_read_only,
-    mark_run_interrupted,
     meta_block,
     new_job_record,
     remove_tree,
@@ -257,7 +259,9 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
     if terminal:
         res: JsonValue = None
         if ran:
-            res, _ = try_read_json(os.path.join(jd, "workdir", "result.json"))
+            res, _ = try_read_json(
+                os.path.join(jd, "workdir", "result.json"), follow_symlinks=False
+            )
             if not isinstance(res, dict) and _retry:
                 return job_status(store, jobid, False)
         out["result"] = res if isinstance(res, dict) else synthesized_result(job)
@@ -281,7 +285,9 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
         }
         info["identity"] = identity_of(runner)
         out["run"] = info
-        prog, err = try_read_json(os.path.join(jd, "workdir", "progress.json"))
+        prog, err = try_read_json(
+            os.path.join(jd, "workdir", "progress.json"), follow_symlinks=False
+        )
         out["progress"] = (
             prog if prog is not None else (None if err == "missing" else {"error": err})
         )
@@ -364,17 +370,18 @@ def cmd_resolve(store: Store, args: Args) -> int:
                 raise TaskmgrError(
                     "not_unknown", "job %s is %s, not unknown" % (args.jobid, job["state"])
                 )
+            # The run record is made final in memory and written only by and after
+            # end_without_result: if that fails, runner.json is unchanged and the job
+            # stays unknown. (A run record marked stopped is never re-run, see assess.)
             runner: Runner | None = None
             if has_run(job):
-                runner = mark_run_interrupted(store, jd, job["jobid"], "operator_marked_stopped")
+                runner = interrupted_runner(store, jd, job["jobid"], OPERATOR_MARKED_STOPPED)
             if job.get("cancel_requested"):
-                _ = end_without_result(store, jd, job, "cancelled", None, runner)
+                jd = end_without_result(store, jd, job, "cancelled", None, runner)
             else:
-                error: ErrorInfo = {
-                    "kind": "operator_marked_stopped",
-                    "message": "operator confirmed all processes are gone",
-                }
-                _ = end_without_result(store, jd, job, "failed", error, runner)
+                jd = end_without_result(store, jd, job, "failed", OPERATOR_STOPPED_ERROR, runner)
+            if runner is not None:
+                store.write_runner(jd, runner)
         return emit({"jobid": args.jobid, "state": job["state"], "changed": True})
     with store.state_lock():
         _, job = store.load_job(args.jobid)

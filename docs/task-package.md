@@ -64,12 +64,16 @@ group has exited):
 
 Result is valid when it is a JSON object with an `outputs` object containing every
 `required_outputs` key. A missing file yields `{"schema_version", "_taskmgr"}`; a corrupt one
-is kept as `result.json.corrupt` and reported in `validation_errors`; a task-written
+(including JSON nested too deeply to parse), or a `result.json` that is not a regular file
+(directory, FIFO, symlink: links are not followed), is kept as `result.json.corrupt` and
+reported in `validation_errors`. A `progress.json` that is not a regular file shows as
+`{"error": ...}` in `task status`. A task-written
 `_taskmgr` is dropped with warning `task_wrote_taskmgr`.
 
 `error.kind` values: `setup`, `precompile` (the precompile command failed), `shim_start_failed`, `shim_error` (the shim failed before
 it started the entry; the job ends `failed` and is not re-run), `exit_code`, `signal`,
-`exit_code_lost`, `interrupted` (the run was cut off and an automatic re-run was created),
+`exit_code_lost`, `interrupted` (the run was cut off; an automatic re-run was created unless
+`task resolve` ended an `unknown` job),
 `too_many_interruptions`, `operator_marked_stopped`, `stop_unconfirmed` (job in unknown),
 `record_incomplete` / `undeterminable` (unknown after recovery), `recovery_error` (unknown:
 the daemon's recovery or tracking of the job failed repeatedly, see [[docs/recovery]]).

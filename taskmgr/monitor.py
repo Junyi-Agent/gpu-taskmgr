@@ -329,8 +329,10 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
         return {"decision": "unknown", "reason": "runner.json is %s" % err}
 
     if runner.get("final"):
+        # An interrupted run is ended by step 5; an unknown job (resolve) is not re-run,
+        # nor is a run an operator marked stopped (`resolve --as stopped` failed half-way).
         j = (
-            interrupt_run(store, jobid, runner.get("interrupted_reason", ""))
+            interrupt_run(store, jobid, runner.get("interrupted_reason", ""), rerun=not resolve)
             if runner.get("status") == "interrupted"
             else finalize_run(store, jobid)
         )
@@ -358,7 +360,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             stop_reason = "cancel"
         if not exited and not _has_identity(runner):
             if not may_have_started(runner):
-                j = interrupt_run(store, jobid, "entry command never started")
+                j = interrupt_run(store, jobid, "entry command never started", rerun=not resolve)
                 return {"decision": "interrupted", "state": j["state"]}
             if not resolve:
                 _ = mark_unknown(store, jobid, "record_incomplete", "identity record incomplete")
@@ -381,7 +383,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             if exited:
                 j = finish_stopped(store, jobid, stop_reason, True)
                 return {"decision": _finished(j), "state": j["state"]}
-            j = interrupt_run(store, jobid, "machine rebooted")
+            j = interrupt_run(store, jobid, "machine rebooted", rerun=not resolve)
             return {"decision": "interrupted", "state": j["state"]}
         pgid, leader_start = _group_identity(runner)
         try:

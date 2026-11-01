@@ -111,7 +111,7 @@ running/stopping --daemon's recovery or takeover of the job failed 3 times in a 
 running --cancel seen / timeout--> stopping --group gone--> cancelled | timed_out
 stopping --still alive after SIGKILL--> unknown
 running/stopping --restart recovery--> see below
-unknown --resolve (check concludes)--> see below
+unknown --resolve (check concludes)--> see below (never creates a re-run job)
 unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 terminal --retry--> (unchanged; a new queued job with retry_of = this job)
 ```

@@ -530,7 +530,8 @@ class RecoveryTest(Env):
         r = self.kill_shim(a)
         kill_quiet(self.num(r, "leader_pid"), group=True)
         _ = self.wait_for(lambda: not pid_alive(self.num(r, "leader_pid")), 10, "task death")
-        os.makedirs(os.path.join(self.job_dir(a), "workdir", "result.json", "blocker"))
+        workdir = os.path.join(self.job_dir(a), "workdir")
+        os.chmod(workdir, 0o500)  # result.json cannot be written
         b = self.submit(self.make_pkg())
         _ = self.start_daemon()
         _ = self.wait_state(b, "succeeded", timeout=20)
@@ -538,3 +539,123 @@ class RecoveryTest(Env):
         self.assertEqual(self.get(job, "error", "kind"), "recovery_error")
         self.assertIn("failed 3 times", self.text(job, "error", "message"))
         self.assertIsNone(self.daemons["s1"][-1].poll())  # the daemon keeps running
+
+    # -- unknown jobs are never re-run (review P0-2, P0-3) ----------------------
+    def assert_no_rerun(self, jobid: str) -> None:
+        self.assertEqual(self.job(jobid).get("retried_as", []), [])
+        self.assertEqual([j for j in self.jobids() if self.job(j).get("retry_of") == jobid], [])
+
+    def test_resolve_as_stopped_with_directory_result_json(self) -> None:
+        u, proc = self.make_unknown()
+        os.makedirs(os.path.join(self.job_dir(u), "workdir", "result.json", "x"))
+        kill_quiet(proc.pid)
+        _ = proc.wait()
+        out = self.ok("resolve", u, "--host", "s1", "--as", "stopped", "--confirm", u)
+        self.assertEqual(self.get(out, "state"), "failed")
+        self.assertEqual(self.get(self.job(u), "error", "kind"), "operator_marked_stopped")
+        self.assertEqual(self.get(self.result(u), "_taskmgr", "status"), "failed")
+        self.assert_no_rerun(u)
+
+    def test_failed_resolve_as_stopped_then_resolve_does_not_rerun(self) -> None:
+        u, proc = self.make_unknown()
+        kill_quiet(proc.pid)
+        _ = proc.wait()
+        workdir = os.path.join(self.job_dir(u), "workdir")
+        os.chmod(workdir, 0o500)  # result.json cannot be written
+        rc, out, _ = self.task("resolve", u, "--host", "s1", "--as", "stopped", "--confirm", u)
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "internal_error"))
+        self.assertEqual(self.job(u)["state"], "unknown")
+        self.assertFalse(self.runner(u).get("final"))  # the run record is unchanged
+        os.chmod(workdir, 0o700)
+        out = self.ok("resolve", u, "--host", "s1")
+        self.assertEqual(self.get(out, "state"), "failed")
+        self.assert_no_rerun(u)
+
+    def test_resolve_of_unknown_marked_stopped_in_runner_only_does_not_rerun(self) -> None:
+        # What an earlier `--as stopped` that failed after writing runner.json left behind.
+        u, proc = self.make_unknown(
+            runner_extra={
+                "final": True,
+                "status": "interrupted",
+                "interrupted_reason": "operator_marked_stopped",
+            }
+        )
+        kill_quiet(proc.pid)
+        _ = proc.wait()
+        out = self.ok("resolve", u, "--host", "s1")
+        self.assertEqual(self.get(out, "state"), "failed")
+        self.assertEqual(self.get(self.job(u), "error", "kind"), "operator_marked_stopped")
+        self.assert_no_rerun(u)
+        u2, proc2 = self.make_unknown(
+            gpus=(1,),
+            runner_extra={
+                "final": True,
+                "status": "interrupted",
+                "interrupted_reason": "operator_marked_stopped",
+            },
+            job_extra={"cancel_requested": True},
+        )
+        kill_quiet(proc2.pid)
+        _ = proc2.wait()
+        out = self.ok("resolve", u2, "--host", "s1")
+        self.assertEqual(self.get(out, "state"), "cancelled")
+        self.assert_no_rerun(u2)
+
+    def test_remote_resolve_as_stopped_checks_its_arguments(self) -> None:
+        u, _ = self.make_unknown()
+        rc, out, _ = self.remote("resolve", u, "--as", "running", "--confirm", u)
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "bad_args"))
+        rc, out, _ = self.remote("resolve", u, "--as", "stopped", "--confirm", "0" * 16)
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "bad_args"))
+        rc, out, _ = self.remote("resolve", u, "--as", "stopped")
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "bad_args"))
+        self.assertEqual(self.job(u)["state"], "unknown")
+        q = self.submit(self.make_pkg(gpus=[1]))
+        rc, out, _ = self.remote("resolve", q, "--as", "stopped", "--confirm", q)
+        self.assertEqual((rc, self.get(out, "error", "code")), (2, "not_unknown"))
+        self.assertEqual(self.job(q)["state"], "queued")
+
+    def test_resolve_after_reboot_does_not_rerun_a_timed_out_unknown(self) -> None:
+        u, proc = self.make_unknown(job_extra={"stop_reason": "timeout"})
+        kill_quiet(proc.pid)
+        _ = proc.wait()
+        self.set_boot("boot-2")
+        out = self.ok("resolve", u, "--host", "s1")
+        self.assertEqual(self.get(out, "state"), "timed_out")
+        self.assert_no_rerun(u)
+
+    def test_resolve_after_reboot_ends_unknown_as_interrupted_without_rerun(self) -> None:
+        u, proc = self.make_unknown()
+        kill_quiet(proc.pid)
+        _ = proc.wait()
+        self.set_boot("boot-2")
+        out = self.ok("resolve", u, "--host", "s1")
+        self.assertEqual(self.get(out, "state"), "failed")
+        self.assertEqual(self.get(self.job(u), "error", "kind"), "interrupted")
+        self.assertEqual(self.get(self.runner(u), "status"), "interrupted")
+        self.assert_no_rerun(u)
+        # An explicit retry is still possible.
+        out = self.ok("retry", u, "--host", "s1")
+        self.assertEqual(self.get(out, "retry_of"), u)
+
+    def test_resolve_of_unknown_without_identity_does_not_rerun(self) -> None:
+        u, _ = self.make_unknown()
+        with open(os.path.join(self.job_dir(u), "runner.json"), "w") as f:
+            json.dump({"jobid": u, "status": "dispatched", "final": False, "exited": False}, f)
+        out = self.ok("resolve", u, "--host", "s1")
+        self.assertEqual(self.get(out, "state"), "failed")
+        self.assertEqual(self.get(self.job(u), "error", "kind"), "interrupted")
+        self.assert_no_rerun(u)
+
+    def test_reboot_during_timeout_stop_ends_timed_out(self) -> None:
+        # The daemon finds a job that was stopping for its timeout before a reboot.
+        u, proc = self.make_unknown(
+            state="stopping", unconfirmed=False, job_extra={"stop_reason": "timeout"}
+        )
+        kill_quiet(proc.pid)
+        _ = proc.wait()
+        self.set_boot("boot-2")
+        _ = self.start_daemon()
+        job = self.wait_state(u, "timed_out", timeout=20)
+        self.assertEqual(job["state"], "timed_out")
+        self.assert_no_rerun(u)

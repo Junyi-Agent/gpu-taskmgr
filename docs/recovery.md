@@ -39,7 +39,12 @@ only requires it at startup), and `task resolve` runs it for unknown jobs.
    5. same boot, no member → `failed` / `exit_code_lost`, business fields kept; if the job
       was stopping (or cancel was requested) → cancelled / timed_out.
    6. undeterminable (`/proc` unreadable, record corrupt/incomplete) → `unknown`.
-5. Re-run: `runner.json` → `interrupted`; `cancel_requested` → cancelled;
+5. Re-run: `runner.json` → `interrupted`; `cancel_requested` → cancelled; job stopping
+   for its timeout (`stop_reason = "timeout"`) → `timed_out`; run record marked stopped by
+   an operator (`interrupted_reason = "operator_marked_stopped"`, left by a
+   `resolve --as stopped` that failed half-way) → `failed` / `operator_marked_stopped`;
+   `task resolve` of an `unknown` job → `failed` / `interrupted` without a re-run (run
+   `task retry` to re-run it);
    `auto_restarts` at `max_auto_restarts` → `failed` / `too_many_interruptions`; else the
    job ends `failed` with `error.kind = "interrupted"` and a new job is created from its
    package (hard links to the same files; an automatic retry): it keeps the original `enqueue_seq`, has
@@ -65,7 +70,9 @@ Two errors end a job without these rules:
 such a job ends it `failed` with exit code 75).
 
 1. `task resolve <jobid> --host H` re-runs the check. If the group is gone the job ends by
-   the rules above (cancelled if cancel was requested). If processes are still alive, or
+   the rules above (cancelled if cancel was requested); a reboot or an entry that never
+   started ends it `failed` / `interrupted` (`timed_out` if it was stopping for its
+   timeout) and creates no re-run job. If processes are still alive, or
    the record cannot be read, the job stays unknown and the output shows `identity`
    (`boot_id`, `pgid`, `leader_pid`, `leader_start_time`, `shim_pid`, ...) and
    `alive_pids`.
@@ -76,4 +83,6 @@ such a job ends it `failed` with exit code 75).
 4. Run `task resolve <jobid> --host H` again, or, once you have confirmed everything is
    gone, `task resolve <jobid> --host H --as stopped --confirm <jobid>` → `failed`
    (`operator_marked_stopped`) or `cancelled`; GPUs are released; nothing re-runs.
+   `runner.json` is written after `result.json` and `job.json`: if the command fails, the
+   job stays `unknown` with its run record unchanged.
 5. Re-run with `task retry <jobid> --host H` if wanted (this creates a new job).
