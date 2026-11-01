@@ -282,6 +282,8 @@ class Env(unittest.TestCase):
         p = subprocess.run(
             self._task_argv(args, text, color),
             env=e,
+            # Not the runner's stdin: from a terminal, prompts would wait for an answer.
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=timeout,
         )
@@ -318,6 +320,7 @@ class Env(unittest.TestCase):
         p = subprocess.Popen(
             self._task_argv(args, False, False),
             env=self.env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
