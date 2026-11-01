@@ -79,12 +79,15 @@ up: "[[taskmgr/README.zh-CN]]"
 `task validate` 和 `task submit` 在本地检查任务包；上传后服务器会再检查一次。
 
 - 不打进归档、也不计入内容哈希的路径：任一路径分量名为 `__pycache__`、`.git` 或 `.DS_Store`，
-  以 `.pyc` 或 `.json.lock`（`taskmgr_task.py` 的锁文件）结尾，或以 `.tmp-` 开头（未完成的原子
-  写入）；另外，包根目录下以 `result.json` 开头的名字（本地试跑留下的 `result.json`、
-  `result.json.lock`）。
-- 大小：打包的普通文件总大小不得超过 `max_package_bytes`。本地检查用服务器默认值
-  （1073741824 字节），错误码 `package_too_large`。服务器解包时按它自己的 `max_package_bytes`
-  检查；上传数据超过上限加 1/16 再加 1 MiB 时，服务器直接停止接收。
+  以 `.pyc` 结尾，或以 `.tmp-` 开头（未完成的原子写入）；另外，包根目录下的 `result.json`、
+  `result.json.lock`、`progress.json.lock`（用 `taskmgr_task.py` 本地试跑留下的文件）和以
+  `result.json.corrupt` 开头的名字。`result.jsonl` 这类其他名字照常打包。服务器收到归档后，
+  先删除这些条目再计算内容哈希，所以归档里残留的 `result.json` 不会被当成本次运行的结果。
+  `task validate` 把每个被排除的路径列为警告（代码 `excluded`；被排除的目录只列目录本身）。
+- 大小：服务器解包时，普通文件总大小超过它的 `max_package_bytes` 就拒收（错误码
+  `package_too_large`）；上传数据超过上限加 1/16 再加 1 MiB 时，直接停止接收。`task submit`
+  不在本地检查大小。包超过服务器默认值（1073741824 字节）时，`task validate` 给出警告（代码
+  `package_too_large`）；各服务器的上限可以更大或更小。
 - 符号链接必须是相对路径，并且（包括经过其他链接后）解析到包内；特殊文件（FIFO、设备、socket）
   会被拒绝。
 - 相对路径的 `entry.argv[0]` 必须指向包内一个不被排除在打包之外、带可执行位的普通文件（错误码

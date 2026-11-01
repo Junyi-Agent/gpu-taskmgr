@@ -111,6 +111,9 @@ def cmd_receive(store: Store, args: Args) -> int:
         ext = os.path.join(updir, "extract")
         _ = package.safe_extract(tar_path, ext, store.config.get("max_package_bytes"))
         root = package.package_root(ext)
+        # What a directory upload would not have carried (a stale result.json from an
+        # earlier run would otherwise become this run's result).
+        _ = package.remove_excluded(root)
         chash = package.content_hash(root)
         # A retry of an already enqueued submission answers from the key mapping before
         # any check that depends on the machine's current state (e.g. GPU visibility).
@@ -187,7 +190,7 @@ def receive_upload(src: IO[bytes], dst: IO[bytes], max_bytes: int | None) -> Non
         if cap is not None and total > cap:
             raise TaskmgrError(
                 "package_too_large",
-                "upload exceeds %d bytes (max_package_bytes %d)" % (cap, max_bytes or 0),
+                package.size_exceeded("upload of more than", cap, max_bytes or 0),
             )
         _ = dst.write(chunk)
     dst.flush()

@@ -118,6 +118,7 @@ class PackageTest(Env):
                     "valid": True,
                     "task_id": "AA-01",
                     "content_hash": self.obj(out).get("content_hash"),
+                    "warnings": [],
                 },
             ),
         )
@@ -401,3 +402,114 @@ class PackageTest(Env):
 
         self.assertIsNone(TASK_ID_RE.match("AA-01\n"))
         self.assertIsNone(SUBMISSION_KEY_RE.match("k\n"))
+
+
+class ExcludedEntriesAndSizeTest(Env):
+    """Review P1-1, P1-2, P1-3: excluded entries in archives, the root exclusion rule, and
+    who decides the package size limit."""
+
+    def _archive(self, pkg: str, extra: dict[str, str]) -> str:
+        """An archive of pkg plus extra files (archive path -> content) that pack_dir
+        would leave out."""
+        path = os.path.join(self.tmp, "with-extra-%d.tar.gz" % len(os.listdir(self.tmp)))
+        with tarfile.open(path, "w:gz") as tar:
+            for name in sorted(os.listdir(pkg)):
+                tar.add(os.path.join(pkg, name), arcname=name)
+            for name, content in extra.items():
+                ti = tarfile.TarInfo(name)
+                ti.size = len(content.encode())
+                ti.mode = 0o644
+                tar.addfile(ti, io.BytesIO(content.encode()))
+        return path
+
+    def test_archived_result_json_is_removed_before_hash_and_run(self) -> None:
+        pkg = self.make_pkg(script="true", required=["best"])
+        stale = json.dumps({"schema_version": 1, "outputs": {"best": "stale"}})
+        extra = {"result.json": stale, "result.json.lock": "", ".git/HEAD": "ref"}
+        archive = self._archive(pkg, extra)
+        rc, out, err = self.task("validate", archive)
+        self.assertEqual(rc, 0, (out, err))
+        warned = {self.text(w, "path") for w in self.objs(out, "warnings")}
+        self.assertEqual(warned, {"result.json", "result.json.lock", ".git"})
+        self.assertIn("result.json", err)  # also printed on stderr
+        sub = self.ok("submit", "--host", "s1", archive)
+        self.assertEqual(self.get(sub, "content_hash"), package.content_hash(pkg))
+        jobid = self.text(sub, "jobid")
+        pkg_copy = os.path.join(self.job_dir(jobid), "package")
+        self.assertEqual(sorted(os.listdir(pkg_copy)), ["TASK.md", "progress.json", "task.json"])
+        _ = self.start_daemon()
+        _ = self.wait_state(jobid, ("succeeded", "invalid_result", "failed"))
+        self.assertEqual(self.job(jobid)["state"], "invalid_result")
+
+    def test_root_exclusion_matches_exact_names(self) -> None:
+        kept = ["result.jsonl", "result.json.bak", "result.json.d/x", "sub/result.json.lock"]
+        dropped = [
+            "result.json",
+            "result.json.lock",
+            "result.json.corrupt",
+            "result.json.corrupt.2",
+        ]
+        for rel in kept:
+            self.assertFalse(package.is_excluded(rel), rel)
+        for rel in dropped + ["progress.json.lock"]:
+            self.assertTrue(package.is_excluded(rel), rel)
+        pkg = self.make_pkg(
+            script="cat result.jsonl result.json.bak result.json.d/x > out.txt",
+            files={k: k for k in kept + dropped},
+        )
+        rc, out, err = self.task("validate", pkg)
+        self.assertEqual(rc, 0, (out, err))
+        warned = {self.text(w, "path") for w in self.objs(out, "warnings")}
+        self.assertEqual(warned, set(dropped))
+        archive = os.path.join(self.tmp, "p.tgz")
+        package.pack_dir(pkg, archive)
+        with tarfile.open(archive) as t:
+            names = {m.name for m in t.getmembers() if m.isfile()}
+        self.assertTrue(set(kept) <= names, names)
+        jobid = self.submit(pkg)
+        _ = self.start_daemon()
+        _ = self.wait_state(jobid, ("succeeded", "invalid_result", "failed"))
+        # The entry read the three files (it writes no result.json, hence invalid_result).
+        meta = self.obj(self.result(jobid), "_taskmgr")
+        self.assertEqual(meta["return_code"], 0, meta)
+
+    def _main(self, *argv: str) -> tuple[int, JsonValue, str]:
+        """Run the CLI in this process (to patch the local size default)."""
+        import contextlib
+        from unittest import mock
+
+        from taskmgr import taskmgr
+
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.dict(os.environ, self.env, clear=True),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            rc = taskmgr.main([argv[0], "--plain", "--detail", *argv[1:]])
+        text = out.getvalue()
+        return rc, cast(JsonValue, json.loads(text)) if text.strip() else None, err.getvalue()
+
+    def test_server_decides_the_package_size(self) -> None:
+        from unittest import mock
+
+        pkg = self.make_pkg(files={"big.bin": "x" * 5000})
+        # Pretend the default limit is 1000 bytes: the local checks must not use it to
+        # refuse a submission; the server's max_package_bytes decides.
+        with mock.patch.object(package, "DEFAULT_MAX_PACKAGE_BYTES", 1000):
+            self.set_config(max_package_bytes=None)
+            rc, out, err = self._main("submit", "--host", "s1", pkg)
+            self.assertEqual(rc, 0, (out, err))
+            rc, out, err = self._main("validate", pkg)
+            self.assertEqual(rc, 0, (out, err))
+            self.assertEqual(
+                [self.text(w, "code") for w in self.objs(out, "warnings")], ["package_too_large"]
+            )
+            self.assertIn(
+                "exceeds max_package_bytes (1000)", self.text(out, "warnings", 0, "message")
+            )
+        self.set_config(max_package_bytes=1000)
+        rc, out, _ = self.task("submit", "--host", "s1", pkg)
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.get(out, "error", "code"), "package_too_large")
+        self.assertIn("exceeds max_package_bytes (1000)", self.text(out, "error", "message"))

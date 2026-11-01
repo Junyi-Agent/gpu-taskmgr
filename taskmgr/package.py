@@ -29,9 +29,12 @@ DEFAULT_MAX_PACKAGE_BYTES: int | None = DEFAULT_REMOTE_CONFIG["max_package_bytes
 
 # Never packed or hashed: caches, VCS data, editor junk and files a run leaves behind.
 EXCLUDED_NAMES = ("__pycache__", ".git", ".DS_Store")
-EXCLUDED_SUFFIXES = (".pyc", ".json.lock")  # .json.lock: taskmgr_task.py flock files
+EXCLUDED_SUFFIXES = (".pyc",)
 EXCLUDED_PREFIXES = (".tmp-",)  # in-flight atomic writes
-EXCLUDED_ROOT_PREFIXES = ("result.json",)  # runner output (result.json, result.json.lock)
+# At the package root only: runner output and the flock files of taskmgr_task.py, and the
+# result.json.corrupt[.N] copies the server keeps of a corrupt result.json.
+EXCLUDED_ROOT_NAMES = ("result.json", "result.json.lock", "progress.json.lock")
+EXCLUDED_ROOT_PREFIXES = ("result.json.corrupt",)
 
 
 def is_excluded(rel: str) -> bool:
@@ -41,12 +44,42 @@ def is_excluded(rel: str) -> bool:
     directories. `task init` copies the template with a subset of these rules.
     """
     parts = rel.split("/")
-    if parts[0].startswith(EXCLUDED_ROOT_PREFIXES):
+    if parts[0] in EXCLUDED_ROOT_NAMES or parts[0].startswith(EXCLUDED_ROOT_PREFIXES):
         return True
     return any(
         p in EXCLUDED_NAMES or p.endswith(EXCLUDED_SUFFIXES) or p.startswith(EXCLUDED_PREFIXES)
         for p in parts
     )
+
+
+def excluded_entries(root: str) -> list[str]:
+    """The paths below root that is_excluded() leaves out, sorted; below an excluded
+    directory only the directory itself is listed."""
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        prefix = "" if rel_dir == "." else rel_dir + "/"
+        out.extend(prefix + n for n in dirnames + filenames if is_excluded(prefix + n))
+        dirnames[:] = [d for d in dirnames if not is_excluded(prefix + d)]
+    return sorted(out)
+
+
+def remove_excluded(root: str) -> list[str]:
+    """Delete what excluded_entries() lists (an extracted archive may carry a stale
+    result.json); returns the removed paths."""
+    removed = excluded_entries(root)
+    for rel in removed:
+        p = os.path.join(root, *rel.split("/"))
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p)
+        else:
+            os.unlink(p)
+    return removed
+
+
+def size_exceeded(what: str, size: int, limit: int) -> str:
+    """The one wording of a package_too_large message: what is e.g. "package size of"."""
+    return "%s %d bytes exceeds max_package_bytes (%d)" % (what, size, limit)
 
 
 def _err(errors: list[Problem], code: str, message: str, path: str | None = None) -> None:
@@ -265,13 +298,12 @@ def scan_tree(root: str, errors: list[Problem]) -> int:
     return total
 
 
-def validate_dir(
-    root: str, max_bytes: int | None = DEFAULT_MAX_PACKAGE_BYTES
-) -> tuple[list[Problem], TaskSpec | None]:
+def validate_dir(root: str, max_bytes: int | None = None) -> tuple[list[Problem], TaskSpec | None]:
     """Validate an extracted task package. Returns (errors, task_or_None).
 
-    max_bytes caps the total size of the packed regular files (None: no cap); the default
-    is the server default max_package_bytes, so `task validate` catches oversized packages.
+    max_bytes caps the total size of the packed regular files (None: no cap). The client
+    passes None: the server's max_package_bytes decides, and `task validate` only warns
+    (see packed_size).
 
     The task is the parsed task.json whenever it is a JSON object; it only matches
     TaskSpec when errors is empty, so callers must check errors before using it.
@@ -335,10 +367,19 @@ def validate_dir(
         _err(
             errors,
             "package_too_large",
-            "package files total %d bytes, over max_package_bytes (%d)" % (total, max_bytes),
+            size_exceeded("package size of", total, max_bytes),
         )
     # Converted via object: a JsonDict and a TypedDict do not overlap for the checker.
     return errors, (cast(TaskSpec, cast(object, task)) if isinstance(task, dict) else None)
+
+
+def packed_size(root: str) -> int:
+    """Total size of the regular files pack_dir would pack."""
+    return sum(
+        st.st_size
+        for st in (os.lstat(full) for _, full in _sorted_entries(root, exclude=True))
+        if stat.S_ISREG(st.st_mode)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -537,8 +578,7 @@ def safe_extract(
                 total += m.size
                 if max_bytes is not None and total > max_bytes:
                     raise TaskmgrError(
-                        "package_too_large",
-                        "extracted size exceeds max_package_bytes (%d)" % max_bytes,
+                        "package_too_large", size_exceeded("extracted size of", total, max_bytes)
                     )
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 src = tar.extractfile(m)

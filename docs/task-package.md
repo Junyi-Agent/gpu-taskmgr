@@ -84,14 +84,19 @@ the daemon's recovery or tracking of the job failed repeatedly, see [[docs/recov
 after the upload.
 
 - Left out of the packed archive and of the content hash: every path with a component
-  named `__pycache__`, `.git` or `.DS_Store`, ending in `.pyc` or `.json.lock` (the lock
-  files of `taskmgr_task.py`) or starting with `.tmp-` (unfinished atomic writes); at the
-  package root also every name starting with `result.json` (`result.json`,
-  `result.json.lock` from a local test run).
-- Size: the packed regular files may total at most `max_package_bytes`. The local check
-  uses the server default (1073741824 bytes); error `package_too_large`. The server
-  enforces its own `max_package_bytes` while extracting, and stops receiving an upload
-  that is larger than the limit plus 1/16 plus 1 MiB.
+  named `__pycache__`, `.git` or `.DS_Store`, ending in `.pyc` or starting with `.tmp-`
+  (unfinished atomic writes); at the package root also `result.json`, `result.json.lock`,
+  `progress.json.lock` (from a local test run with `taskmgr_task.py`) and names starting
+  with `result.json.corrupt`. Other names such as `result.jsonl` are packed. The server
+  deletes these entries from an uploaded archive before it computes the content hash, so
+  a stale `result.json` in an archive never becomes a run's result. `task validate` lists
+  every left-out path as a warning (code `excluded`; below an excluded directory only the
+  directory).
+- Size: the server refuses a package whose regular files total more than its
+  `max_package_bytes` while extracting (error `package_too_large`), and stops receiving an
+  upload that is larger than the limit plus 1/16 plus 1 MiB. `task submit` does not check
+  the size locally. `task validate` warns (code `package_too_large`) when the package is
+  larger than the server default (1073741824 bytes); a server may allow more or less.
 - Symlinks must be relative and resolve inside the package (also through other links);
   special files (FIFOs, devices, sockets) are rejected.
 - A relative `entry.argv[0]` must name a regular file inside the package that is not left

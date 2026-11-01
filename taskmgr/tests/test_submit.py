@@ -247,7 +247,7 @@ class SubmitTest(Env):
             rc, out, _ = self.remote("receive", stdin=f)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "package_too_large")
-        self.assertIn("upload exceeds", self.text(out, "error", "message"))
+        self.assertIn("upload of more than", self.text(out, "error", "message"))
         self.assertEqual(os.listdir(os.path.join(self.root(), "incoming")), [])
 
     def test_retry_links_the_read_only_package(self) -> None:

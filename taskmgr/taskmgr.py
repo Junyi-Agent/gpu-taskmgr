@@ -134,18 +134,37 @@ def cmd_init(args: Args) -> CmdResult:
     return {"path": target, "task_id": args.task_id}, 0
 
 
-def validate_path(path: str) -> tuple[list[Problem], TaskSpec | None, str | None]:
-    """Validate a package directory or archive. Returns (errors, task, content_hash)."""
+def _package_warnings(root: str) -> list[Problem]:
+    """What `task validate` warns about: entries left out of the package, and a size over
+    the server default max_package_bytes (each server enforces its own limit)."""
+    warnings: list[Problem] = [
+        {"code": "excluded", "message": "left out of the package", "path": rel}
+        for rel in package.excluded_entries(root)
+    ]
+    limit = package.DEFAULT_MAX_PACKAGE_BYTES
+    size = package.packed_size(root)
+    if limit is not None and size > limit:
+        msg = package.size_exceeded("package size of", size, limit)
+        warnings.append({"code": "package_too_large", "message": msg + " (the server default)"})
+    return warnings
+
+
+def validate_path(
+    path: str,
+) -> tuple[list[Problem], TaskSpec | None, str | None, list[Problem]]:
+    """Validate a package directory or archive without a size limit.
+    Returns (errors, task, content_hash, warnings)."""
     if not os.path.exists(path):
         raise TaskmgrError("not_found", "path does not exist: %s" % path)
     if os.path.isdir(path):
         errors, task = package.validate_dir(path)
-        return errors, task, (None if errors else package.content_hash(path))
+        warnings = _package_warnings(path)
+        return errors, task, (None if errors else package.content_hash(path)), warnings
     with tempfile.TemporaryDirectory(prefix="taskmgr-validate-") as tmp:
         try:
             skipped = package.safe_extract(path, tmp, skip_unsafe=True)
         except TaskmgrError as e:
-            return [{"code": e.code, "message": e.message}], None, None
+            return [{"code": e.code, "message": e.message}], None, None, []
         unsafe: list[Problem] = [
             {
                 "code": "unsafe_package",
@@ -155,17 +174,26 @@ def validate_path(path: str) -> tuple[list[Problem], TaskSpec | None, str | None
             for s in skipped
         ]
         root = package.package_root(tmp)
+        warnings = _package_warnings(root)
+        _ = package.remove_excluded(root)  # as the server does before validating
         errors, task = package.validate_dir(root)
         errors = unsafe + errors  # report every error, not only the first unsafe entry
-        return errors, task, (None if errors else package.content_hash(root))
+        return errors, task, (None if errors else package.content_hash(root)), warnings
 
 
 def cmd_validate(args: Args) -> CmdResult:
-    errors, task, chash = validate_path(args.path)
+    errors, task, chash, warnings = validate_path(args.path)
+    for w in warnings:
+        warn("%s%s" % (w["path"] + ": " if "path" in w else "", w["message"]))
     if errors:
-        return {"valid": False, "errors": errors}, 1
+        return {"valid": False, "errors": errors, "warnings": warnings}, 1
     assert task is not None  # validate_dir returns the task when there are no errors
-    return {"valid": True, "task_id": task["task_id"], "content_hash": chash}, 0
+    return {
+        "valid": True,
+        "task_id": task["task_id"],
+        "content_hash": chash,
+        "warnings": warnings,
+    }, 0
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +209,7 @@ def cmd_submit(args: Args) -> CmdResult:
     if args.submission_key and not SUBMISSION_KEY_RE.match(args.submission_key):
         raise TaskmgrError("bad_args", "--submission-key must match ^[A-Za-z0-9._-]{1,128}$")
     path = os.path.abspath(args.path)
-    errors, _, _ = validate_path(path)
+    errors, _, _, _ = validate_path(path)  # the server checks the size
     if errors:
         raise TaskmgrError(
             "invalid_package", "package validation failed (%d errors)" % len(errors), details=errors
