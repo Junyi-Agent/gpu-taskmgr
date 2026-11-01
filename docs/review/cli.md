@@ -1,6 +1,6 @@
 # CLI 结构与帮助文本审阅
 
-审阅基线：`070f3a2`。目标是缩短帮助、统一用词，并保留操作所需的限制和默认值。本报告不修改实现；以下英文建议均可作为对应帮助字符串直接替换，结构调整另行标明。
+审阅基线：`960d0ba`（本次提交前 HEAD）。目标是缩短帮助、统一用词，并保留操作所需的限制和默认值。本报告不修改实现；以下英文建议均可作为对应帮助字符串直接替换，结构调整另行标明。
 
 ## 范围与结论
 
@@ -9,6 +9,17 @@
 现有树基本合理，不建议增加 job 分组或迁移现有命令。没有命令别名；`-h/--help`、`-y/--yes` 是正常的选项别名。`host add --enabled/--disabled` 用于配置时一并设置状态，`host enable/disable` 用于单独切换，保留两种入口即可。`whoami`、`version`、`host ping` 虽共享远端 version 查询，但分别回答身份、版本一致性、连通性，不能仅因实现重用而合并。远端是协议和服务入口，与本地同名命令不算多余别名，尤其 receive/fetch 有二进制流语义。
 
 优先处理顶层选项误导、查询范围表述、互斥参数 usage；其次删减 host 长描述与通用页脚。远端帮助当前过少，应补最小语义，而非继续删短。
+
+## 遍历记录
+
+本次从两个 `build_parser` 的 `_SubParsersAction.choices` 递归获取路径，再为每条路径单独执行 `python3 bin/<入口> <路径> --help`；不是仅调用 `format_help()`。`--help` 在参数校验前退出，因此远端无需提供真实 `--root`，也不会创建存储目录或启动服务。
+
+| 入口 | 已执行的命令路径（每项均追加 `--help`） | 结果 |
+| --- | --- | --- |
+| `python3 bin/task` | 顶层；init、validate、submit、jobs、status、logs、fetch、cancel、retry、resolve、host、whoami、update、version；host add、host list、host remove、host enable、host disable、host ping | 21/21 退出 0 |
+| `python3 bin/taskmgr-remote` | 顶层；version、inspect、receive、jobs、status、cancel、retry、resolve、logs、fetch、serve、shim | 13/13 退出 0 |
+
+另执行 `task --detail jobs`、`task status --detail`、`task host add example --enabled --disabled`、`task init bad`、`taskmgr-remote status 0123456789abcdef`，均退出 2；分别验证选项位置、缺参 JSON、互斥选项、ID 规则和必需全局参数提示。这些输入均在任何部署、写入或网络操作之前失败。
 
 ## 逐项建议
 
@@ -24,7 +35,7 @@
 
 位置：`taskmgr/cliparse.py:131`、`taskmgr/cliparse.py:133`、`taskmgr/cliparse.py:137`、`taskmgr/cliparse.py:264`、`taskmgr/cliparse.py:276`。
 
-当前：`--detail  print the full JSON object instead of text (all but logs)`；`--home DIR  local state directory (default $TASKMGR_HOME or ~/.taskmgr)`；usage 为 `task <command> [args]`。
+当前：``--detail  print the full JSON object instead of text (all but logs)`；`--home DIR  local state directory (default $TASKMGR_HOME or ~/.taskmgr)`；usage 为 `task <command> [args]``。
 
 问题：实测 `task --detail jobs` 退出 2，报 `unrecognized arguments: --detail`；detail 实际属于叶子命令，home 只属于顶层。
 
@@ -96,16 +107,14 @@ init、fetch、cancel、resolve 的现有摘要足够短，保留。validate 的
 
 ### 7. host 摘要统一动词并删口语修饰
 
-位置：`taskmgr/hostcmds.py:26` 至 `taskmgr/hostcmds.py:31`。
-
-| 当前文本 | 可直接替换文本 |
-| --- | --- |
-| `set up or update a server and add it to the machine list` | `configure or update a server` |
-| `list the configured servers` | `list configured servers` |
-| `remove a server from the machine list` | `remove a local server entry` |
-| `use a server again for submits and queries` | `enable automatic submits and queries` |
-| `leave a server out of submits and queries for now` | `disable automatic submits and queries` |
-| `check that servers answer` | `check server connectivity` |
+| file:line | 当前文本 | 可直接替换文本 |
+| --- | --- | --- |
+| `taskmgr/hostcmds.py:26` | `set up or update a server and add it to the machine list` | `configure or update a server` |
+| `taskmgr/hostcmds.py:27` | `list the configured servers` | `list configured servers` |
+| `taskmgr/hostcmds.py:28` | `remove a server from the machine list` | `remove a local server entry` |
+| `taskmgr/hostcmds.py:29` | `use a server again for submits and queries` | `enable automatic submits and queries` |
+| `taskmgr/hostcmds.py:30` | `leave a server out of submits and queries for now` | `disable automatic submits and queries` |
+| `taskmgr/hostcmds.py:31` | `check that servers answer` | `check server connectivity` |
 
 ### 8. host add 的部署细节压成操作契约
 
@@ -121,8 +130,8 @@ init、fetch、cancel、resolve 的现有摘要足够短，保留。validate 的
 
 当前 → 建议：
 
-- `extra `ssh -o` option (repeatable); replaces an option with the same key` → `SSH option (repeatable; replaces the same key)`
-- `taskmgr-remote.pyz to upload, built by `python3 -m taskmgr.pyz` (default: dist/taskmgr-remote.pyz in the checkout, or next to task.pyz); its code version must equal this task's` → `remote zipapp; must match local code (default: dist/taskmgr-remote.pyz or beside task.pyz)`
+- ``extra `ssh -o` option (repeatable); replaces an option with the same key`` → `SSH option (repeatable; replaces the same key)`
+- ``taskmgr-remote.pyz to upload, built by `python3 -m taskmgr.pyz` (default: dist/taskmgr-remote.pyz in the checkout, or next to task.pyz); its code version must equal this task's`` → `remote zipapp; must match local code (default: dist/taskmgr-remote.pyz or beside task.pyz)`
 - `answer yes to every prompt` 和 `do not ask for confirmation` → 统一为 `skip confirmation prompts`。
 
 ### 9. enable/disable 描述保留例外，删查询枚举
@@ -155,7 +164,9 @@ init、fetch、cancel、resolve 的现有摘要足够短，保留。validate 的
 
 当前：`Run `taskmgr-remote version` on each server (in parallel) and report whether it answers, the round-trip time and the installed code version. Exit 0 when every pinged server answered, 2 otherwise.`
 
-建议：`Show connectivity, latency and code version for all configured servers, including disabled ones. Exit 0 if all answer, otherwise 2.`
+建议：`Show server connectivity, latency and code version (including disabled servers). Exit 0 if all selected servers answer, otherwise 2.`
+
+位置：`taskmgr/hostcmds.py:124`。当前 `one server (default: all)` → `server name (default: all configured servers)`。ping 可指定单台主机，description 不应把执行范围固定写成 all。
 
 ### 11. usage 应表达互斥，而非改变选项名称
 
@@ -185,20 +196,20 @@ init、fetch、cancel、resolve 的现有摘要足够短，保留。validate 的
 
 建议顶层 description：`Remote protocol and service commands; normally invoked by task.`；subparsers metavar 使用 `<command>`，展示简短命令表。各命令以下列字符串同时作为 help、description（inspect 替换现有字符串，其余补入）：
 
-| 命令 | 可直接使用的文本 |
-| --- | --- |
-| version | `show code version and runtime identity` |
-| inspect | `inspect job counts and incompatible directories (read-only)` |
-| receive | `receive a task package from stdin and enqueue it` |
-| jobs | `list jobs` |
-| status | `show job status` |
-| cancel | `cancel a job` |
-| retry | `resubmit a finished job` |
-| resolve | `check an unknown job or confirm it stopped` |
-| logs | `stream a job log to stdout` |
-| fetch | `write job results as tar.gz to stdout` |
-| serve | `run the scheduler service` |
-| shim | `run a job shim (internal)` |
+| file:line | 命令 | 可直接使用的文本 |
+| --- | --- | --- |
+| `taskmgr/remote.py:574` | version | `show code version and runtime identity` |
+| `taskmgr/remote.py:575` | inspect | `inspect job counts and incompatible directories (read-only)` |
+| `taskmgr/remote.py:576` | receive | `receive a task package from stdin and enqueue it` |
+| `taskmgr/remote.py:578` | jobs | `list jobs` |
+| `taskmgr/remote.py:581` | status | `show job status` |
+| `taskmgr/remote.py:581` | cancel | `cancel a job` |
+| `taskmgr/remote.py:581` | retry | `resubmit a finished job` |
+| `taskmgr/remote.py:583` | resolve | `check an unknown job or confirm it stopped` |
+| `taskmgr/remote.py:587` | logs | `stream a job log to stdout` |
+| `taskmgr/remote.py:591` | fetch | `write job results as tar.gz to stdout` |
+| `taskmgr/remote.py:593` | serve | `run the scheduler service` |
+| `taskmgr/remote.py:594` | shim | `run a job shim (internal)` |
 
 本地 fetch 下载到目录，远端 fetch 写 tar.gz，不能使用同一句模糊的 download 描述。serve/shim 保留原位置和调用兼容性，以文字标明内部用途即可，无需新增 internal 分组。
 
@@ -218,7 +229,7 @@ init、fetch、cancel、resolve 的现有摘要足够短，保留。validate 的
 | `taskmgr/remote.py:586` | `--confirm CONFIRM`，help 空 | metavar `JOBID`；help `repeat job ID to confirm --as stopped` |
 | `taskmgr/remote.py:588` | `jobid`，help 空 | `job ID (16 hex digits)` |
 | `taskmgr/remote.py:589` | `--stream {stdout,stderr,shim}`，help 空 | `log stream (default: stdout)` |
-| `taskmgr/remote.py:590` | `--follow`，help 空 | `follow until the job ends` |
+| `taskmgr/remote.py:590` | `--follow`，help 空 | `follow log output` |
 | `taskmgr/remote.py:592` | `jobid`，help 空 | `job ID (16 hex digits)` |
 | `taskmgr/remote.py:595` | `jobid`，help 空 | `job ID (16 hex digits)` |
 | `taskmgr/remote.py:596` | `--lock-fd LOCK_FD`，help 空 | metavar `FD`；help `inherited job lock file descriptor (internal)` |
@@ -247,7 +258,7 @@ init、fetch、cancel、resolve 的现有摘要足够短，保留。validate 的
 
 位置：`taskmgr/taskmgr.py:462`。
 
-当前：`job %s is in the unknown state; see `task resolve``。
+当前：``job %s is in the unknown state; see `task resolve```。
 
 建议：`job %s has unknown state; see task resolve --help`。当前裸 resolve 缺少 jobid，会再触发一次参数错误。
 
@@ -259,7 +270,31 @@ init、fetch、cancel、resolve 的现有摘要足够短，保留。validate 的
 
 建议 JSON message 直接复用具体解析错误文字，例如 `missing required argument: jobid`；未知 detail 放置位置可使用 `place --detail after the leaf command (e.g. task jobs --detail)`。这需要传递解析错误消息，不能只把固定字符串换成另一句固定字符串。保留 bad_args 和退出码 2。
 
-普通 task 解析错误目前已有 usage、具体原因和精准的命令级 -h 提示，整体清楚，无需再加一段说明。远端缺少 --root 时也明确报出 required --root；将第 14 项的位置要求补入子页可减少试错，不必重写其 JSON/二进制流错误协议。
+普通 task 解析错误目前已有 usage、具体原因和精准的命令级 -h 提示，整体清楚，无需再加一段说明。远端缺少 --root 时也明确报出 required --root；按第 19 项将位置要求补入子页可减少试错，不必重写其 JSON/二进制流错误协议。
+
+### 17. submit 的幂等说明保留作用域，删除解释句
+
+位置：`taskmgr/cliparse.py:298`。
+
+当前：`idempotency key: the same key on the same server returns the same job (needs --host)`。
+
+建议：`idempotency key: reuse the same job on --host (required)`。保留同一主机的作用域及 --host 依赖；原文关于重试为何不能轮询的解释已有运行时错误（`taskmgr/taskmgr.py:179`），无需在帮助中展开。
+
+### 18. follow 不承诺一定等到终态
+
+位置：`taskmgr/cliparse.py:345`；退出条件见 `taskmgr/remote.py:435`。
+
+当前：`keep printing until the job ends`。
+
+建议：`follow log output`，与第 14 项远端 --follow 保持一致。实现遇到 final runner、终态或 unknown 都会结束跟随；unknown 仍可能有进程，因此不能将退出跟随等同于作业结束。
+
+### 19. 远端子页补一次必需全局参数位置
+
+位置：`taskmgr/remote.py:571`、`taskmgr/remote.py:574`（其余子解析器同理）。
+
+当前：顶层 usage 有 `--root ROOT`，但子页如 `usage: taskmgr-remote version [-h]` 完全不显示它；照抄后报 `the following arguments are required: --root`。
+
+建议：所有子页统一增加 epilog `Global options go before the command: taskmgr-remote --root DIR <command> [args].`。这是当前没有的必要调用约束，不与用途 description 重复。若以后 formatter 能在子页 usage 自动带上全局参数，则删除该 epilog，避免双份说明。--root 本身仍只在顶层定义。
 
 ## 建议后的命令树
 
