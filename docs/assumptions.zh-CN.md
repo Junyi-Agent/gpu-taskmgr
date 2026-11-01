@@ -25,8 +25,10 @@ up: "[[taskmgr/README.zh-CN]]"
 6. 对已结束的作业，`task status` 输出 `result.json`，并在顶层额外加上 `host`、`complete`、
    `retry_of` 和 `retried_as`。没有运行就结束的作业（在 queued 时被取消）输出一个合成的
    `{"schema_version", "_taskmgr": {...}}`。
-7. `--wait --timeout` 超时后输出当前状态对象，并附带 `error`（`wait_timeout`），退出码 2。
-   Ctrl-C 输出 `interrupted` 错误，退出码 2。
+7. `--wait --timeout S` 总共只等 S 秒：每次状态查询（以及在所有服务器上查找 jobid）最多只用剩余
+   的时间，所以不应答的服务器不会延长等待。超时后输出最后一次得到的状态对象（没有任何查询成功时为空），
+   并附带 `error`（`wait_timeout`），退出码 2。如果截止时刻之后返回的查询结果是终态（或
+   `unknown`），以该状态为准，退出码也按该状态。Ctrl-C 输出 `interrupted` 错误，退出码 2。
 8. 协议兼容指 `protocol_version` 整数相等（当前为 2；1 是基于 attempt 的旧协议）。对
    `taskmgr-remote` 子命令，ssh 退出码 255 视为连接失败。`task host add` 运行的 shell 脚本自己也
    可能以 255 退出，所以只有 stderr 看起来像 ssh 的错误（`ssh:`、`connection refused`、

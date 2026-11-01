@@ -52,7 +52,7 @@ from .textout import (
     set_color,
     warn,
 )
-from .transport import ConnError, Remote, load_machines, query_all
+from .transport import ConnError, Remote, load_machines, query_all, query_timeout
 from .transport import json_obj as _obj
 
 
@@ -363,18 +363,22 @@ def automatic_rerun(job: JsonDict) -> str | None:
     return None
 
 
-def locate(args: Args, servers: list[Server]) -> tuple[Server, JsonDict, bool]:
-    """Return (host, status, complete) per the table in Section 14.2."""
+def locate(
+    args: Args, servers: list[Server], timeout: float | None = None
+) -> tuple[Server, JsonDict, bool]:
+    """Return (host, status, complete) per the table in Section 14.2.
+
+    timeout: the limit of each status query (default query_timeout())."""
     if args.host:
         server = find_server(servers, args.host)
-        st = Remote(server).call(["status", args.jobid])
+        st = Remote(server).call(["status", args.jobid], timeout=timeout)
         if not st.get("found"):
             raise TaskmgrError(
                 "not_found", "job %s not found on %s" % (args.jobid, args.host), 2, args.host
             )
         return server, st, True
     servers, skipped = query_targets(servers, None)
-    results, errors = query_all(servers, ["status", args.jobid])
+    results, errors = query_all(servers, ["status", args.jobid], timeout)
     matches = [(s, results[s["name"]]) for s in servers if results.get(s["name"], {}).get("found")]
     if len(matches) > 1:
         hosts = [s["name"] for s, _ in matches]
@@ -418,6 +422,9 @@ def cmd_status(args: Args) -> CmdResult:
 
 
 def wait_status(args: Args, servers: list[Server]) -> CmdResult:
+    """--timeout is the total wait: each query gets at most the time left, so a server that
+    does not answer cannot extend it. A query that returns a terminal state (or unknown)
+    wins over an expired --timeout."""
     jobid: str = args.jobid  # changes when the wait follows an automatic re-run
     t_start = time.monotonic()
     deadline: float | None = t_start + args.timeout if args.timeout is not None else None
@@ -426,11 +433,14 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
     server: Server | None = None
     complete = True
     while True:
+        limit = query_timeout()
+        if deadline is not None:
+            limit = max(0.0, min(limit, deadline - time.monotonic()))
         try:
             if server is None:
-                server, st, complete = locate(args, servers)
+                server, st, complete = locate(args, servers, limit)
             else:
-                st = Remote(server).call(["status", jobid])
+                st = Remote(server).call(["status", jobid], timeout=limit)
                 if not st.get("found"):
                     raise TaskmgrError(
                         "not_found",
@@ -459,7 +469,8 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
                 out: dict[str, object] = render_status(host, st, complete) if st else {}
                 out["error"] = {
                     "code": "wait_timeout",
-                    "message": "--timeout expired while the server was unreachable: %s" % e.message,
+                    "message": "--timeout expired without an answer from the server: %s"
+                    % e.message,
                     "host": host,
                 }
                 return out, 2

@@ -346,16 +346,21 @@ def check_protocol(obj: JsonDict, host: str | None) -> None:
 
 
 def query_all(
-    servers: list[Server], args: Sequence[object]
+    servers: list[Server], args: Sequence[object], timeout: float | None = None
 ) -> tuple[dict[str, JsonDict], list[HostError]]:
-    """Call a JSON subcommand on every server in parallel: ({name: obj}, [errors])."""
+    """Call a JSON subcommand on every server in parallel: ({name: obj}, [errors]).
+
+    timeout: per server, default query_timeout()."""
     results: dict[str, JsonDict] = {}
     errors: list[HostError] = []
     if not servers:
         return results, errors
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(servers))) as ex:
         futs: dict[concurrent.futures.Future[JsonDict], str] = {
-            ex.submit(Remote(s).call, args, None, query_timeout()): s["name"] for s in servers
+            ex.submit(
+                Remote(s).call, args, None, query_timeout() if timeout is None else timeout
+            ): s["name"]
+            for s in servers
         }
         for f in concurrent.futures.as_completed(futs):
             name = futs[f]

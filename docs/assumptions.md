@@ -29,8 +29,12 @@ Other language: [[docs/assumptions.zh-CN]]
 6. `task status` of a finished job prints `result.json` with two added top-level keys,
    `host`, `complete`, `retry_of` and `retried_as`. A job that ended without running
    (cancelled while queued) prints a synthesized `{"schema_version", "_taskmgr": {...}}`.
-7. `--wait --timeout` expiry prints the current status object plus an `error`
-   (`wait_timeout`) and exits 2. Ctrl-C prints an `interrupted` error and exits 2.
+7. `--wait --timeout S` waits S seconds in total: each status query (and the lookup of the
+   jobid on every server) gets at most the time left, so a server that does not answer
+   cannot extend the wait. Expiry prints the last status object (empty when no query
+   answered) plus an `error` (`wait_timeout`) and exits 2. When a query that returns after
+   the deadline shows a terminal state (or `unknown`), that state wins and the exit code is
+   the one of that state. Ctrl-C prints an `interrupted` error and exits 2.
 8. Protocol compatibility means equal integer `protocol_version` (currently 2; 1 was the
    attempt-based protocol). ssh exit status 255 is treated as a connection failure for
    `taskmgr-remote` subcommands. For the shell scripts `task host add` runs, a script may

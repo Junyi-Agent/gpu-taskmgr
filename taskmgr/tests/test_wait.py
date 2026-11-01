@@ -2,6 +2,7 @@
 
 import os
 import threading
+import time
 
 from taskmgr.tests.helpers import OK_RESULT, Env
 
@@ -35,3 +36,23 @@ class WaitLookupTest(Env):
         rc, out, _ = self.task("status", j)
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "incomplete"))
         os.unlink(flag)
+
+
+class WaitDeadlineTest(Env):
+    """Review P1-6: --timeout is the total wait, also while a single query hangs."""
+
+    servers: tuple[str, ...] = ("s1", "s2")
+
+    def test_timeout_bounds_a_hanging_query(self) -> None:
+        j = self.submit(self.make_pkg(script="sleep 30"), host="s1")
+        # s2 accepts the connection and never answers (the default query timeout is 30 s).
+        self.server("s2")["remote_command"] = "sh -c 'exec sleep 60' sh"
+        self.write_machines()
+        for host in (["--host", "s2"], []):  # one server, and the lookup on every server
+            t0 = time.monotonic()
+            rc, out, err = self.task(
+                "status", j, *host, "--wait", "--poll-interval", "0.2", "--timeout", "1"
+            )
+            elapsed = time.monotonic() - t0
+            self.assertEqual((rc, self.get(out, "error", "code")), (2, "wait_timeout"), err)
+            self.assertLess(elapsed, 8, host)
