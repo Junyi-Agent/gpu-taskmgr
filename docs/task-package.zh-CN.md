@@ -136,7 +136,8 @@ up: "[[taskmgr/README.zh-CN]]"
 4. runner 设置：`CUDA_DEVICE_ORDER=PCI_BUS_ID`、`CUDA_VISIBLE_DEVICES=<按声明顺序的 UUID>`
    （`[]` 时为空字符串）、`TASKMGR_JOBID`、`TASKMGR_TASK_ID`、
    `TASKMGR_WORKDIR`、`TASKMGR_PROGRESS_FILE`、`TASKMGR_RESULT_FILE`，以及
-   `TASKMGR_GPU_BUSY_EXIT_CODE`（服务器的 `gpu_busy_exit_code`；为 `null` 时不设置）。
+   `TASKMGR_GPU_BUSY_EXIT_CODE`（服务器的 `gpu_busy_exit_code`；为 `null` 时删除这个变量，
+   `base_env` 设置了也删除）。
 
 stdin 接到 `/dev/null`；stdout/stderr 分别写入作业目录下的 `stdout.log` / `stderr.log`。
 

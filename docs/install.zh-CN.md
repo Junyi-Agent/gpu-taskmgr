@@ -237,6 +237,6 @@ systemd 之外（tmux、nohup）也能运行：`nohup ~/.taskmgr-remote/taskmgr-
 | `kill_confirm_seconds` | 10 | SIGKILL 后等待多久仍未确认停止就判定为 `unknown` |
 | `control_poll_seconds` | 2 | shim / 守护进程重新读取 `job.json` 检查取消请求的间隔；也是健康检查周期 |
 | `scheduler_poll_seconds` | 1 | 调度轮的间隔（假设：需求文档未规定） |
-| `gpu_busy_exit_code` | 75 | 表示"GPU 忙、没有做任何工作"的入口退出码：shim 重新启动入口命令，不结束作业；`null` 关闭此功能（75 此时就是普通的失败） |
+| `gpu_busy_exit_code` | 75 | 表示"GPU 忙、没有做任何工作"的入口退出码：shim 重新启动入口命令，不结束作业；`null` 关闭此功能（75 此时就是普通的失败）；其他取值必须是 1 到 255 的整数，否则服务器报 `bad_config` |
 | `gpu_retry_interval_seconds` | 1 | GPU 忙退出到重新启动之间的等待时间 |
 | `base_env` | `{}` | 覆盖或扩展入口进程的基础环境变量 |

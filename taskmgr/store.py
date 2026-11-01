@@ -99,6 +99,14 @@ class Store:
                         "bad_config",
                         "config.json: %s has the wrong type: %r" % (key, cfg.get(key)),
                     )
+            busy = cfg.get("gpu_busy_exit_code")
+            if busy is not None and not (isinstance(busy, int) and 1 <= busy <= 255):
+                # taskmgr_task.py exits 75 for any value outside 1-255.
+                raise TaskmgrError(
+                    "bad_config",
+                    "config.json: gpu_busy_exit_code must be null or an integer from 1 to 255: %r"
+                    % busy,
+                )
             self._config = cast(RemoteConfig, cast(object, cfg))
         return self._config
 

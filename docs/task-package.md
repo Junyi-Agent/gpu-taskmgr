@@ -149,8 +149,8 @@ instead of compiling on the GPU. The defaults describe an H200; `PRECOMPILE_ARCH
 4. Runner: `CUDA_DEVICE_ORDER=PCI_BUS_ID`, `CUDA_VISIBLE_DEVICES=<uuids in declaration
    order>` (empty string for `[]`), `TASKMGR_JOBID`, `TASKMGR_TASK_ID`,
    `TASKMGR_WORKDIR`, `TASKMGR_PROGRESS_FILE`, `TASKMGR_RESULT_FILE`, and
-   `TASKMGR_GPU_BUSY_EXIT_CODE` (the server's `gpu_busy_exit_code`; not set when it is
-   `null`).
+   `TASKMGR_GPU_BUSY_EXIT_CODE` (the server's `gpu_busy_exit_code`; when it is `null` the
+   variable is removed, also when `base_env` sets it).
 
 stdin is `/dev/null`; stdout/stderr go to `stdout.log` / `stderr.log` in the job directory.
 

@@ -51,8 +51,8 @@ def build_env(
 ) -> dict[str, str]:
     """Entry-process environment, built in the order of Section 3.2.
 
-    TASKMGR_GPU_BUSY_EXIT_CODE is the configured gpu_busy_exit_code; it is not set when
-    the server turned that convention off. A precompile runs without GPUs and without
+    TASKMGR_GPU_BUSY_EXIT_CODE is the configured gpu_busy_exit_code; it is removed (even
+    when base_env sets it) when the server turned that convention off. A precompile runs without GPUs and without
     that convention."""
     try:
         pw = pwd.getpwuid(os.getuid())
@@ -82,6 +82,8 @@ def build_env(
     )
     if busy_code is not None and not precompiling(job):
         env["TASKMGR_GPU_BUSY_EXIT_CODE"] = str(busy_code)
+    else:  # also when base_env sets it: the helper would exit with a code nobody waits for
+        _ = env.pop("TASKMGR_GPU_BUSY_EXIT_CODE", None)
     return env
 
 

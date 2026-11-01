@@ -224,6 +224,39 @@ class GpuBusyTest(Env):
         self.assertEqual(self.count(), 1)
         self.assertNotIn("gpu_busy_retries", self.runner(j))
 
+    def test_disabled_convention_unsets_the_variable_from_base_env(self) -> None:
+        # Review P1-4: with gpu_busy_exit_code null the entry must not see the variable,
+        # even when base_env sets it.
+        seen = os.path.join(self.tmp, "seen")
+        script = 'echo "${TASKMGR_GPU_BUSY_EXIT_CODE-unset}" >> %s; ' % seen + OK_RESULT
+        self.set_config(
+            gpu_busy_exit_code=None, base_env={"TASKMGR_GPU_BUSY_EXIT_CODE": "88", "A": "1"}
+        )
+        _ = self.start_daemon()
+        j = self.submit(self.make_pkg(script=script))
+        _ = self.wait_state(j, "succeeded")
+        self.stop_daemon()
+        self.set_config(gpu_busy_exit_code=80)
+        _ = self.start_daemon()
+        j = self.submit(self.make_pkg(script=script))
+        _ = self.wait_state(j, "succeeded")
+        self.assertEqual(self.read(seen).split(), ["unset", "80"])
+
+    def test_busy_code_outside_1_to_255_is_a_config_error(self) -> None:
+        # Review P1-5: taskmgr_task.py only accepts 1-255 and falls back to 75 otherwise.
+        from taskmgr.common import TaskmgrError
+        from taskmgr.store import Store
+
+        for good in (1, 75, 255, None):
+            self.set_config(gpu_busy_exit_code=good)
+            self.assertEqual(Store(self.root()).gpu_busy_exit_code, good)
+        for bad in (0, 256, 300, -1, True, "75"):
+            self.set_config(gpu_busy_exit_code=bad)
+            with self.assertRaises(TaskmgrError) as cm:
+                _ = Store(self.root()).config
+            self.assertEqual(cm.exception.code, "bad_config", bad)
+            self.assertIn("gpu_busy_exit_code", cm.exception.message)
+
     def test_gpu_busy_helper_exits_75(self) -> None:
         p = subprocess.run(
             [sys.executable, "-c", "import taskmgr_task as tt; tt.gpu_busy('held by pid 9')"],
