@@ -341,16 +341,22 @@ class Daemon:
 
     # -- main loop ------------------------------------------------------------
     def health_check(self) -> None:
-        """Detect dead shims while running; same rules as startup recovery."""
+        """Detect dead shims while running; same rules as startup recovery.
+
+        The jobs are listed under the state lock, then checked without it: the steps of
+        the check take the lock for their state changes, and the task's result.json is
+        read outside it, so a slow read does not hold up other commands.
+        """
         with self.store.state_lock():
-            for _, job in list(self.store.iter_jobs(active=True)):
-                jid = job["jobid"]
-                if (
-                    job["state"] in ("running", "stopping")
-                    and jid not in self.takeovers
-                    and jid not in self.given_up
-                ):
-                    self.guarded(jid, "health check", self.check_run)
+            jobids = [
+                job["jobid"]
+                for _, job in self.store.iter_jobs(active=True)
+                if job["state"] in ("running", "stopping")
+                and job["jobid"] not in self.takeovers
+                and job["jobid"] not in self.given_up
+            ]
+        for jid in jobids:
+            self.guarded(jid, "health check", self.check_run)
 
     def tick_takeovers(self) -> None:
         for jid, tk in list(self.takeovers.items()):

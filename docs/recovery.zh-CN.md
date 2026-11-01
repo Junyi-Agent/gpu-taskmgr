@@ -12,6 +12,8 @@ up: "[[taskmgr/README.zh-CN]]"
 守护进程启动时先获取 `daemon.lock`，删除 `incoming/` 中能加锁且超过 1 小时的条目，然后在状态锁
 下检查每个作业。对 shim 已死的 running/stopping 作业，同样的检查每隔 `control_poll_seconds` 也会
 执行一次（假设：需求文档只要求在启动时检查）；`task resolve` 对 unknown 作业执行同样的检查。
+定期检查在状态锁下列出作业，然后逐个检查时不持有状态锁：每次状态变更各自加锁，任务的
+`result.json` 在加锁之前读取。
 
 1. `runner.json` 已 final → 恢复对应终态（如果 `result.json._taskmgr` 缺失，从 `runner.json`
    重新生成）；状态为 `interrupted` → 第 5 步。

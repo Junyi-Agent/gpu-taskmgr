@@ -12,7 +12,9 @@ Other language: [[docs/recovery.zh-CN]]
 On start the daemon takes `daemon.lock`, removes `incoming/` entries it can lock that are
 older than 1 hour, then under the state lock checks every job. The same check runs every
 `control_poll_seconds` for running/stopping jobs whose shim is dead (assumption: the spec
-only requires it at startup), and `task resolve` runs it for unknown jobs.
+only requires it at startup), and `task resolve` runs it for unknown jobs. The periodic
+check lists the jobs under the state lock and checks each one without it: each state
+change takes the lock, and the task's `result.json` is read before the lock is taken.
 
 1. `runner.json` final → restore the terminal state (regenerate `result.json._taskmgr` from
    `runner.json` if missing); `interrupted` → step 5.

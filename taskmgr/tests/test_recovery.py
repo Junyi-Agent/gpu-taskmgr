@@ -9,6 +9,7 @@ from typing import cast
 
 from taskmgr import procutil
 from taskmgr.records import JsonDict, JsonValue, Runner
+from taskmgr.store import Store
 from taskmgr.tests.helpers import OK_RESULT, REPO, TASK, Env, kill_quiet, pid_alive
 
 
@@ -659,3 +660,52 @@ class RecoveryTest(Env):
         job = self.wait_state(u, "timed_out", timeout=20)
         self.assertEqual(job["state"], "timed_out")
         self.assert_no_rerun(u)
+
+    def test_health_check_reads_task_files_outside_the_state_lock(self) -> None:
+        # The daemon's periodic check of a dead shim's job reads the task's result.json;
+        # a slow read there must not hold up every other command (review P0-1).
+        from unittest import mock
+
+        from taskmgr import store as store_mod
+        from taskmgr.common import try_flock_fd
+        from taskmgr.daemon import Daemon
+
+        jobs: list[str] = []
+        # Same boot, nothing alive: exit_code_lost (finalize_run). Other boot: interrupted
+        # with a re-run (interrupt_run). Cancel requested, GPU-busy exit: end_cancelled.
+        cases: list[tuple[JsonDict, JsonDict]] = [
+            ({}, {}),
+            ({"boot_id": "boot-0"}, {}),
+            ({"exited": True, "return_code": 75, "signal": None}, {"cancel_requested": True}),
+        ]
+        for i, (runner_extra, job_extra) in enumerate(cases):
+            j, proc = self.make_unknown(
+                gpus=(i,),
+                state="running",
+                unconfirmed=False,
+                runner_extra=runner_extra,
+                job_extra=job_extra,
+            )
+            kill_quiet(proc.pid)
+            _ = proc.wait()
+            jobs.append(j)
+        st = Store(self.root())
+        held: list[bool] = []
+        real = store_mod.read_task_result
+
+        def spy(workdir: str, own: str | None = None) -> tuple[JsonDict, list[str], list[str]]:
+            fd = try_flock_fd(st.path("locks", "state.lock"))
+            held.append(fd is None)
+            if fd is not None:
+                os.close(fd)
+            return real(workdir, own)
+
+        with (
+            mock.patch.object(store_mod, "read_task_result", spy),
+            mock.patch.dict(os.environ, {"TASKMGR_BOOT_ID_FILE": self.boot_file}),
+        ):
+            Daemon(st).health_check()
+        self.assertEqual([self.job(j)["state"] for j in jobs], ["failed", "failed", "cancelled"])
+        self.assertEqual(self.get(self.job(jobs[1]), "error", "kind"), "interrupted")
+        self.assertGreaterEqual(len(held), 3)
+        self.assertNotIn(True, held)

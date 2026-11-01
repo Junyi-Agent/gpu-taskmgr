@@ -638,20 +638,28 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
     unknown job, which never re-runs (failed / interrupted; `task retry` re-runs it).
     Returns the interrupted job.
     """
+    # The task's result.json is read before the lock is taken (the directory of a job
+    # that is still active stays in in-progress/, so the path holds under the lock).
+    found = store.find_job_dir(jobid)
+    result = read_task_result(os.path.join(found, "workdir"), own=jobid) if found else None
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
         if _settled(job):
             return job
+        if found is None or os.path.abspath(found) != os.path.abspath(jobdir):
+            result = None  # read again under the lock
         stop_reason = job.get("stop_reason") if job["state"] in ("stopping", "unknown") else None
         runner = mark_run_interrupted(store, jobdir, jobid, reason)
         if job.get("cancel_requested"):
-            _ = end_without_result(store, jobdir, job, "cancelled", None, runner)
+            _ = end_without_result(store, jobdir, job, "cancelled", None, runner, result)
             return job
         if stop_reason == "timeout":
-            _ = end_without_result(store, jobdir, job, "timed_out", None, runner)
+            _ = end_without_result(store, jobdir, job, "timed_out", None, runner, result)
             return job
         if reason == OPERATOR_MARKED_STOPPED:
-            _ = end_without_result(store, jobdir, job, "failed", OPERATOR_STOPPED_ERROR, runner)
+            _ = end_without_result(
+                store, jobdir, job, "failed", OPERATOR_STOPPED_ERROR, runner, result
+            )
             return job
         # A crash after the clone was renamed into queue/ but before this job was saved
         # leaves the clone behind; reuse it instead of cloning twice. Only this step
@@ -674,7 +682,7 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
         else:
             _ = clone_job(store, jobdir, job, automatic=True)
             jobdir = cast(str, store.find_job_dir(jobid))
-        _ = end_without_result(store, jobdir, job, "failed", error, runner)
+        _ = end_without_result(store, jobdir, job, "failed", error, runner, result)
         return job
 
 
@@ -836,14 +844,19 @@ def end_without_result(
     state: str,
     error: ErrorInfo | None,
     runner: Runner | None,
+    result: tuple[JsonDict, list[str], list[str]] | None = None,
 ) -> str:
     """Move a job to a terminal state without a normal exit of its run. Needs the lock.
 
     With a runner (the job was dispatched), result.json gets a `_taskmgr` block; a job
-    that never ran (runner None) has no run files and gets none.
+    that never ran (runner None) has no run files and gets none. `result` is what
+    read_task_result returned for the workdir before the lock was taken; without it
+    result.json is read here.
     """
     if runner is not None:
-        business, _, w = read_task_result(os.path.join(jobdir, "workdir"), own=job["jobid"])
+        business, _, w = result or read_task_result(
+            os.path.join(jobdir, "workdir"), own=job["jobid"]
+        )
         meta = build_meta(
             store, job, runner, state, [], error, list(runner.get("warnings", [])) + w
         )

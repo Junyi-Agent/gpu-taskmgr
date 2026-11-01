@@ -265,19 +265,21 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
             or not store.ended_gpu_busy(runner)
         ):
             return None
-        if job.get("cancel_requested"):
-            return end_cancelled(store, jobid)
-        # The workdir stays: the next dispatch of this same job reuses it (GPU contract).
-        # job.json first: a crash before the rename leaves a queued job whose runner.json
-        # shows the busy exit, which dispatch recognizes and sets aside as well.
-        job["state"] = "queued"
-        job["dispatched_at"] = None
-        job["stop_reason"] = None
-        job["error"] = None
-        _ = job.pop("pending_reason", None)
-        jobdir = store.save_job(jobdir, job)
-        _ = store.set_runner_aside(jobdir)
-        return job
+        if not job.get("cancel_requested"):
+            # The workdir stays: the next dispatch of this same job reuses it (GPU contract).
+            # job.json first: a crash before the rename leaves a queued job whose runner.json
+            # shows the busy exit, which dispatch recognizes and sets aside as well.
+            job["state"] = "queued"
+            job["dispatched_at"] = None
+            job["stop_reason"] = None
+            job["error"] = None
+            _ = job.pop("pending_reason", None)
+            jobdir = store.save_job(jobdir, job)
+            _ = store.set_runner_aside(jobdir)
+            return job
+    # Outside the lock: finalizing reads the task's result.json. end_cancelled re-checks
+    # the state under the lock.
+    return end_cancelled(store, jobid)
 
 
 def finish_stopped(
@@ -320,7 +322,9 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
     """
     jobdir, job = store.load_job(jobid)
     state = job["state"]
-    if state == "queued" or state in TERMINAL_STATES:
+    # Without resolve an unknown job is left alone (the health check lists jobs under
+    # the state lock but checks them without it, so the state may have changed).
+    if state == "queued" or state in TERMINAL_STATES or (state == "unknown" and not resolve):
         return {"decision": "none", "state": state}
     runner, err = store.read_runner(jobdir)
     if runner is None:
