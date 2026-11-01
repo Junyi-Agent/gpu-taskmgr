@@ -12,7 +12,7 @@ import time
 from typing import cast
 
 from . import gpu, procutil
-from .common import TaskmgrError, utcnow_iso
+from .common import PHASE_GPU, PHASE_PRECOMPILE, TaskmgrError, utcnow_iso
 from .monitor import (
     STOP_OUTCOME,
     GroupStopper,
@@ -23,7 +23,15 @@ from .monitor import (
     set_stopping,
 )
 from .records import ErrorInfo, Job, RemoteConfig, Runner, TaskEnvironment, TaskSpec
-from .store import Store, end_without_result, finalize_run, load_task
+from .store import (
+    Store,
+    end_without_result,
+    finalize_run,
+    load_task,
+    precompiling,
+    run_command,
+    run_gpus,
+)
 
 
 def log(msg: str) -> None:
@@ -44,7 +52,8 @@ def build_env(
     """Entry-process environment, built in the order of Section 3.2.
 
     TASKMGR_GPU_BUSY_EXIT_CODE is the configured gpu_busy_exit_code; it is not set when
-    the server turned that convention off."""
+    the server turned that convention off. A precompile runs without GPUs and without
+    that convention."""
     try:
         pw = pwd.getpwuid(os.getuid())
         home, user = pw.pw_dir, pw.pw_name
@@ -63,7 +72,7 @@ def build_env(
     env.update(
         {
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-            "CUDA_VISIBLE_DEVICES": ",".join(g["uuid"] for g in job.get("gpus", [])),
+            "CUDA_VISIBLE_DEVICES": ",".join(g["uuid"] for g in run_gpus(job)),
             "TASKMGR_JOBID": job["jobid"],
             "TASKMGR_TASK_ID": job["task_id"],
             "TASKMGR_WORKDIR": workdir,
@@ -71,7 +80,7 @@ def build_env(
             "TASKMGR_RESULT_FILE": os.path.join(workdir, "result.json"),
         }
     )
-    if busy_code is not None:
+    if busy_code is not None and not precompiling(job):
         env["TASKMGR_GPU_BUSY_EXIT_CODE"] = str(busy_code)
     return env
 
@@ -101,10 +110,10 @@ def prestart_checks(
     for p in ([venv] if venv else []) + list(required_paths):
         if not os.path.exists(p):
             errors.append("required path does not exist: %s" % p)
-    path, err = resolve_entry(task["entry"]["argv"][0], workdir, env.get("PATH", ""))
+    path, err = resolve_entry(run_command(task, job)[0][0], workdir, env.get("PATH", ""))
     if err:
         errors.append(err)
-    uuids = [g["uuid"] for g in job.get("gpus", [])]
+    uuids = [g["uuid"] for g in run_gpus(job)]
     if uuids:
         try:
             visible = {u for _, u in gpu.query_gpus()}
@@ -152,8 +161,9 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
     )
     store.write_runner(jobdir, runner)
 
-    # A job queued again after a "GPU busy" exit (its old run record was set aside as
-    # runner.prev-N.json) keeps its workdir: under the GPU contract that run did no work.
+    # A job queued again keeps its workdir (its old run record was set aside as
+    # runner.prev-N.json): under the GPU contract a "GPU busy" run did no work, and the
+    # run after a precompile needs what the precompile built there.
     requeued = any(n.startswith("runner.prev-") for n in os.listdir(jobdir))
     workdir = os.path.join(jobdir, "workdir")
     if not (requeued and os.path.isdir(workdir)):
@@ -171,10 +181,13 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
     assert path is not None  # resolve_entry succeeded: no pre-start errors
     separator: str | None = None
     if requeued:
-        separator = "--- taskmgr: launch after requeue (GPU busy) ---"
+        separator = "--- taskmgr: launch after requeue (%s) ---" % (
+            "precompile done" if job.get("phase") == PHASE_GPU else "GPU busy"
+        )
+    argv, timeout = run_command(task, job)
     while True:
-        pid = launch(store, jobdir, runner, task, path, env, workdir, separator)
-        if supervise(store, jobid, jobdir, runner, pid, task, cfg) != "gpu_busy":
+        pid = launch(store, jobdir, runner, argv, path, env, workdir, separator)
+        if supervise(store, jobid, jobdir, runner, pid, timeout, cfg) != "gpu_busy":
             return 0
         if not wait_for_gpu(store, jobid, jobdir, runner, cfg):
             return 0
@@ -206,7 +219,7 @@ def launch(
     store: Store,
     jobdir: str,
     runner: Runner,
-    task: TaskSpec,
+    argv: list[str],
     path: str,
     env: dict[str, str],
     workdir: str,
@@ -218,7 +231,6 @@ def launch(
     Returns the leader pid. `separator` is appended as a line to both logs first (logs are
     appended across relaunches, never truncated).
     """
-    argv = task["entry"]["argv"]
     out_fd = os.open(
         os.path.join(jobdir, "stdout.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
     )
@@ -354,7 +366,7 @@ def supervise(
     jobdir: str,
     runner: Runner,
     pid: int,
-    task: TaskSpec,
+    timeout: float | None,
     cfg: RemoteConfig,
 ) -> str:
     """Supervise one launch until its process group is gone.
@@ -364,9 +376,9 @@ def supervise(
     job was finalized or became unknown). timeout_seconds counts from this launch's start.
     """
     t0 = time.monotonic()
-    timeout = task.get("timeout_seconds")
     poll = float(cfg["control_poll_seconds"])
-    busy_code = store.gpu_busy_exit_code
+    # A precompile has no GPU, so its exit with that code is an ordinary failure.
+    busy_code = None if runner.get("phase") == PHASE_PRECOMPILE else store.gpu_busy_exit_code
     retry_interval = float(cfg["gpu_retry_interval_seconds"])
     grace, confirm = cfg["stop_grace_seconds"], cfg["kill_confirm_seconds"]
     # cast: reap() (a closure) sets exit_status, so the checker must not narrow it to None.
@@ -434,8 +446,12 @@ def supervise(
                     log("stopping process group %d: %s" % (pid, stop_reason))
                 _ = set_stopping(store, jobid, stop_reason)
                 stopper = GroupStopper(pid, min_start, jobid, grace, confirm, reap)
-                stopper.start()
+                stopper.start(stop_reason)
         else:
+            now = time.monotonic()
+            if now - last_poll >= poll:
+                last_poll = now
+                stopper.honor_cancel(store.load_job(jobid)[1])
             r = stopper.step()
             if r == "stopped":
                 break

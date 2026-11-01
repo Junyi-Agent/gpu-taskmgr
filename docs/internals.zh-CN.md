@@ -59,8 +59,9 @@ up: "[[taskmgr/README.zh-CN]]"
 
 `auto_restarts` 是重跑链上的自动重跑次数（提交或手动重试的作业为 0，自动重跑的作业为前一个作业的
 值 + 1）。`dispatched_at` 在派发时写入；没有它的作业从未运行，也没有运行文件。入口进程以
-`gpu_busy_exit_code` 退出、shim 等待重新启动它期间（见下文 Shim），设置 `pending_reason`；某次重新
-启动真正运行起来或作业结束时删除。
+`gpu_busy_exit_code` 退出、shim 等待重新启动它期间（见下文 Shim），以及预编译成功后，设置
+`pending_reason`；某次运行真正开始或作业结束时删除。`phase` 只在 `task.json` 有 `precompile` 时存在，
+先是 `precompile`，然后是 `gpu`（见 [[docs/task-package.zh-CN]]）。`runner.json` 会复制它。
 
 `runner.json`：
 
@@ -92,9 +93,11 @@ up: "[[taskmgr/README.zh-CN]]"
 
 ```
 queued --派发--> running --退出--> succeeded | failed | invalid_result
-running --以 gpu_busy_exit_code 退出--> running（shim 等待后重新启动；显示 "pending (gpu busy)"）
+running --以 gpu_busy_exit_code 退出--> running（shim 等待后重新启动；显示 "pending-gpu"）
 running --shim 在 GPU 忙退出和重新启动之间死亡--> queued（同一个 jobid）
 queued --取消--> cancelled
+running（precompile 阶段）--退出码 0--> queued（gpu 阶段；jobid、enqueue_seq、工作目录不变）
+running（precompile 阶段）--其他退出--> failed(precompile)
 running --shim fork/exec 失败--> failed(shim_start_failed)
 running --启动前检查失败--> failed(setup)
 running --shim 在启动入口命令之前出错--> failed(shim_error)（已请求取消时为 cancelled）
@@ -111,9 +114,11 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 `job.json` 为准，守护进程启动时会把目录移到正确位置。运行状态（`runner.json`）final 后是某个终态
 或 `interrupted`；shim 等待重新启动期间是 `waiting_gpu`。
 
-`task jobs` 把设置了 `pending_reason` 的 running 作业的 STATE 显示为 `pending (gpu busy)`（黄色）。
-这只是显示，状态机里没有这个状态。作业等待期间继续占用它的 GPU，所以之后要用这些 GPU 的作业仍排
-在它后面（FIFO）。
+`task jobs` 把设置了 `pending_reason` 的 running 作业和 `gpu` 阶段的 queued 作业的 STATE 显示为
+`pending-gpu`（黄色），把 `precompile` 阶段的 running 作业显示为 `precompiling`（青色）。这些只是显示，
+状态机里没有这些状态。running 作业等待期间继续占用它的 GPU，所以之后要用这些 GPU 的作业仍排在它
+后面（FIFO）。`precompile` 阶段的作业不占用也不预留 GPU：调度器把它当作 `gpus: []` 的作业，受
+`max_cpu_jobs` 限制。到了 `gpu` 阶段，它和其他 queued 作业一样按 `enqueue_seq` 调度。
 
 ### 调度
 
@@ -158,7 +163,8 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 
 ### 停止流程
 
-向进程组发送 SIGTERM → 等待 `stop_grace_seconds` → SIGKILL → 等待 `kill_confirm_seconds`。只有
+向进程组发送 SIGTERM → 等待 `stop_grace_seconds` → SIGKILL → 等待 `kill_confirm_seconds`。取消时
+直接发送 SIGKILL；在超时或残留进程清理的等待期内到达的取消请求会结束等待，停止原因不变。只有
 确认进程组中没有存活进程，才释放 GPU 并进入终态；否则作业变为 `unknown`，继续占用 GPU。进程组
 成员通过 `/proc` 判断：pgid 等于记录值，且启动时间不早于组长的启动时间；僵尸进程视为已退出。
 此外，`/proc/<pid>/environ` 中的 `TASKMGR_JOBID` 必须是本作业的：进程组全部退出后，它的 pgid

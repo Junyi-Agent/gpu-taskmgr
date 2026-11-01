@@ -14,6 +14,8 @@ from . import procutil
 from .common import (
     CODE_ROOT,
     GPU_HOLDING_STATES,
+    PHASE_GPU,
+    PHASE_PRECOMPILE,
     TERMINAL_STATES,
     try_flock_fd,
     utcnow_iso,
@@ -27,6 +29,7 @@ from .store import (
     has_run,
     remove_tree,
     result_complete,
+    run_gpus,
 )
 
 INCOMING_MAX_AGE = 3600
@@ -169,8 +172,8 @@ class Daemon:
             cpu_active = 0
             for _, job in jobs:
                 if job["state"] in GPU_HOLDING_STATES:
-                    if job.get("gpus"):
-                        for g in job["gpus"]:
+                    if run_gpus(job):
+                        for g in run_gpus(job):
                             held[g["uuid"]] = job["state"]
                     else:
                         cpu_active += 1
@@ -181,7 +184,7 @@ class Daemon:
             reserved: set[str] = set()
             max_cpu = cfg["max_cpu_jobs"]
             for jobdir, job in queued:
-                uuids = [g["uuid"] for g in job.get("gpus", [])]
+                uuids = [g["uuid"] for g in run_gpus(job)]
                 if not uuids:
                     if (max_cpu is None or cpu_active < int(max_cpu)) and self.dispatch(
                         jobdir, job
@@ -209,9 +212,15 @@ class Daemon:
         if job["state"] != "queued":
             return None
         old, _ = st.read_runner(jobdir)
-        if old is not None and st.ended_gpu_busy(old):
+        ended_precompile = (
+            old is not None
+            and old.get("phase") == PHASE_PRECOMPILE
+            and job.get("phase") == PHASE_GPU
+        )
+        if old is not None and (st.ended_gpu_busy(old) or ended_precompile):
             # A crash while a "GPU busy" job was being queued again (monitor.requeue_gpu_busy)
-            # left its last run record behind; that run did no work.
+            # left its last run record behind; that run did no work. The same for a job
+            # queued for its GPUs after its precompile (store.queue_for_gpus).
             _ = st.set_runner_aside(jobdir)
             old = None
         # A crash between writing runner.json and job.json leaves a queued job with a
@@ -231,16 +240,19 @@ class Daemon:
             "schema_version": 1,
             "jobid": job["jobid"],
             "status": "dispatched",
-            "gpus": job.get("gpus", []),
+            "gpus": run_gpus(job),
             "dispatched_at": utcnow_iso(),
             "final": False,
             "exited": False,
         }
+        if "phase" in job:
+            runner["phase"] = job["phase"]
         st.write_runner(jobdir, runner)
         job["state"] = "running"
         job["dispatched_at"] = runner["dispatched_at"]
         job["stop_reason"] = None
         job["error"] = None
+        _ = job.pop("pending_reason", None)
         jobdir = st.save_job(jobdir, job)
         err = self.spawn_shim(job["jobid"], jobdir)
         if err:
@@ -259,7 +271,7 @@ class Daemon:
             failure: ErrorInfo = {"kind": "shim_start_failed", "message": err}
             _ = end_without_result(st, jobdir, job, "failed", failure, runner)
             return job["state"]
-        log("dispatched %s gpus=%s" % (job["jobid"], [g["uuid"] for g in job.get("gpus", [])]))
+        log("dispatched %s gpus=%s" % (job["jobid"], [g["uuid"] for g in run_gpus(job)]))
         return job["state"]
 
     def spawn_shim(self, jobid: str, jobdir: str) -> str | None:

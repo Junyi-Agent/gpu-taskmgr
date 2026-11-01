@@ -164,7 +164,7 @@ def gpu_busy(message: str = "") -> NoReturn:
     """Exit with gpu_busy_exit_code(): the GPU is held by someone else and no work was done.
 
     taskmgr starts the entry again after a short wait (the job stays running, shown as
-    "pending (gpu busy)"). Call it before producing any side effects.
+    "pending-gpu"). Call it before producing any side effects.
     """
     code = gpu_busy_exit_code()
     _ = sys.stderr.write(

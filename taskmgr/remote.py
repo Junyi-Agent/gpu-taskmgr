@@ -43,6 +43,7 @@ from .store import (
     end_without_result,
     enqueue_staged,
     has_run,
+    initial_phase,
     job_summary,
     make_read_only,
     mark_run_interrupted,
@@ -136,7 +137,15 @@ def cmd_receive(store: Store, args: Args) -> int:
             if ack:
                 return emit(ack)
             jobid = store.new_jobid()
-            job = new_job_record(jobid, task["task_id"], store.next_seq(), chash, key, gpus)
+            job = new_job_record(
+                jobid,
+                task["task_id"],
+                store.next_seq(),
+                chash,
+                key,
+                gpus,
+                phase=initial_phase(task),
+            )
             # The key mapping is written first; a mapping whose job does not exist is stale.
             atomic_write_json(
                 store.path("submission-keys", key + ".json"),

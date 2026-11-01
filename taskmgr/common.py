@@ -41,6 +41,10 @@ JOBID_RE = re.compile(r"^[0-9a-f]{16}\Z")
 TERMINAL_STATES = ("succeeded", "failed", "invalid_result", "cancelled", "timed_out")
 GPU_HOLDING_STATES = ("running", "stopping", "unknown")
 ALL_STATES = ("queued",) + GPU_HOLDING_STATES + TERMINAL_STATES
+# job.json `phase` of a job whose task.json has `precompile`: first the precompile command
+# without GPUs, then the entry on the job's GPUs. A job without `precompile` has no phase.
+PHASE_PRECOMPILE = "precompile"
+PHASE_GPU = "gpu"
 
 STATE_DIRS: dict[str, str] = {
     "queued": "queue",

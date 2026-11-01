@@ -316,6 +316,24 @@ class ExecTest(Env):
         st = self.ok("status", q, "--host", "s1")
         self.assertEqual(self.get(st, "_taskmgr", "status"), "cancelled")
 
+    def test_cancel_kills_without_the_grace_period(self) -> None:
+        self.set_config(stop_grace_seconds=60)
+        j = self.submit(self.make_pkg(script="trap '' TERM; while true; do sleep 0.1; done"))
+        _ = self.wait_runner(j, "pgid")
+        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.wait_state(j, "cancelled", timeout=10)
+        self.assertEqual(self.runner(j).get("signal"), 9)
+
+    def test_cancel_cuts_the_grace_period_of_a_timeout(self) -> None:
+        self.set_config(stop_grace_seconds=60)
+        j = self.submit(
+            self.make_pkg(script="trap '' TERM; while true; do sleep 0.1; done", timeout=1)
+        )
+        _ = self.wait_state(j, "stopping", timeout=10)
+        _ = self.ok("cancel", j, "--host", "s1")
+        job = self.wait_state(j, "timed_out", timeout=10)
+        self.assertEqual(job["stop_reason"], "timeout")
+
     def test_leftover_processes_are_cleaned(self) -> None:
         marker = os.path.join(self.tmp, "child.pid")
         j = self.submit(self.make_pkg(script="sleep 300 & echo $! > %s; exit 0" % marker))

@@ -308,6 +308,7 @@ def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, o
         "task_id": j["task_id"],
         "state": j["state"],
         "pending_reason": j.get("pending_reason"),
+        "phase": j.get("phase"),
         "cancel_requested": j["cancel_requested"],
         "run": st.get("run"),
         "progress": st.get("progress"),

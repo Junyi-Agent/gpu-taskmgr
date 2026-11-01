@@ -20,7 +20,7 @@ up: "[[taskmgr/README.zh-CN]]"
 4. submission key 映射在重命名进 `queue/` 之前写入，两者都在状态锁下进行。如果映射指向的作业
    不存在（两步之间发生崩溃），该映射视为过期并被覆盖。
 5. 对 running 作业执行 `task cancel` 只设置 `cancel_requested`；shim（或接管期间的守护进程）在
-   `control_poll_seconds` 内把它转为 `stopping`。入口进程退出之后才到达的取消请求不改变其结果。
+   `control_poll_seconds` 内把它转为 `stopping` 并直接发送 SIGKILL，没有宽限期，入口进程没有机会做清理。入口进程退出之后才到达的取消请求不改变其结果。
    入口启动前就被发现的取消请求，按 running → stopping → cancelled 结束，入口命令不会执行。
 6. 对已结束的作业，`task status` 输出 `result.json`，并在顶层额外加上 `host`、`complete`、
    `retry_of` 和 `retried_as`。没有运行就结束的作业（在 queued 时被取消）输出一个合成的
@@ -58,7 +58,7 @@ up: "[[taskmgr/README.zh-CN]]"
     `runner.json`（不应出现），它变为 `unknown`，`error.kind = "record_incomplete"`，不派发。
 19. GPU 忙（desc-2 D17）：某次重新启动持续运行满 `gpu_retry_interval_seconds` 后才删除
     `pending_reason`，而不是一启动就删除，这样反复退出 75 的作业不会在 `running` 和
-    `pending (gpu busy)` 之间来回跳。退出 75 后清理残留进程留下的 `leftover_processes` 警告会保留到
+    `pending-gpu` 之间来回跳。退出 75 后清理残留进程留下的 `leftover_processes` 警告会保留到
     最终结果。重新启动时不再执行启动前检查。shim 在退出 75 与重新启动之间死亡时，`runner.json`
     保留为 `runner.prev-N.json`。`unknown` 作业即使是退出 75 也不会重新排队。`CUDA_VISIBLE_DEVICES`
     未设置时（在 taskmgr 之外运行），`claim_gpu()` 和为空时一样什么也不做。

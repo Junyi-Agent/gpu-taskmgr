@@ -98,6 +98,7 @@ class PackageTest(Env):
         with open(os.path.join(target, "task.json")) as f:
             t = self.obj(cast(JsonValue, json.load(f)))
         t["gpus"] = []
+        del t["precompile"]
         t["environment"] = {"required_paths": []}
         t["result"] = {"required_outputs": ["example"]}
         with open(os.path.join(target, "task.json"), "w") as f:

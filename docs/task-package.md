@@ -15,6 +15,7 @@ Other language: [[docs/task-package.zh-CN]]
 | `TASK.md` | yes | for humans/agents; taskmgr never reads it |
 | `progress.json` | yes | initial progress |
 | entry script, code, inputs | as needed | |
+| `precompile.py`, `cutecache.py` | template | compile CuTe DSL kernels on the CPU and load them on the GPU (see Precompile); delete them if the task compiles nothing |
 | `taskmgr_task.py` | template | stdlib helper: `write_progress`, `update_progress`, `write_result`, `update_outputs` (flock + atomic replace); `claim_gpu`, `gpu_busy` (GPU contract below) |
 
 `task.json` (unknown extra keys are allowed and ignored):
@@ -37,6 +38,8 @@ Other language: [[docs/task-package.zh-CN]]
   job's workdir, must be an executable file in the package); otherwise a command name
   looked up on the entry process PATH on the remote side. No shell is involved; use
   `["bash", "-c", "..."]`.
+- `precompile` (optional): `{"argv": [...], "timeout_seconds": N}`, see Precompile.
+  `argv` follows the rules of `entry.argv`; `timeout_seconds` is optional.
 - `gpus`: nvidia-smi indices (PCI bus order) or full `GPU-...` UUIDs; `[]` = no GPU. MIG
   UUIDs and duplicates (also an index and a UUID naming the same GPU) are rejected.
 - `env` names match `^[A-Za-z_][A-Za-z0-9_]*$`; values are strings. `env` may not set
@@ -64,7 +67,7 @@ Result is valid when it is a JSON object with an `outputs` object containing eve
 is kept as `result.json.corrupt` and reported in `validation_errors`; a task-written
 `_taskmgr` is dropped with warning `task_wrote_taskmgr`.
 
-`error.kind` values: `setup`, `shim_start_failed`, `shim_error` (the shim failed before
+`error.kind` values: `setup`, `precompile` (the precompile command failed), `shim_start_failed`, `shim_error` (the shim failed before
 it started the entry; the job ends `failed` and is not re-run), `exit_code`, `signal`,
 `exit_code_lost`, `interrupted` (the run was cut off and an automatic re-run was created),
 `too_many_interruptions`, `operator_marked_stopped`, `stop_unconfirmed` (job in unknown),
@@ -97,6 +100,37 @@ after the upload.
   overwritten. `task validate` lists every unsafe entry; the server stops at the first
   (`unsafe_package`).
 
+## Precompile
+
+A job holds its GPUs while its entry runs, and on exclusive GPUs nothing else can use them.
+Compile before that. With `precompile` in `task.json`:
+
+```json
+"precompile": {"argv": ["python3", "precompile.py", "kernels.py"], "timeout_seconds": 1800}
+```
+
+| STATE shown | job state | What happens | GPUs |
+| --- | --- | --- | --- |
+| `queued` | queued | waits for a CPU slot (`max_cpu_jobs`) | none |
+| `precompiling` | running | the precompile command runs | none, `CUDA_VISIBLE_DEVICES=""` |
+| `pending-gpu` | queued | waits for its GPUs at its original queue position | none |
+| `running` | running | the entry runs | yes |
+
+- Both commands run in the same workdir, so the entry finds what the precompile built.
+- Exit 0 moves the job on. Any other exit, including 75, fails it with `error.kind =
+  "precompile"` and the entry never runs. `TASKMGR_GPU_BUSY_EXIT_CODE` is not set.
+- `precompile.timeout_seconds` limits the precompile; `timeout_seconds` limits only the entry.
+  The time in `pending-gpu` counts toward neither.
+- `task cancel` works in every phase. `task logs` shows the output of both commands.
+- A retry or an automatic re-run is a new job with an empty workdir: it precompiles again.
+
+`task init` adds `precompile.py` and `cutecache.py`. `precompile.py` runs the file's
+`_*compile_all()` steps on the CPU and stores the kernels in `kernel-cache/` in the workdir
+(`CUTECACHE_DIR` overrides it). The entry loads them with
+`cutecache.load_precompiled("kernels.py")`; a kernel that was not precompiled fails the run
+instead of compiling on the GPU. The defaults describe an H200; `PRECOMPILE_ARCH`,
+`PRECOMPILE_QUACK_ARCH`, `PRECOMPILE_N_SM` and `PRECOMPILE_CAPABILITY` change them.
+
 ## Entry process environment
 
 1. `PATH=/usr/local/bin:/usr/bin:/bin`, `HOME`, `USER` (of the daemon user), `LANG=C.UTF-8`,
@@ -124,7 +158,7 @@ for this. Instead the task reports it:
   process means "I could not get the GPU and did no work; start me again later". The
   shim then waits `gpu_retry_interval_seconds` (default 1) and starts the entry again
   in the same workdir (logs are appended, with a separator line). The job
-  stays `running`, keeps its GPUs, and `task jobs` shows it as `pending (gpu busy)`.
+  stays `running`, keeps its GPUs, and `task jobs` shows it as `pending-gpu`.
   Waiting does not count toward `timeout_seconds`; each launch is timed from its own start.
   `task cancel` works while it waits.
 - Exit 75 before producing side effects (files outside the workdir, results). The workdir

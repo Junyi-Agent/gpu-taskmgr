@@ -22,7 +22,8 @@ Other language: [[docs/assumptions.zh-CN]]
    state lock. A mapping whose job does not exist (crash in between) is treated as stale
    and overwritten.
 5. `task cancel` on a running job only sets `cancel_requested`; the shim (or the daemon
-   during takeover) moves it to `stopping` within `control_poll_seconds`. A cancel that
+   during takeover) moves it to `stopping` within `control_poll_seconds` and
+   sends SIGKILL with no grace period, so the entry gets no chance to clean up. A cancel that
    arrives after the entry has already exited does not change its outcome. A cancel seen
    before the entry starts goes running → stopping → cancelled without running it.
 6. `task status` of a finished job prints `result.json` with two added top-level keys,
@@ -69,7 +70,7 @@ Other language: [[docs/assumptions.zh-CN]]
     `error.kind = "record_incomplete"` instead of being dispatched.
 19. GPU busy (desc-2 D17): `pending_reason` is removed once a relaunch has kept running
     for `gpu_retry_interval_seconds`, not at the moment it starts, so a job that keeps
-    getting exit 75 does not flicker between `running` and `pending (gpu busy)`. A
+    getting exit 75 does not flicker between `running` and `pending-gpu`. A
     leftover cleanup after exit 75 keeps the `leftover_processes` warning for the final
     result. The pre-start checks are not repeated for a relaunch. When the shim died
     between exit 75 and the relaunch, `runner.json` is kept as `runner.prev-N.json`. An

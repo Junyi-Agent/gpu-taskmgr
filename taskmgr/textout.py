@@ -23,8 +23,11 @@ MAGENTA = "35"
 CYAN = "36"
 GRAY = "90"
 
-# STATE shown for a running job whose shim waits to relaunch after a "GPU busy" exit.
-GPU_BUSY_STATE = "pending (gpu busy)"
+# STATE shown for a job that waits for its GPU: queued after its precompile, or running
+# while its shim waits to relaunch after a "GPU busy" exit.
+PENDING_GPU_STATE = "pending-gpu"
+# STATE shown for a running job whose run is its precompile command.
+PRECOMPILING_STATE = "precompiling"
 
 # Color per job state; anything not listed stays uncolored.
 STATE_COLORS = {
@@ -37,7 +40,8 @@ STATE_COLORS = {
     "invalid_result": RED,
     "timed_out": RED,
     "cancelled": GRAY,
-    GPU_BUSY_STATE: YELLOW,  # like queued: waiting for the GPU
+    PENDING_GPU_STATE: YELLOW,  # like queued: waiting for the GPU
+    PRECOMPILING_STATE: CYAN,  # like running, on the CPU
 }
 
 

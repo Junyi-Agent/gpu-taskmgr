@@ -50,6 +50,7 @@ max-line-length = 150  # E501 threshold; ruff format still wraps at line-length 
 pythonVersion = "3.10"
 pythonPlatform = "Linux"  # the remote side relies on /proc, fork, setsid
 include = ["taskmgr"]
+ignore = ["taskmgr/template/cutecache.py", "taskmgr/template/precompile.py"]  # need cutlass, quack, torch
 typeCheckingMode = "all"
 
 # Task packages run `python3 run.py` from their own directory, so `import taskmgr_task`

@@ -231,9 +231,9 @@ systemd 之外（tmux、nohup）也能运行：`nohup ~/.taskmgr-remote/taskmgr-
 | 键 | 默认值 | 含义 |
 | --- | --- | --- |
 | `max_package_bytes` | 1073741824 | 接收的任务包解压后的最大总大小；上传数据超过它加 1/16 再加 1 MiB 时，在接收完之前就被拒绝 |
-| `max_cpu_jobs` | `null`（不限制） | `gpus: []` 的作业最大并发数（统计 running/stopping/unknown） |
+| `max_cpu_jobs` | `null`（不限制） | `gpus: []` 的作业和预编译的最大并发数（统计 running/stopping/unknown） |
 | `max_auto_restarts` | 2 | 因重启或入口命令从未启动而中断后，最多自动重跑的次数 |
-| `stop_grace_seconds` | 30 | 停止流程中从 SIGTERM 到 SIGKILL 的等待时间 |
+| `stop_grace_seconds` | 30 | 停止流程中从 SIGTERM 到 SIGKILL 的等待时间（用于超时和残留进程清理；取消时直接发送 SIGKILL） |
 | `kill_confirm_seconds` | 10 | SIGKILL 后等待多久仍未确认停止就判定为 `unknown` |
 | `control_poll_seconds` | 2 | shim / 守护进程重新读取 `job.json` 检查取消请求的间隔；也是健康检查周期 |
 | `scheduler_poll_seconds` | 1 | 调度轮的间隔（假设：需求文档未规定） |

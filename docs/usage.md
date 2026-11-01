@@ -87,17 +87,20 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 ```
 
 - A running job whose entry exited 75 because its GPU was held by another process, and
-  which waits to be started again, shows STATE `pending (gpu busy)` (see
+  which waits to be started again, shows STATE `pending-gpu` (see
   [[docs/task-package]], GPU contract). Its state is still `running`; `--detail` and
   `task status` show the reason in `pending_reason`.
+- A job with `precompile` shows `precompiling` while it compiles without GPUs (state
+  `running`), then `pending-gpu` while it waits for them (state `queued`). `--detail` and
+  `task status` show `phase` (see [[docs/task-package]], Precompile).
 - `task jobs` lists the 10 most recently submitted jobs over all queried servers together;
   `-n N` (a positive integer) changes the count. `--host` and `--state` filter first, so
   `-n` counts the jobs that remain. `--detail` returns the same jobs.
 - Rows are sorted by submission time (UTC), newest last. STATE has the same color in every command that
-  shows it: queued and `pending (gpu busy)` yellow, running cyan, stopping magenta, unknown bold
+  shows it: queued and `pending-gpu` yellow, running and `precompiling` cyan, stopping magenta, unknown bold
   magenta, succeeded green, failed / invalid_result / timed_out red, cancelled gray.
-- `--state` takes a job state only (`pending (gpu busy)` is a display, not a state; use
-  `--state running`); any other value is a usage error (exit 2).
+- `--state` takes a job state only (`precompiling` and `pending-gpu` are displays: use
+  `--state running` or `--state queued`); any other value is a usage error (exit 2).
 - Unreachable servers are reported on stderr (`warning: H unreachable, ...`), and so are
   the disabled servers that were skipped; with `--detail` too. The exit code is 0 if at
   least one server answered or the machine list is empty, 2 otherwise.
@@ -127,7 +130,7 @@ reply: error code `remote_error`), stderr names the chosen host and the submissi
 `task submit --host H --submission-key K PATH`; the CLI never resubmits to another server.
 
 `task status` for an unfinished job prints
-`{"host", "jobid", "task_id", "state", "pending_reason", "cancel_requested", "run": {status,
+`{"host", "jobid", "task_id", "state", "pending_reason", "phase", "cancel_requested", "run": {status,
 dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries,
 last_gpu_busy_at, identity} or null, "progress":
 <progress.json or null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",

@@ -170,6 +170,16 @@ class RecoveryTest(Env):
         self.assertFalse(pid_alive(self.num(rc_, "leader_pid")))
         self.assertFalse(pid_alive(self.num(rt, "leader_pid")))
 
+    def test_cancel_during_takeover_kills_without_the_grace_period(self) -> None:
+        self.set_config(stop_grace_seconds=60)
+        _ = self.start_daemon()
+        j = self.submit(self.make_pkg(script="trap '' TERM; while true; do sleep 0.1; done"))
+        r = self.kill_shim(j)
+        _ = self.wait_for(lambda: self.runner(j).get("takeovers"), 10, "takeover")
+        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.wait_state(j, "cancelled", timeout=10)
+        self.assertFalse(pid_alive(self.num(r, "leader_pid")))
+
     def test_cancel_request_survives_daemon_restart(self) -> None:
         _ = self.start_daemon()
         j = self.submit(self.make_pkg(script="sleep 60"))

@@ -78,8 +78,11 @@ class Job(_JobBase, total=False):
 
     ended_at: str | None
     # Set by the shim while it waits to relaunch an entry that exited with
-    # gpu_busy_exit_code (the job stays running); cleared when a launch gets going.
+    # gpu_busy_exit_code (the job stays running), and when a precompile succeeded (the job
+    # is queued for its GPUs); cleared when a launch gets going.
     pending_reason: str | None
+    # "precompile" or "gpu" when task.json has `precompile`; see common.PHASE_*.
+    phase: str
 
 
 class TakeoverNote(TypedDict):
@@ -127,6 +130,7 @@ class Runner(_RunnerBase, total=False):
 
     schema_version: int
     status: str
+    phase: str
     gpus: list[GpuDecl]
     dispatched_at: str
     final: bool
@@ -160,6 +164,14 @@ class TaskEntry(TypedDict):
     argv: list[str]
 
 
+class _TaskPrecompileBase(TypedDict):
+    argv: list[str]
+
+
+class TaskPrecompile(_TaskPrecompileBase, total=False):
+    timeout_seconds: int | None
+
+
 class TaskEnvironment(TypedDict, total=False):
     venv: str
     required_paths: list[str]
@@ -179,6 +191,7 @@ class _TaskSpecBase(TypedDict):
 class TaskSpec(_TaskSpecBase, total=False):
     """task.json after validation (Section 2.2 of the spec)."""
 
+    precompile: TaskPrecompile
     environment: TaskEnvironment
     env: dict[str, str]
     timeout_seconds: int | None

@@ -13,7 +13,14 @@ from typing import Literal, TypedDict, cast
 from . import procutil
 from .common import TERMINAL_STATES, try_flock_fd, utcnow_iso
 from .records import Job, JsonDict, JsonValue, Runner
-from .store import Store, end_without_result, finalize_run, interrupt_run, load_task
+from .store import (
+    Store,
+    end_without_result,
+    finalize_run,
+    interrupt_run,
+    load_task,
+    run_command,
+)
 
 STOP_OUTCOME = {"cancel": "cancelled", "timeout": "timed_out"}
 
@@ -53,7 +60,8 @@ class Assessment(_AssessmentBase, total=False):
 
 
 class GroupStopper:
-    """Non-blocking stop procedure (Section 13.1): SIGTERM, grace, SIGKILL, confirm."""
+    """Non-blocking stop procedure (Section 13.1): SIGTERM, grace, SIGKILL, confirm.
+    A cancel skips SIGTERM and the grace period."""
 
     def __init__(
         self,
@@ -83,10 +91,24 @@ class GroupStopper:
         except (ProcessLookupError, PermissionError):
             pass
 
-    def start(self) -> None:
+    def start(self, reason: str) -> None:
+        if reason == "cancel":
+            self.kill()
+            return
         self._kill(signal.SIGTERM)
         self.phase = "term"
         self.deadline = time.monotonic() + self.grace
+
+    def kill(self) -> None:
+        self._kill(signal.SIGKILL)
+        self.phase = "kill"
+        self.deadline = time.monotonic() + self.confirm
+
+    def honor_cancel(self, job: Job) -> None:
+        """A cancel that arrives during the grace period of another stop ends the wait; the
+        stop keeps its reason."""
+        if job.get("cancel_requested") and self.phase == "term":
+            self.kill()
 
     def step(self) -> str | None:
         """Advance; returns None (in progress), "stopped" or "unconfirmed"."""
@@ -97,9 +119,7 @@ class GroupStopper:
             return "stopped"
         now = time.monotonic()
         if self.phase == "term" and now >= self.deadline:
-            self._kill(signal.SIGKILL)
-            self.phase = "kill"
-            self.deadline = now + self.confirm
+            self.kill()
         elif self.phase == "kill" and now >= self.deadline:
             return "unconfirmed"
         return None
@@ -443,7 +463,7 @@ class Takeover:
         self.pgid, self.min_start = _group_identity(runner)
         self.exited: bool = exited
         self.started_epoch: float | None = runner.get("started_at_epoch")
-        self.timeout: float | None = load_task(jobdir).get("timeout_seconds")
+        self.timeout: float | None = run_command(load_task(jobdir), job)[1]
         self.stop_reason: str | None = (
             job.get("stop_reason") if job["state"] == "stopping" else None
         )
@@ -479,7 +499,7 @@ class Takeover:
         if reason in STOP_OUTCOME:
             _ = set_stopping(self.store, self.jobid, reason)
         self.stopper = GroupStopper(self.pgid, self.min_start, self.jobid, self.grace, self.confirm)
-        self.stopper.start()
+        self.stopper.start(reason)
 
     def close(self) -> None:
         if self.lock_fd is not None:
@@ -506,6 +526,10 @@ class Takeover:
                     if reason:
                         self._begin_stop(reason)
                 return None
+            now = time.monotonic()
+            if now - self.last_poll >= self.poll:
+                self.last_poll = now
+                self.stopper.honor_cancel(self.store.load_job(self.jobid)[1])
             r = self.stopper.step()
             if r == "stopped":
                 _ = finish_stopped(

@@ -63,7 +63,9 @@ shared files.
 retry, the predecessor's count + 1 for an automatic re-run). `dispatched_at` is set when the
 job is dispatched; a job without it never ran and has no run files. `pending_reason` is
 set while the shim waits to relaunch an entry that exited with `gpu_busy_exit_code` (see
-Shim below) and removed when a relaunch gets going or the job ends.
+Shim below), and when a precompile succeeded; it is removed when a run gets going or the job
+ends. `phase` exists only when `task.json` has `precompile`: `precompile`, then `gpu`
+([[docs/task-package]]). `runner.json` copies it.
 
 `runner.json`:
 
@@ -97,9 +99,11 @@ the directory is fsynced.
 
 ```
 queued --dispatch--> running --exit--> succeeded | failed | invalid_result
-running --exit with gpu_busy_exit_code--> running (shim waits, relaunches; "pending (gpu busy)")
+running --exit with gpu_busy_exit_code--> running (shim waits, relaunches; "pending-gpu")
 running --shim died between a GPU-busy exit and the relaunch--> queued (same jobid)
 queued --cancel--> cancelled
+running (phase precompile) --exit 0--> queued (phase gpu; same jobid, enqueue_seq, workdir)
+running (phase precompile) --other exit--> failed(precompile)
 running --shim fork/exec failure--> failed(shim_start_failed)
 running --pre-start check failure--> failed(setup)
 running --shim error before the entry started--> failed(shim_error)  (cancelled if cancel was requested)
@@ -117,9 +121,12 @@ directory is renamed; if they disagree, `job.json` wins and daemon startup moves
 directory. Run status (`runner.json`) is a terminal state or `interrupted` once final;
 `waiting_gpu` while the shim waits to relaunch.
 
-`task jobs` shows a running job with `pending_reason` set as STATE `pending (gpu busy)`
-(yellow). This is a display only; the state machine has no such state. The job keeps its
-GPUs while it waits, so later jobs on those GPUs keep waiting behind it (FIFO).
+`task jobs` shows a running job with `pending_reason` set, and a queued job in phase `gpu`,
+as STATE `pending-gpu` (yellow), and a running job in phase `precompile` as `precompiling`
+(cyan). These are displays only; the state machine has no such states. A running job keeps its
+GPUs while it waits, so later jobs on those GPUs keep waiting behind it (FIFO). A job in phase
+`precompile` holds no GPUs and reserves none: the scheduler counts it as a `gpus: []` job,
+under `max_cpu_jobs`. In phase `gpu` it is scheduled like any queued job, by its `enqueue_seq`.
 
 ### Scheduling
 
@@ -135,7 +142,7 @@ never modified, so an update during the shim's start cannot break its imports
 ([[docs/install]]). A failed fork/exec ends
 the job as `failed` (`shim_start_failed`). A queued job that already has a `runner.json`
 (a crash between the two writes) is dispatched again if the record has no execution
-identity; if it has one, the job becomes `unknown` and keeps its GPUs.
+identity or belongs to a finished precompile or GPU-busy exit; if it has one, the job becomes `unknown` and keeps its GPUs.
 
 ### Shim
 
@@ -174,7 +181,9 @@ identity; if it has one, the job becomes `unknown` and keeps its GPUs.
 ### Stop procedure
 
 SIGTERM to the process group → wait `stop_grace_seconds` → SIGKILL → wait
-`kill_confirm_seconds`. Only when no member of the group is alive are GPUs released and the
+`kill_confirm_seconds`. A cancel sends SIGKILL at once; a cancel that arrives during the
+grace period of a timeout or leftover stop ends the wait, and the stop keeps its reason.
+Only when no member of the group is alive are GPUs released and the
 terminal state entered; otherwise the job becomes `unknown` and keeps its GPUs. Membership
 is "pgid equals the recorded one and start time ≥ the leader's start time" via `/proc`;
 zombies count as gone. In addition the `TASKMGR_JOBID` in `/proc/<pid>/environ` must be

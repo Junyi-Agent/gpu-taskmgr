@@ -76,6 +76,15 @@ def entry_argv(task: object) -> list[object] | None:
     return cast("list[object]", argv) if isinstance(argv, list) else None
 
 
+def precompile_argv(task: object) -> list[object] | None:
+    """task.json precompile.argv when it is a list, else None (not further checked)."""
+    if not isinstance(task, dict):
+        return None
+    spec = cast(JsonDict, task).get("precompile")
+    argv = cast(JsonDict, spec).get("argv") if isinstance(spec, dict) else None
+    return cast("list[object]", argv) if isinstance(argv, list) else None
+
+
 def _inside(rel: str) -> bool:
     """True if a normalized relative POSIX path stays inside the package root."""
     n = posixpath.normpath(rel)
@@ -105,6 +114,27 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
     argv = entry_argv(task)
     if not (argv and all(isinstance(a, str) for a in argv) and argv[0]):
         _err(errors, "schema", "entry.argv must be a non-empty array of strings", "task.json")
+    if "precompile" in task:
+        spec = task["precompile"]
+        if not isinstance(spec, dict):
+            _err(errors, "schema", "precompile must be an object (omit it if none)", "task.json")
+        else:
+            pargv = precompile_argv(task)
+            if not (pargv and all(isinstance(a, str) for a in pargv) and pargv[0]):
+                _err(
+                    errors,
+                    "schema",
+                    "precompile.argv must be a non-empty array of strings",
+                    "task.json",
+                )
+            t = spec.get("timeout_seconds")
+            if t is not None and not (_is_int(t) and t > 0):
+                _err(
+                    errors,
+                    "schema",
+                    "precompile.timeout_seconds must be a positive integer",
+                    "task.json",
+                )
     gpus = task.get("gpus")
     if not isinstance(gpus, list):
         _err(errors, "schema", "gpus must be an array (use [] for no GPU)", "task.json")
@@ -281,25 +311,25 @@ def validate_dir(
             _err(errors, "json", "progress.json is not valid JSON: %s" % e, "progress.json")
         else:
             check_progress_json(prog, errors)
-    argv = entry_argv(task)
-    if argv and isinstance(argv[0], str) and "/" in argv[0] and not argv[0].startswith("/"):
-        a0 = argv[0]
-        real = os.path.realpath(os.path.join(root, a0))
-        rroot = os.path.realpath(root)
-        if not _inside(a0):
-            why = "points outside the package"
-        elif not (
-            real.startswith(rroot + os.sep)
-            and os.path.isfile(real)
-            and not is_excluded(os.path.relpath(real, rroot).replace(os.sep, "/"))
-        ):
-            why = "is not a file in the package"
-        elif not os.access(real, os.X_OK):  # the shim checks the same before starting it
-            why = "is not executable (chmod +x, or run it through an interpreter)"
-        else:
-            why = None
-        if why:
-            _err(errors, "entry", "entry argv[0] %s: %s" % (why, a0), "task.json")
+    for what, argv in (("entry", entry_argv(task)), ("precompile", precompile_argv(task))):
+        if argv and isinstance(argv[0], str) and "/" in argv[0] and not argv[0].startswith("/"):
+            a0 = argv[0]
+            real = os.path.realpath(os.path.join(root, a0))
+            rroot = os.path.realpath(root)
+            if not _inside(a0):
+                why = "points outside the package"
+            elif not (
+                real.startswith(rroot + os.sep)
+                and os.path.isfile(real)
+                and not is_excluded(os.path.relpath(real, rroot).replace(os.sep, "/"))
+            ):
+                why = "is not a file in the package"
+            elif not os.access(real, os.X_OK):  # the shim checks the same before starting it
+                why = "is not executable (chmod +x, or run it through an interpreter)"
+            else:
+                why = None
+            if why:
+                _err(errors, "entry", "%s argv[0] %s: %s" % (what, why, a0), "task.json")
     total = scan_tree(root, errors)
     if max_bytes is not None and total > max_bytes:
         _err(

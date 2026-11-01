@@ -11,11 +11,13 @@ from typing import cast
 
 from . import hostcmds
 from .cliparse import Args
+from .common import PHASE_GPU, PHASE_PRECOMPILE
 from .records import JsonDict
 from .textout import (
     BOLD,
-    GPU_BUSY_STATE,
     GREEN,
+    PENDING_GPU_STATE,
+    PRECOMPILING_STATE,
     RED,
     STATE_COLORS,
     YELLOW,
@@ -37,10 +39,15 @@ Fields = list[tuple[str, str, str | None]]
 
 
 def display_state(job: JsonDict) -> str:
-    """The STATE cell: the job state, or GPU_BUSY_STATE for a running job that waits."""
+    """The STATE cell: the job state, or the display state of a job in a phase of it."""
     state = _str(job.get("state"), "-")
-    if state == "running" and job.get("pending_reason"):
-        return GPU_BUSY_STATE
+    phase = job.get("phase")
+    if state == "running" and phase == PHASE_PRECOMPILE:
+        return PRECOMPILING_STATE
+    if (state == "running" and job.get("pending_reason")) or (
+        state == "queued" and phase == PHASE_GPU
+    ):
+        return PENDING_GPU_STATE
     return state
 
 

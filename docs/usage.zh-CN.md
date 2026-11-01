@@ -83,14 +83,18 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 ```
 
 - running 作业的入口进程因 GPU 被其他进程占用而退出 75、正在等待重新启动时，STATE 显示为
-  `pending (gpu busy)`（见 [[docs/task-package.zh-CN]] 的 GPU 约定）。它的状态仍是 `running`；
+  `pending-gpu`（见 [[docs/task-package.zh-CN]] 的 GPU 约定）。它的状态仍是 `running`；
   `--detail` 和 `task status` 在 `pending_reason` 中给出原因。
+- 带 `precompile` 的作业在不占 GPU 编译时显示 `precompiling`（状态是 `running`），等待 GPU 时显示
+  `pending-gpu`（状态是 `queued`）。`--detail` 和 `task status` 给出 `phase`（见
+  [[docs/task-package.zh-CN]] 的“预编译”）。
 - `task jobs` 列出所查询的全部服务器合计最近提交的 10 个作业；`-n N`（正整数）修改数量。
   `--host` 和 `--state` 先过滤，`-n` 统计过滤后剩下的作业。`--detail` 返回同样的作业。
-- 按提交时间（UTC）排序，最新的在最后。所有显示 STATE 的命令中，同一状态颜色相同：queued 和 `pending (gpu busy)` 黄、
-  running 青、stopping 品红、unknown 粗体品红、succeeded 绿、failed / invalid_result / timed_out
+- 按提交时间（UTC）排序，最新的在最后。所有显示 STATE 的命令中，同一状态颜色相同：queued 和 `pending-gpu` 黄、
+  running 和 `precompiling` 青、stopping 品红、unknown 粗体品红、succeeded 绿、failed / invalid_result / timed_out
   红、cancelled 灰。
-- `--state` 只接受作业状态（`pending (gpu busy)` 只是显示，不是状态；请用 `--state running`）；
+- `--state` 只接受作业状态（`precompiling` 和 `pending-gpu` 只是显示，请用 `--state running` 或
+  `--state queued`）；
   其他值是用法错误（退出码 2）。
 - 连不上的服务器在 stderr 报告（`warning: H unreachable, ...`），被跳过的已禁用服务器也一样；
   加 `--detail` 时同样输出。至少一台服务器有响应、或机器列表为空时退出码为 0，否则为 2。
@@ -118,7 +122,7 @@ submission key，并打印重试命令 `task submit --host H --submission-key K 
 改投其他服务器。
 
 对未结束的作业，`task status` 输出
-`{"host", "jobid", "task_id", "state", "pending_reason", "cancel_requested", "run": {status,
+`{"host", "jobid", "task_id", "state", "pending_reason", "phase", "cancel_requested", "run": {status,
 dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries,
 last_gpu_busy_at, identity} 或 null, "progress":
 <progress.json 或 null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",

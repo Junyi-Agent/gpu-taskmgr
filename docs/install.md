@@ -255,9 +255,9 @@ fail with `bad_config`.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `max_package_bytes` | 1073741824 | max total extracted size of a received package; an upload larger than this plus 1/16 plus 1 MiB is refused before it is fully received |
-| `max_cpu_jobs` | `null` (unlimited) | max concurrent jobs with `gpus: []` (running/stopping/unknown) |
+| `max_cpu_jobs` | `null` (unlimited) | max concurrent jobs with `gpus: []` and precompiles (running/stopping/unknown) |
 | `max_auto_restarts` | 2 | automatic re-runs after reboot/never-started interruptions |
-| `stop_grace_seconds` | 30 | SIGTERM → SIGKILL delay in the stop procedure |
+| `stop_grace_seconds` | 30 | SIGTERM → SIGKILL delay in the stop procedure (timeout and leftover stops; a cancel sends SIGKILL at once) |
 | `kill_confirm_seconds` | 10 | wait after SIGKILL before declaring `unknown` |
 | `control_poll_seconds` | 2 | how often shim / daemon re-read `job.json` for cancel; health-check period |
 | `scheduler_poll_seconds` | 1 | scheduling pass interval (assumption: not in the spec) |

@@ -16,6 +16,8 @@ from .common import (
     DEFAULT_REMOTE_CONFIG,
     JOB_DIRS,
     JOBID_RE,
+    PHASE_GPU,
+    PHASE_PRECOMPILE,
     SCHEMA_VERSION,
     STATE_DIRS,
     TERMINAL_STATES,
@@ -250,8 +252,8 @@ class Store:
         """Whether a non-final run record shows an entry that exited for "GPU busy" and was
         not relaunched yet: the shim is between such an exit and the next launch, so no
         work was done and the job can simply be queued again."""
-        if runner.get("final"):
-            return False
+        if runner.get("final") or runner.get("phase") == PHASE_PRECOMPILE:
+            return False  # a precompile has no GPU: its exit 75 is an ordinary failure
         if runner.get("status") == "waiting_gpu":
             return True
         code = self.gpu_busy_exit_code
@@ -261,6 +263,29 @@ class Store:
 def has_run(job: Job) -> bool:
     """Whether the job was ever dispatched (and so has a run record and run files)."""
     return job.get("dispatched_at") is not None
+
+
+def precompiling(job: Job) -> bool:
+    """Whether the job's current (or next) run is its precompile command."""
+    return job.get("phase") == PHASE_PRECOMPILE
+
+
+def initial_phase(task: TaskSpec) -> str | None:
+    """The `phase` of a new job of this task."""
+    return PHASE_PRECOMPILE if task.get("precompile") else None
+
+
+def run_gpus(job: Job) -> list[GpuDecl]:
+    """The GPUs the job's current (or next) run uses: none while it precompiles."""
+    return [] if precompiling(job) else job.get("gpus", [])
+
+
+def run_command(task: TaskSpec, job: Job) -> tuple[list[str], float | None]:
+    """(argv, timeout_seconds) of the job's current (or next) run."""
+    spec = task.get("precompile")
+    if precompiling(job) and spec:
+        return spec["argv"], spec.get("timeout_seconds")
+    return task["entry"]["argv"], task.get("timeout_seconds")
 
 
 def job_summary(job: Job) -> dict[str, object]:
@@ -277,6 +302,7 @@ def job_summary(job: Job) -> dict[str, object]:
         "retry_of": job.get("retry_of"),
         "retried_as": job.get("retried_as", []),
         "pending_reason": job.get("pending_reason"),
+        "phase": job.get("phase"),
     }
 
 
@@ -446,8 +472,12 @@ def finalize_run(
     """
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
-    if job["state"] == "queued":
-        return job
+        if job["state"] == "queued":
+            return job
+        if status is None and precompile_succeeded(store, jobdir, job):
+            if not job.get("cancel_requested"):
+                return queue_for_gpus(store, jobdir, job)
+            status = "cancelled"
     raw_runner, _ = store.read_runner(jobdir)
     runner: Runner = raw_runner or {"jobid": jobid}
     tm: object = runner.get("taskmgr")
@@ -464,7 +494,8 @@ def finalize_run(
         warns = list(runner.get("warnings", [])) + list(warnings)
         business, verrs, w2 = read_task_result(os.path.join(jobdir, "workdir"), own=jobid)
         warns += w2
-        verrs = verrs or validate_outputs(business, task)
+        # A precompile writes no result: the entry does.
+        verrs = [] if precompiling(job) else verrs or validate_outputs(business, task)
         if status is None:
             rc, sig = runner.get("return_code"), runner.get("signal")
             if sig is not None:
@@ -480,6 +511,8 @@ def finalize_run(
                 status = "invalid_result"
             else:
                 status = "succeeded"
+        if status == "failed" and error and precompiling(job):
+            error = {"kind": "precompile", "message": "precompile: %s" % error["message"]}
         warns = list(dict.fromkeys(warns))
         # Persist the step 2-3 findings first so a crash here does not lose them.
         runner["warnings"] = warns
@@ -504,6 +537,36 @@ def finalize_run(
         job["ended_at"] = runner.get("ended_at") or utcnow_iso()
         _ = job.pop("pending_reason", None)
         _ = store.save_job(jobdir, job)
+    return job
+
+
+def precompile_succeeded(store: Store, jobdir: str, job: Job) -> bool:
+    """Whether the job's run was its precompile command and that exited 0."""
+    runner, _ = store.read_runner(jobdir)
+    return (
+        precompiling(job)
+        and job["state"] not in TERMINAL_STATES
+        and runner is not None
+        and not runner.get("final")
+        and runner.get("return_code") == 0
+        and runner.get("signal") is None
+    )
+
+
+def queue_for_gpus(store: Store, jobdir: str, job: Job) -> Job:
+    """The precompile succeeded: queue the same job for its GPUs. Needs the lock.
+
+    It keeps its jobid, enqueue_seq and workdir, and `dispatched_at`, so `task logs` shows
+    the precompile's output. job.json first: a crash before the rename leaves a job in
+    phase "gpu" with a precompile's runner.json, which dispatch sets aside as well.
+    """
+    job["state"] = "queued"
+    job["phase"] = PHASE_GPU
+    job["stop_reason"] = None
+    job["error"] = None
+    job["pending_reason"] = "precompiled; waiting for its GPUs"
+    jobdir = store.save_job(jobdir, job)
+    _ = store.set_runner_aside(jobdir)
     return job
 
 
@@ -587,10 +650,11 @@ def new_job_record(
     gpus: list[GpuDecl],
     auto_restarts: int = 0,
     retry_of: str | None = None,
+    phase: str | None = None,
 ) -> Job:
     """job.json of a job that has just been queued (a submission or a retry)."""
     now = utcnow_iso()
-    return {
+    job: Job = {
         "schema_version": SCHEMA_VERSION,
         "jobid": jobid,
         "task_id": task_id,
@@ -609,6 +673,9 @@ def new_job_record(
         "stop_reason": None,
         "error": None,
     }
+    if phase is not None:
+        job["phase"] = phase
+    return job
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +784,7 @@ def clone_job(
         old["gpus"],
         auto_restarts=old.get("auto_restarts", 0) + 1 if automatic else 0,
         retry_of=old["jobid"],
+        phase=initial_phase(load_task(old_jobdir)),  # a new job has an empty workdir
     )
     enqueue_staged(store, staged, job)
     old["retried_as"] = old.get("retried_as", []) + [jobid]

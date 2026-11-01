@@ -73,6 +73,10 @@ clock from `runner.json.started_at_epoch`, because the shim's monotonic clock is
 supervisor knows whether the entry has already exited, so it is the only process that can
 make running → stopping without racing finalization. Consequences:
 
+- The stop for a cancel sends SIGKILL at once, with no SIGTERM or grace period (user
+  decision 2026-11-01: a cancelled job should free its GPUs now). A cancel that arrives
+  during the grace period of a timeout or leftover stop ends the wait; the stop keeps its
+  reason, so the outcome does not change.
 - A cancel that arrives after the entry has exited does not change its outcome.
 - A cancel seen before the entry starts goes running → stopping → cancelled without
   executing the entry.
@@ -289,7 +293,7 @@ follows it. Like D16, this section overrides desc-1 where they conflict.
 | --- | --- | --- |
 | §10.4 / §11: the entry's exit is final; the shim finalizes from the exit code | an exit with `gpu_busy_exit_code` (config, default 75, `null` disables) that was not a stop for cancel or timeout is not finalized: after the leftover cleanup the shim records `runner.json` `status: "waiting_gpu"`, `gpu_busy_retries`, `last_gpu_busy_at`, sets `job.json` `pending_reason`, waits `gpu_retry_interval_seconds` (default 1; cancel is honored), then starts the entry again in the same workdir (user decision 2026-10-30: no copy per retry, the busy launch did no work) with the same fork / setsid / pipe-gated exec / identity-record protocol (new identity); logs are appended with a separator line | user decision 2026-10-30 |
 | §13.3: `timeout_seconds` counts from the start of the attempt's entry process | it counts from the start of each launch; time spent waiting for the GPU does not count | user decision 2026-10-30 (only a launch that actually runs can time out) |
-| §8: states are displayed as they are | the job stays `running` (and keeps its GPUs, so FIFO on those GPUs is preserved); `task jobs` shows STATE `pending (gpu busy)` (yellow) when `pending_reason` is set; `task status` and `task jobs --detail` include `pending_reason`, and `run` adds `gpu_busy_retries`, `last_gpu_busy_at` | user decision 2026-10-30 |
+| §8: states are displayed as they are | the job stays `running` (and keeps its GPUs, so FIFO on those GPUs is preserved); `task jobs` shows STATE `pending-gpu` (yellow) when `pending_reason` is set; `task status` and `task jobs --detail` include `pending_reason`, and `run` adds `gpu_busy_retries`, `last_gpu_busy_at` | user decision 2026-10-30 |
 | §12.2: `exited` but not final → finish finalization, no re-run | if the exit code is `gpu_busy_exit_code` (or `runner.json` is `waiting_gpu`) and the shim is dead, the entry did no work: once the group is gone the **same** job goes back to `queued` (same jobid and `enqueue_seq`; `workdir/` kept for the next dispatch, `runner.json` renamed to `runner.prev-N.json`, `dispatched_at` cleared). Not an interruption: `auto_restarts` unchanged, `max_auto_restarts` does not apply; `cancel_requested` → cancelled | user decision 2026-10-30 |
 | (not in desc-1) task helper | `taskmgr_task.py` gets `GPU_BUSY_EXIT_CODE = 75`, `gpu_busy(message)` (stderr + exit 75) and `claim_gpu()` (ctypes on `libcuda.so.1`: `cuInit`, then `cuDeviceGet` + `cuDevicePrimaryCtxRetain` per visible device, contexts kept for the process; `CUDA_ERROR_DEVICE_UNAVAILABLE` → `gpu_busy`, other errors → `RuntimeError`); the template `run.py` calls `claim_gpu()` first and `TASK.md` states the contract | user decision 2026-10-30 ("写到 task template 里") |
 
@@ -305,7 +309,7 @@ Implementation notes:
 - `pending_reason` is removed once a relaunch has kept running for
   `gpu_retry_interval_seconds` (checked at the shim's `control_poll_seconds` cadence) or
   when the job ends, not when the relaunch starts; otherwise a job that keeps getting exit
-  75 would flicker between `running` and `pending (gpu busy)`.
+  75 would flicker between `running` and `pending-gpu`.
 - A leftover cleanup after exit 75 moves the job to `stopping` / `leftover` as usual; the
   shim moves it back to `running` when it starts waiting. The `leftover_processes` warning
   is kept for the final result.
@@ -378,3 +382,22 @@ User decisions 2026-10-31, superseding the code and path parts of D13 and D18:
 | `--remote-root` is removed; `TASKMGR_REMOTE_ROOT` (read by `task host add` on the local machine) sets `remote_root`; without it an existing entry keeps its `remote_root` | user: an environment variable instead of the flag |
 | Everything on the server is in `remote_root`, default `~/.taskmgr-remote`: `config.json`, the job data, `versions/<version>.pyz`, the symlink `taskmgr-remote.pyz`, and `backups/<UTC time>/` for moved job directories | user: no separate `~/taskmgr-root` and `~/.taskmgr-remote` |
 | Data under `~/taskmgr-root` (older default) is not moved; a new entry gets a warning that names `TASKMGR_REMOTE_ROOT=~/taskmgr-root` (now also a `[y/N]` question that `--yes` does not answer: with `--yes` the run fails, see [[docs/install]]). Step `old_code` also offers to delete the first zipapp layout (`~/taskmgr-remote.pyz`, `~/.taskmgr-remote/<version>.pyz` top-level files) | never move job data automatically |
+
+
+## D20. `precompile`: compile without GPUs, then wait for them (§2.2, §8, §10.4, §11, §12.2)
+
+User decisions 2026-11-01. Agents wrote tasks that compile while the job holds its GPUs, which
+blocks every other job on those GPUs for no reason.
+
+| Decision | Reason |
+| --- | --- |
+| `task.json` `precompile` (`argv`, optional `timeout_seconds`) runs before the entry, without GPUs (`CUDA_VISIBLE_DEVICES=""`), in the workdir the entry uses | the kernels are ready when the job takes its GPUs |
+| `job.json` `phase`: `precompile`, then `gpu`. The state machine gains no states: a precompile is `running`, so stop, cancel, recovery and takeover apply unchanged, and waiting for GPUs is `queued` | a new state would touch every state check |
+| The scheduler counts a job in phase `precompile` as a `gpus: []` job (`max_cpu_jobs`); it neither holds nor reserves GPUs | later jobs may use the GPUs meanwhile |
+| Exit 0 queues the same job for its GPUs with the same `enqueue_seq` and `dispatched_at` (`task logs` keeps working); `store.finalize_run` does this, so the shim, recovery and takeover share it | its queue position does not depend on how long it compiled |
+| Any other exit is `failed` with `error.kind = "precompile"`; exit 75 is not "GPU busy" here | a precompile has no GPU to wait for |
+| A re-run (`task retry`, automatic) is a new job and precompiles again | a new job has an empty workdir |
+| STATE shows `precompiling` and `pending-gpu`; `pending-gpu` replaces `pending (gpu busy)` for both kinds of waiting | user: they mean the same |
+| `precompile.py` and `cutecache.py` ship in `template/`, without `local_judge`, and `task.json` has a `<REQUIRED` marker for `precompile` | every agent must decide; taskmgr itself does not depend on cutlass |
+| No compatibility with older servers; the protocol version is unchanged | user: only new servers count |
+| basedpyright ignores the two template files | they need cutlass, quack and torch |
