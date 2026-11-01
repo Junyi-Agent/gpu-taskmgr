@@ -35,7 +35,7 @@ from .common import (
     utcnow_iso,
 )
 from .pyz import code_version as local_code_version
-from .records import JsonDict, JsonValue, Problem, Server, TaskSpec
+from .records import JsonDict, JsonValue, Problem, Server, SkippedEntry, TaskSpec
 from .textout import (
     CYAN,
     GRAY,
@@ -569,6 +569,28 @@ def cmd_logs(args: Args) -> CmdResult:
     return None, 0
 
 
+def _fetch_manifest(extracted: str) -> list[SkippedEntry]:
+    """Remove package.FETCH_MANIFEST from a fetched tree; returns the special files the
+    server left out (listed in it)."""
+    path = os.path.join(extracted, package.FETCH_MANIFEST)
+    if not os.path.lexists(path):
+        return []
+    obj, _ = (
+        try_read_json(path) if os.path.isfile(path) and not os.path.islink(path) else (None, None)
+    )
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
+    rows = obj.get("skipped") if isinstance(obj, dict) else None
+    out: list[SkippedEntry] = []
+    for r in cast(list[object], rows) if isinstance(rows, list) else []:
+        if isinstance(r, dict):
+            d = cast(JsonDict, r)
+            out.append({"path": str(d.get("path")), "reason": str(d.get("reason"))})
+    return out
+
+
 def cmd_fetch(args: Args) -> CmdResult:
     server, st = job_server(args)
     remote = Remote(server)
@@ -600,9 +622,10 @@ def cmd_fetch(args: Args) -> CmdResult:
         with open(tar_path, "wb") as f:
             _ = remote.stream(["fetch", jobid], f)
         extracted = os.path.join(staging, "x")
-        skipped = package.safe_extract(tar_path, extracted, skip_unsafe=True)
+        unsafe = package.safe_extract(tar_path, extracted, skip_unsafe=True)
+        skipped = sorted(_fetch_manifest(extracted) + unsafe, key=lambda s: s["path"])
         for s in skipped:
-            warn("skipped unsafe entry %s (%s)" % (s["path"], s["reason"]))
+            warn("skipped %s (%s)" % (s["path"], s["reason"]))
         if os.path.lexists(target):
             raise TaskmgrError("exists", "target directory already exists: %s" % target)
         os.rename(extracted, target)

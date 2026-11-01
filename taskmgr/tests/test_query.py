@@ -420,6 +420,36 @@ class QueryTest(Env):
         with open(os.path.join(outdir, "s1", new, "job.json")) as f:
             self.assertIn(j, f.read())  # retry_of
 
+    def test_fetch_reports_special_files_the_server_left_out(self) -> None:
+        """Review P1-8: FIFOs and sockets in the job directory are skipped with a warning
+        and listed in `skipped`, like the unsafe links the client drops."""
+        _ = self.start_daemon("s1")
+        script = (
+            "mkfifo pipe; mkdir -p artifacts; mkfifo artifacts/p2; "
+            + "python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind(\"sock\")'; "
+            + "ln -s /etc/passwd abs; "
+            + "echo '{\"outputs\": {}}' > $TASKMGR_RESULT_FILE"
+        )
+        j = self.submit(self.make_pkg(script=script))
+        _ = self.wait_state(j, "succeeded")
+        outdir = os.path.join(self.tmp, "results")
+        rc, out, err = self.task("fetch", j, "--host", "s1", "--output", outdir)
+        self.assertEqual(rc, 0, err)
+        skipped = {self.text(e, "path"): self.text(e, "reason") for e in self.objs(out, "skipped")}
+        self.assertEqual(
+            sorted(skipped), ["workdir/abs", "workdir/artifacts/p2", "workdir/pipe", "workdir/sock"]
+        )
+        self.assertIn("FIFO", skipped["workdir/pipe"])
+        self.assertIn("socket", skipped["workdir/sock"])
+        for path in skipped:
+            self.assertIn("skipped", err)
+            self.assertIn(path, err)
+        base = os.path.join(outdir, "s1", j)
+        self.assertEqual(
+            sorted(os.listdir(base)),
+            ["job.json", "runner.json", "shim.log", "stderr.log", "stdout.log", "workdir"],
+        )  # the list of left-out files is not stored with the results
+
     def test_fetch_of_a_job_that_never_ran(self) -> None:
         outdir = os.path.join(self.tmp, "results")
         q = self.submit(self.make_pkg(), host="s1")  # no daemon: stays queued

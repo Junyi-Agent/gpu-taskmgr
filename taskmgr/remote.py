@@ -8,6 +8,7 @@ Every subcommand except `logs`, `fetch`, `serve` and `shim` prints one JSON obje
 
 import argparse
 import getpass
+import io
 import json
 import os
 import secrets
@@ -36,7 +37,7 @@ from .common import (
 )
 from .gpu import resolve_declarations
 from .monitor import assess, identity_of
-from .records import Job, JsonValue, KeyMapping, Runner
+from .records import Job, JsonValue, KeyMapping, Runner, SkippedEntry
 from .store import (
     OPERATOR_MARKED_STOPPED,
     OPERATOR_STOPPED_ERROR,
@@ -477,8 +478,14 @@ def cmd_fetch(store: Store, args: Args) -> int:
     if not has_run(job):
         raise _no_run(args.jobid)
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|gz") as tar:
+        skipped: list[SkippedEntry] = []
         for name in FETCH_FILES:
-            package.add_tree_to_tar(tar, os.path.join(jd, name), name)
+            skipped += package.add_tree_to_tar(tar, os.path.join(jd, name), name)
+        # Last member: what the walk left out, for the client's `skipped` (desc-2 D12).
+        data = json.dumps({"skipped": skipped}, sort_keys=True).encode()
+        ti = tarfile.TarInfo(package.FETCH_MANIFEST)
+        ti.size, ti.mode = len(data), 0o644
+        tar.addfile(ti, io.BytesIO(data))
     _ = sys.stdout.buffer.flush()
     return 0
 

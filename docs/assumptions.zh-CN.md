@@ -46,7 +46,8 @@ up: "[[taskmgr/README.zh-CN]]"
 12. `logs --follow` 在以下情况结束：运行记录已 final、作业进入终态或 unknown；对 queued 作业
     先等待它被派发。
 13. `fetch` 会跳过不安全的条目（任务创建的绝对路径或越界符号链接、特殊文件），打印警告并在
-    `skipped` 中列出。下载 `job.json`、`runner.json`、三个日志和 `workdir/`，不含 `package/`、
+    `skipped` 中列出。特殊文件（FIFO、socket、设备）由服务器在打包时省略，并写进数据流的最后一个
+    成员 `taskmgr-fetch.json`；客户端把这份清单合并进 `skipped`，不保留这个文件。下载 `job.json`、`runner.json`、三个日志和 `workdir/`，不含 `package/`、
     `package.tar.gz` 和 `shim.lock`。
 14. `max_cpu_jobs` 统计处于 running、stopping 和 unknown 的仅 CPU 作业。
 15. jobid 唯一性针对该服务器上所有作业目录检查。`receive` 在解包和计算哈希后、解析 GPU 和校验

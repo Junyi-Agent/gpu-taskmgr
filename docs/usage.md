@@ -164,7 +164,9 @@ not followed.
   `stderr.log`, `shim.log`, `workdir/`; not `package/`, `package.tar.gz`, `shim.lock`) to
   `<output>/<host>/<jobid>/`. An existing target → `exists` (exit 2), nothing written. A job
   that never ran → `no_run` (exit 2). For an unfinished job stderr warns and the receipt has
-  `partial: true`. Receipt: `{"host", "jobid", "state", "partial", "path", "skipped"}`.
+  `partial: true`. Receipt: `{"host", "jobid", "state", "partial", "path", "skipped"}`;
+  `skipped` lists `{"path", "reason"}` for every entry not written (special files, unsafe
+  symlinks), each also a warning on stderr.
 
 ## Servers
 

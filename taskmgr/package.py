@@ -652,15 +652,32 @@ class _FixedSize:
         return data + b"\0" * (n - len(data))
 
 
-def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> None:
+# `fetch`: the last tar member, {"skipped": [{"path", "reason"}]} for the special files the
+# server left out. Not a name in remote.FETCH_FILES, so it cannot clash with job files.
+FETCH_MANIFEST = "taskmgr-fetch.json"
+
+
+def _special_kind(mode: int) -> str:
+    if stat.S_ISFIFO(mode):
+        return "FIFO"
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    if stat.S_ISCHR(mode) or stat.S_ISBLK(mode):
+        return "device"
+    return "special file"
+
+
+def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> list[SkippedEntry]:
     """Add a file or directory tree to an open tar without following symlinks.
 
-    Special files are skipped, and so is a root that does not exist.
+    Special files (FIFOs, sockets, devices) are left out and returned; a root that does
+    not exist is skipped silently.
     """
+    skipped: list[SkippedEntry] = []
     try:
         entries = [("", root)] + _sorted_entries(root)
     except OSError:
-        return
+        return skipped
     for rel, full in entries:
         if posixpath.basename(rel).startswith(".tmp-"):
             continue  # in-flight atomic writes
@@ -670,6 +687,8 @@ def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> None:
             if not (
                 stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode)
             ):
+                kind = _special_kind(st.st_mode)
+                skipped.append({"path": arc, "reason": "%s, not fetched" % kind})
                 continue
             ti = tar.gettarinfo(full, arcname=arc)
             f = None
@@ -685,3 +704,4 @@ def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> None:
             continue
         with f:  # streamed: a large file is never read into memory whole
             tar.addfile(ti, cast(IO[bytes], cast(object, _FixedSize(f, ti.size))))
+    return skipped

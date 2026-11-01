@@ -152,7 +152,8 @@ jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key �
   `shim.log`、`workdir/`；不含 `package/`、`package.tar.gz`、`shim.lock`）下载到
   `<output>/<host>/<jobid>/`。目标已存在 → `exists`（退出码 2），不写任何文件。从未运行的作业 →
   `no_run`（退出码 2）。作业未结束时 stderr 给出警告，回执中 `partial: true`。回执：
-  `{"host", "jobid", "state", "partial", "path", "skipped"}`。
+  `{"host", "jobid", "state", "partial", "path", "skipped"}`；`skipped` 列出每个没有写入的条目
+  `{"path", "reason"}`（特殊文件、不安全的符号链接），每条也在 stderr 给出警告。
 
 ## 服务器
 

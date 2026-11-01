@@ -57,7 +57,10 @@ Other language: [[docs/assumptions.zh-CN]]
 12. `logs --follow` ends when the run is final or the job is terminal or unknown; on a
     queued job it first waits for the dispatch.
 13. `fetch` skips unsafe entries (absolute/escaping symlinks a task created, special files)
-    with a warning and lists them in `skipped`. It downloads `job.json`, `runner.json`, the
+    with a warning and lists them in `skipped`. The server leaves special files (FIFOs,
+    sockets, devices) out of the stream and names them in the stream's last member,
+    `taskmgr-fetch.json`; the client merges that list into `skipped` and does not keep the
+    file. It downloads `job.json`, `runner.json`, the
     three logs and `workdir/`, not `package/`, `package.tar.gz` or `shim.lock`.
 14. `max_cpu_jobs` counts CPU-only jobs in running, stopping and unknown.
 15. jobid uniqueness is checked against all job directories on the server.
