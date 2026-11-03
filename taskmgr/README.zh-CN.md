@@ -56,4 +56,6 @@ task validate AA-01/
 task submit AA-01/                   # 输出 JOBID TASK_ID HOST STATE
 task status <jobid> --wait
 task fetch <jobid> --output ./results/
+# 或者不用模板，直接用项目文件构建任务包（docs/usage.zh-CN.md，task pack）：
+task submit "$(task pack src/ --task-id AA-02 --entry 'python3 run.py' --gpus 0)"
 ```

@@ -12,6 +12,8 @@ Other language: [[docs/usage.zh-CN]]
 ```sh
 task -h                                # the commands by group (tasks / hosts / others)
 task init AA-01                        # ./AA-01/ template; fill every <REQUIRED...> marker
+task pack SRC... --task-id AA-01 --entry 'python3 run.py' [options] [-o DIR|FILE.tar.gz]
+                                       # build a package from project files; prints its path
 task validate AA-01/                   # exit 0 valid, 1 with all errors, 2 bad path
 task submit AA-01/                     # round-robin over enabled servers
 task submit --host nebius-h200-2 AA-01.tar.gz
@@ -166,6 +168,64 @@ last_gpu_busy_at, identity} or null, "progress":
   pending_reason: entry exited 75 (GPU busy); retry #12 in 1 s
   gpu_holder:     GPU 0: pid 81234 user root 40.0 GiB: python /root/xbr/mkc/dl/tools/gpu_exec.py ...
   ```
+
+## Packing: `task pack`
+
+`task init` makes a template to fill in by hand. `task pack` builds a package from the files
+of a project and command-line options, validates it, and prints its path on stdout, and only
+that, so it composes with `task submit`:
+
+```sh
+pkg=$(task pack kernels/ tools/gpu_exec.py src/moe_kernel.py=kernels.py \
+        --task-id MO-01 --entry 'python3 run.py --spec spec/moe.yaml' \
+        --precompile 'python3 precompile.py kernels.py' --precompile-timeout 1800 \
+        --with-cute-helpers --gpus '{"count": 1, "min_free_gb": 40}' \
+        --venv /opt/venvs/tune --env CUTE_DSL_ARCH=sm_90a \
+        --output-key best_config --output-key speedup \
+        --task-md notes/MO-01.md -o /tmp/MO-01.tar.gz) && task submit "$pkg"
+```
+
+Sources (`SRC`, any number):
+
+| Form | Goes to |
+| --- | --- |
+| a directory `d/` | its contents, at the package root (`d/x.py` becomes `x.py`) |
+| a file `f.py` | the package root, as `f.py` |
+| `SRC=DEST` | `DEST` inside the package (a file or a directory; `DEST` must stay inside) |
+
+Symlinks are followed: the package gets the contents, so it does not depend on the project
+tree. `--exclude GLOB` (repeatable) leaves out names matching GLOB when a directory is
+copied. Two sources that write the same file are an error (`conflict`). Names that packing
+leaves out anyway (`__pycache__`, `.git`, `*.pyc`, ...; see [[docs/task-package]]) are not
+packed.
+
+Then:
+
+- `task.json`: a `task.json` among the sources is the base; otherwise it is written from
+  the options, and `--task-id` and `--entry` are required. The options set or extend it:
+  `--task-id`, `--entry CMD` and `--precompile CMD` (split like a shell would, no shell runs
+  them; `--precompile-timeout SECONDS`), `--gpus` (`none`, `0,1`, `GPU-...`, or JSON such as
+  `'[0, 1]'` or `'{"count": 1, "min_free_gb": 40}'`; default none), `--venv PATH`,
+  `--require-path PATH`, `--env NAME=VALUE` (merged into `env`), `--timeout SECONDS`,
+  `--output-key KEY` (appended to `result.required_outputs`). Repeatable options can be given
+  more than once.
+- `TASK.md`: `--task-md FILE`, else the sources' `TASK.md`, else a short stub naming the
+  sources and the entry command.
+- `progress.json`: the sources', else a `not_started` one (with a fixed `updated_at`, so the
+  same inputs give the same package and content hash).
+- `taskmgr_task.py` is always copied from the template of the running taskmgr (a different
+  copy among the sources is replaced, with a warning). `--with-cute-helpers` also copies
+  `precompile.py` and `cutecache.py` (see [[docs/task-package]], Precompile).
+- The result is validated like `task validate`. Invalid: exit 1, the errors on stderr,
+  nothing written, nothing on stdout.
+- `-o PATH` (`--output`): a directory, or a file ending in `.tar.gz` / `.tgz` (packed the
+  same way `task submit` packs a directory, byte for byte reproducible). Default `./<task_id>`.
+  An existing PATH is an error (`exists`, exit 2) unless `--force` replaces it.
+
+Exit 0 valid (stdout: the path), 1 invalid, 2 bad arguments or sources. `--detail` prints
+`{"valid", "path", "archive", "task_id", "content_hash", "features", "source_files",
+"warnings"}` (invalid: `{"valid": false, "errors", "path": null}`). `features` are the server
+features the package needs (see [[docs/task-package]], Server features).
 
 ## Retry and re-runs
 

@@ -20,7 +20,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from . import hostcmds, package, render
+from . import hostcmds, package, packcmd, render
 from .cliparse import Args, Command, build_parser
 from .common import (
     CODE_ROOT,
@@ -205,6 +205,10 @@ def cmd_validate(args: Args) -> CmdResult:
         "features": package.task_features(task),
         "warnings": warnings,
     }, 0
+
+
+def cmd_pack(args: Args) -> CmdResult:
+    return packcmd.cmd_pack(args)
 
 
 # ---------------------------------------------------------------------------
@@ -796,6 +800,13 @@ def cmd_update(_args: Args) -> CmdResult:
 
 COMMANDS = [
     Command("init", "tasks", "create a task package template", cmd_init, render.text_init),
+    Command(
+        "pack",
+        "tasks",
+        "build a task package from files and options; print its path",
+        cmd_pack,
+        render.text_pack,
+    ),
     Command(
         "validate",
         "tasks",

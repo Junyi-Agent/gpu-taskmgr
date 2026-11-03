@@ -9,6 +9,9 @@ up: "[[taskmgr/README]]"
 
 Other language: [[docs/task-package.zh-CN]]
 
+`task init` writes a template to fill in; `task pack` builds a package from project files and
+options ([[docs/usage]], Packing).
+
 | File | Required | Notes |
 | --- | --- | --- |
 | `task.json` | yes | execution config (below) |

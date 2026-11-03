@@ -75,6 +75,12 @@ def text_init(_args: Args, out: Mapping[str, object], color: bool) -> str:
     )
 
 
+def text_pack(_args: Args, out: Mapping[str, object], _color: bool) -> str:
+    """Only the path on stdout, so that `task submit "$(task pack ...)"` works; the errors
+    of an invalid package went to stderr."""
+    return "%s\n" % out.get("path") if out.get("valid") else ""
+
+
 def text_validate(_args: Args, out: Mapping[str, object], color: bool) -> str:
     if out.get("valid"):
         return message(

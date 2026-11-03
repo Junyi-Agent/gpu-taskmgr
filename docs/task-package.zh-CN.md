@@ -9,6 +9,8 @@ up: "[[taskmgr/README.zh-CN]]"
 
 其他语言：[[docs/task-package]]
 
+`task init` 生成一个需要填写的模板；`task pack` 用项目文件和参数构建任务包（[[docs/usage.zh-CN]] 的“打包”）。
+
 | 文件 | 是否必需 | 说明 |
 | --- | --- | --- |
 | `task.json` | 是 | 执行配置（见下） |

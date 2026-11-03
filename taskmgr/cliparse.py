@@ -54,6 +54,20 @@ class Args(argparse.Namespace):
     yes: bool
     plan: bool
     prune_old_code: bool
+    # pack
+    sources: list[str]
+    entry: str | None
+    precompile: str | None
+    precompile_timeout: int | None
+    gpus: str | None
+    venv: str | None
+    require_path: list[str] | None
+    env: list[str] | None
+    output_key: list[str] | None
+    task_md: str | None
+    with_cute_helpers: bool
+    exclude: list[str] | None
+    force: bool
 
 
 class Command(NamedTuple):
@@ -301,6 +315,74 @@ def build_parser(commands: Sequence[Command]) -> argparse.ArgumentParser:
     s = add("init")
     _ = s.add_argument("task_id", help="task id, e.g. AA-01 (two capitals, dash, 2-4 digits)")
     _ = s.add_argument("--output", metavar="DIR", help="target directory (default ./<task_id>)")
+    s = add(
+        "pack",
+        "Build a task package from project files and options, validate it, and print its "
+        + "path on stdout (a directory, or a .tar.gz when --output ends in .tar.gz), so that "
+        + '`task submit "$(task pack ...)"` works. A directory SRC is copied into the package '
+        + "root, a file SRC to the root under its name, SRC=DEST to DEST in the package; "
+        + "symlinks are followed. A task.json among the sources is the base the options "
+        + "change; TASK.md and progress.json are written when missing; taskmgr_task.py comes "
+        + "from the installed template. Exit 0 valid, 1 invalid (errors listed), 2 bad "
+        + "arguments.",
+    )
+    _ = s.add_argument(
+        "sources", nargs="*", metavar="SRC", help="file or directory to copy; SRC=DEST to place it"
+    )
+    _ = s.add_argument("--task-id", help="task id, e.g. AA-01 (required without a task.json)")
+    _ = s.add_argument(
+        "--entry",
+        metavar="CMD",
+        help="entry command, split like a shell would (no shell runs it), "
+        + "e.g. 'python3 run.py --cfg a.yaml'",
+    )
+    _ = s.add_argument("--precompile", metavar="CMD", help="precompile command, split like --entry")
+    _ = s.add_argument(
+        "--precompile-timeout", type=positive_int, metavar="SECONDS", help="precompile time limit"
+    )
+    _ = s.add_argument(
+        "--gpus",
+        metavar="SPEC",
+        help="none, a list such as 0,1 or GPU-..., or JSON such as "
+        + '\'{"count": 1, "min_free_gb": 40}\' (default none)',
+    )
+    _ = s.add_argument("--venv", metavar="PATH", help="absolute path of the venv on the server")
+    _ = s.add_argument(
+        "--require-path",
+        action="append",
+        metavar="PATH",
+        help="absolute path that must exist on the server (repeatable)",
+    )
+    _ = s.add_argument(
+        "--env", action="append", metavar="NAME=VALUE", help="environment variable (repeatable)"
+    )
+    _ = s.add_argument("--timeout", type=positive_int, metavar="SECONDS", help="entry time limit")
+    _ = s.add_argument(
+        "--output-key",
+        action="append",
+        metavar="KEY",
+        help="key result.json outputs must have (repeatable)",
+    )
+    _ = s.add_argument("--task-md", metavar="FILE", help="use FILE as TASK.md")
+    _ = s.add_argument(
+        "--with-cute-helpers",
+        action="store_true",
+        help="also copy precompile.py and cutecache.py from the template",
+    )
+    _ = s.add_argument(
+        "--exclude",
+        action="append",
+        metavar="GLOB",
+        help="leave out names matching GLOB when copying a directory (repeatable)",
+    )
+    _ = s.add_argument(
+        "--output",
+        "-o",
+        metavar="PATH",
+        help="where to write the package: a directory, or a file ending in .tar.gz "
+        + "(default ./<task_id>)",
+    )
+    _ = s.add_argument("--force", action="store_true", help="replace an existing --output")
     s = add(
         "validate",
         "Check a task package directory or tar.gz. Keys task.json does not define are errors "

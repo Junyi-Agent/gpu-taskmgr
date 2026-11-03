@@ -12,6 +12,8 @@ up: "[[taskmgr/README.zh-CN]]"
 ```sh
 task -h                                # 按分组列出命令（tasks / hosts / others）
 task init AA-01                        # 生成 ./AA-01/ 模板；填写所有 <REQUIRED...> 标记
+task pack SRC... --task-id AA-01 --entry 'python3 run.py' [选项] [-o DIR|FILE.tar.gz]
+                                       # 用项目文件构建任务包；输出其路径
 task validate AA-01/                   # 退出码 0 校验通过；1 列出所有错误；2 路径错误
 task submit AA-01/                     # 在启用的服务器之间轮询
 task submit --host nebius-h200-2 AA-01.tar.gz
@@ -152,6 +154,54 @@ last_gpu_busy_at, identity} 或 null, "progress":
   pending_reason: entry exited 75 (GPU busy); retry #12 in 1 s
   gpu_holder:     GPU 0: pid 81234 user root 40.0 GiB: python /root/xbr/mkc/dl/tools/gpu_exec.py ...
   ```
+
+## 打包：`task pack`
+
+`task init` 生成一个需要手工填写的模板。`task pack` 则用项目里的文件和命令行参数构建任务包，校验它，并在
+stdout 上只输出它的路径，因此可以和 `task submit` 组合使用：
+
+```sh
+pkg=$(task pack kernels/ tools/gpu_exec.py src/moe_kernel.py=kernels.py \
+        --task-id MO-01 --entry 'python3 run.py --spec spec/moe.yaml' \
+        --precompile 'python3 precompile.py kernels.py' --precompile-timeout 1800 \
+        --with-cute-helpers --gpus '{"count": 1, "min_free_gb": 40}' \
+        --venv /opt/venvs/tune --env CUTE_DSL_ARCH=sm_90a \
+        --output-key best_config --output-key speedup \
+        --task-md notes/MO-01.md -o /tmp/MO-01.tar.gz) && task submit "$pkg"
+```
+
+源（`SRC`，任意多个）：
+
+| 形式 | 放到哪里 |
+| --- | --- |
+| 目录 `d/` | 它的内容放到包的根目录（`d/x.py` 变成 `x.py`） |
+| 文件 `f.py` | 包的根目录，名为 `f.py` |
+| `SRC=DEST` | 包内的 `DEST`（文件或目录；`DEST` 必须在包内） |
+
+符号链接会被跟随：包里放的是内容，因此不依赖项目目录。`--exclude GLOB`（可重复）在复制目录时略过匹配
+GLOB 的名字。两个源写同一个文件会报错（`conflict`）。打包本来就会略过的名字（`__pycache__`、`.git`、
+`*.pyc` 等，见 [[docs/task-package.zh-CN]]）不会被打包。
+
+然后：
+
+- `task.json`：源里有 `task.json` 时以它为基础；否则由参数生成，此时必须给 `--task-id` 和 `--entry`。
+  参数设置或扩展它：`--task-id`、`--entry CMD` 和 `--precompile CMD`（按 shell 的规则拆分，但不经过
+  shell 执行；`--precompile-timeout SECONDS`）、`--gpus`（`none`、`0,1`、`GPU-...`，或 JSON，如 `'[0, 1]'`
+  或 `'{"count": 1, "min_free_gb": 40}'`；默认 none）、`--venv PATH`、`--require-path PATH`、
+  `--env NAME=VALUE`（合并进 `env`）、`--timeout SECONDS`、`--output-key KEY`（追加到
+  `result.required_outputs`）。可重复的参数可以给多次。
+- `TASK.md`：`--task-md FILE`，否则用源里的 `TASK.md`，否则生成一个简短的占位文件，写明源和入口命令。
+- `progress.json`：源里的，否则生成一个 `not_started` 的（`updated_at` 固定，相同输入得到相同的任务包和内容哈希）。
+- `taskmgr_task.py` 总是从当前运行的 taskmgr 的模板复制（源里有不同的副本时会被替换，并给出警告）。
+  `--with-cute-helpers` 还会复制 `precompile.py` 和 `cutecache.py`（见 [[docs/task-package.zh-CN]] 的“预编译”）。
+- 结果按 `task validate` 的规则校验。无效时：退出码 1，错误写到 stderr，不写任何文件，stdout 为空。
+- `-o PATH`（`--output`）：目录，或以 `.tar.gz` / `.tgz` 结尾的文件（与 `task submit` 打包目录的方式相同，
+  逐字节可复现）。默认 `./<task_id>`。PATH 已存在时报错（`exists`，退出码 2），`--force` 则替换它。
+
+退出码 0 有效（stdout：路径），1 无效，2 参数或源有误。`--detail` 输出
+`{"valid", "path", "archive", "task_id", "content_hash", "features", "source_files", "warnings"}`
+（无效时：`{"valid": false, "errors", "path": null}`）。`features` 是任务包需要的服务器功能（见
+[[docs/task-package.zh-CN]] 的“服务器功能”）。
 
 ## 重试与重跑
 

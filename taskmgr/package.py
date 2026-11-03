@@ -150,6 +150,9 @@ def _inside(rel: str) -> bool:
     return not (n == ".." or n.startswith(("../", "/")))
 
 
+is_inside = _inside
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 
