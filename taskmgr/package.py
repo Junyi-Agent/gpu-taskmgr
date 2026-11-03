@@ -47,6 +47,7 @@ TASK_KEYS: dict[str, tuple[str, ...]] = {
     "precompile": ("argv", "timeout_seconds"),
     "environment": ("venv", "required_paths"),
     "result": ("required_outputs",),
+    "gpus": ("count", "min_free_gb", "from"),  # the object form (GPU selection)
 }
 ANNOTATION_PREFIX = "x-"
 
@@ -161,6 +162,8 @@ def task_features(task: object) -> list[str]:
     used: list[str] = []
     if "precompile" in task:
         used.append("precompile")
+    if isinstance(task.get("gpus"), dict):
+        used.append("gpu_select")
     return sorted(used)
 
 
@@ -182,6 +185,58 @@ def _check_keys(task: JsonDict, errors: list[Problem]) -> None:
                 % ANNOTATION_PREFIX,
                 "task.json",
             )
+
+
+def _check_gpu_list(gpus: list[JsonValue], what: str, errors: list[Problem]) -> None:
+    """Entries of a GPU list: nvidia-smi indices or full GPU-... UUIDs, no duplicates."""
+    for g in gpus:
+        if _is_int(g):
+            if g < 0:
+                _err(errors, "schema", "GPU index must be >= 0: %r" % g, "task.json")
+        elif isinstance(g, str):
+            if g.startswith("MIG-"):
+                _err(errors, "gpu", "MIG instances are not supported: %s" % g, "task.json")
+            elif not g.startswith("GPU-"):
+                _err(
+                    errors,
+                    "schema",
+                    "GPU string must be a full UUID starting with GPU-: %r" % g,
+                    "task.json",
+                )
+        else:
+            _err(
+                errors,
+                "schema",
+                "GPU entry must be an integer index or UUID string: %r" % (g,),
+                "task.json",
+            )
+    keys = [json.dumps(g) for g in gpus]
+    if len(set(keys)) != len(keys):
+        _err(errors, "gpu", "%s contains duplicate entries" % what, "task.json")
+
+
+def _check_gpu_select(spec: JsonDict, errors: list[Problem]) -> None:
+    """`gpus` as an object: {"count": N, "min_free_gb"?: X, "from"?: [GPUs]}."""
+    count = spec.get("count")
+    if not (_is_int(count) and count >= 1):
+        _err(errors, "schema", "gpus.count must be an integer >= 1", "task.json")
+    if "min_free_gb" in spec:
+        m = spec["min_free_gb"]
+        if isinstance(m, bool) or not isinstance(m, (int, float)) or not m > 0:
+            _err(errors, "schema", "gpus.min_free_gb must be a number > 0", "task.json")
+    if "from" in spec:
+        cand = spec["from"]
+        if not (isinstance(cand, list) and cand):
+            _err(errors, "schema", "gpus.from must be a non-empty array of GPUs", "task.json")
+        else:
+            _check_gpu_list(cand, "gpus.from", errors)
+            if _is_int(count) and count > len(cand):
+                _err(
+                    errors,
+                    "gpu",
+                    "gpus.count %d is more than the %d GPUs in gpus.from" % (count, len(cand)),
+                    "task.json",
+                )
 
 
 def check_task_json(task: object, errors: list[Problem]) -> None:
@@ -226,33 +281,18 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
                     "task.json",
                 )
     gpus = task.get("gpus")
-    if not isinstance(gpus, list):
-        _err(errors, "schema", "gpus must be an array (use [] for no GPU)", "task.json")
+    if isinstance(gpus, dict):
+        _check_gpu_select(gpus, errors)
+    elif not isinstance(gpus, list):
+        _err(
+            errors,
+            "schema",
+            "gpus must be an array (use [] for no GPU) or an object such as "
+            + '{"count": 1, "min_free_gb": 40}',
+            "task.json",
+        )
     else:
-        for g in gpus:
-            if _is_int(g):
-                if g < 0:
-                    _err(errors, "schema", "GPU index must be >= 0: %r" % g, "task.json")
-            elif isinstance(g, str):
-                if g.startswith("MIG-"):
-                    _err(errors, "gpu", "MIG instances are not supported: %s" % g, "task.json")
-                elif not g.startswith("GPU-"):
-                    _err(
-                        errors,
-                        "schema",
-                        "GPU string must be a full UUID starting with GPU-: %r" % g,
-                        "task.json",
-                    )
-            else:
-                _err(
-                    errors,
-                    "schema",
-                    "GPU entry must be an integer index or UUID string: %r" % (g,),
-                    "task.json",
-                )
-        keys = [json.dumps(g) for g in gpus]
-        if len(set(keys)) != len(keys):
-            _err(errors, "gpu", "gpus contains duplicate entries", "task.json")
+        _check_gpu_list(gpus, "gpus", errors)
     envi = task.get("environment")
     if envi is not None:
         if not isinstance(envi, dict):

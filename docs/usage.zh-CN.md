@@ -89,6 +89,9 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 - 带 `precompile` 的作业在不占 GPU 编译时显示 `precompiling`（状态是 `running`），等待 GPU 时显示
   `pending-gpu`（状态是 `queued`）。`--detail` 和 `task status` 给出 `phase`（见
   [[docs/task-package.zh-CN]] 的“预编译”）。
+- `gpus` 为对象（启动时挑选 GPU）的作业，在没有满足请求的空闲 GPU 时显示 `pending-gpu`（状态是
+  `queued`）；`pending_reason` 说明有几块合格，`task status` 显示 `gpu_request`，选定之后显示 `gpus`
+  （见 [[docs/task-package.zh-CN]] 的“按条件选择 GPU”）。
 - `task jobs` 列出所查询的全部服务器合计最近提交的 10 个作业；`-n N`（正整数）修改数量。
   `--host` 和 `--state` 先过滤，`-n` 统计过滤后剩下的作业。`--detail` 返回同样的作业。
 - 按提交时间（UTC）排序，最新的在最后。所有显示 STATE 的命令中，同一状态颜色相同：queued 和 `pending-gpu` 黄、
@@ -129,8 +132,8 @@ submission key，并打印重试命令 `task submit --host H --submission-key K 
 dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries,
 last_gpu_busy_at, identity} 或 null, "progress":
 <progress.json 或 null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",
-"cancel_request", "gpu_holders", "complete"}`。对已结束的作业，输出最终的 `result.json`，并在顶层加上
-`host`、`complete`、`retry_of`、`retried_as` 和 `cancel_request`。
+"gpu_request", "cancel_request", "gpu_holders", "complete"}`。对已结束的作业，输出最终的 `result.json`，并在顶层加上
+`host`、`complete`、`retry_of`、`retried_as`、`gpu_request` 和 `cancel_request`。
 
 - `cancel_request`：`null`，或者有人请求取消该作业后为 `{"by", "at", "via"}`：`by` 是运行
   `task cancel` 的 CLI 的 `user@hostname`（`via: "cli"`）；在服务器上取消或由较旧的 CLI 取消时，是服务器

@@ -37,7 +37,7 @@ from .common import (
     try_read_json,
     utcnow_iso,
 )
-from .gpu import gpu_holders, resolve_declarations
+from .gpu import gpu_holders, request_from_task, resolve_declarations
 from .monitor import assess, identity_of
 from .records import CancelRequest, Job, JsonValue, KeyMapping, Runner, SkippedEntry
 from .store import (
@@ -145,7 +145,9 @@ def cmd_receive(store: Store, args: Args) -> int:
                 details=errors,
             )
         assert task is not None  # validate_dir returns the task when there are no errors
-        gpus = resolve_declarations(task.get("gpus") or [])
+        spec = task.get("gpus")
+        request = request_from_task(spec) if isinstance(spec, dict) else None
+        gpus = resolve_declarations(spec) if isinstance(spec, list) else []
         pkg = os.path.join(updir, "package")
         os.rename(root, pkg)
         if os.path.exists(ext):
@@ -165,6 +167,7 @@ def cmd_receive(store: Store, args: Args) -> int:
                 key,
                 gpus,
                 phase=initial_phase(task),
+                gpu_request=request,
             )
             # The key mapping is written first; a mapping whose job does not exist is stale.
             atomic_write_json(
@@ -265,7 +268,18 @@ def waits_for_gpu(job: Job) -> bool:
     or queued)."""
     if job["state"] == "running":
         return bool(job.get("pending_reason")) and not precompiling(job)
-    return job["state"] == "queued" and not precompiling(job) and bool(job.get("gpus"))
+    wants = job.get("gpus") or job.get("gpu_request")
+    return job["state"] == "queued" and not precompiling(job) and bool(wants)
+
+
+def waited_gpus(job: Job) -> list[str] | None:
+    """The UUIDs a waiting job needs: its GPUs, the candidates of its request, or None
+    (every GPU)."""
+    gpus = [g["uuid"] for g in job.get("gpus", [])]
+    if gpus:
+        return gpus
+    request = job.get("gpu_request")
+    return (request.get("from_uuids") or None) if request else None
 
 
 def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, object]:
@@ -295,7 +309,7 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
         return out
     if waits_for_gpu(job):
         try:
-            out["gpu_holders"] = gpu_holders([g["uuid"] for g in job.get("gpus", [])] or None)
+            out["gpu_holders"] = gpu_holders(waited_gpus(job))
         except TaskmgrError as e:
             out["gpu_holders"] = None
             out["gpu_holders_error"] = e.message

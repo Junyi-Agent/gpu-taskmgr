@@ -74,7 +74,8 @@ Other language: [[docs/assumptions.zh-CN]]
 17. Extra config key `scheduler_poll_seconds`; extra commands `task host list|enable|disable|remove|ping`, `task whoami`, `task update`, `task version`.
 18. A retry or automatic re-run job gets its own `submitted_at` (the time it was created),
     so `task jobs` lists it as a separate row after the jobs it re-runs. It copies the
-    resolved GPU UUIDs of the old job and is not re-validated. A queued job that already
+    resolved GPU UUIDs of the old job (or its `gpu_request`, and chooses again) and is not
+    re-validated. A queued job that already
     has a `runner.json` with an execution identity (not expected) becomes `unknown` with
     `error.kind = "record_incomplete"` instead of being dispatched.
 19. GPU busy (desc-2 D17): `pending_reason` is removed once a relaunch has kept running

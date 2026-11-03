@@ -94,6 +94,10 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 - A job with `precompile` shows `precompiling` while it compiles without GPUs (state
   `running`), then `pending-gpu` while it waits for them (state `queued`). `--detail` and
   `task status` show `phase` (see [[docs/task-package]], Precompile).
+- A job whose `gpus` is an object (GPUs chosen at launch) shows `pending-gpu` while no
+  GPUs that meet its request are free (state `queued`); `pending_reason` says how many
+  qualify, and `task status` shows `gpu_request` and, once chosen, `gpus` (see
+  [[docs/task-package]], GPU selection).
 - `task jobs` lists the 10 most recently submitted jobs over all queried servers together;
   `-n N` (a positive integer) changes the count. `--host` and `--state` filter first, so
   `-n` counts the jobs that remain. `--detail` returns the same jobs.
@@ -138,9 +142,9 @@ before the upload with `unsupported_feature` (exit 2) and the hint `task host ad
 dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries,
 last_gpu_busy_at, identity} or null, "progress":
 <progress.json or null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",
-"cancel_request", "gpu_holders", "complete"}`. For a finished job it prints the final
-`result.json` with `host`, `complete`, `retry_of`, `retried_as` and `cancel_request` added at
-the top level.
+"gpu_request", "cancel_request", "gpu_holders", "complete"}`. For a finished job it prints the final
+`result.json` with `host`, `complete`, `retry_of`, `retried_as`, `gpu_request` and
+`cancel_request` added at the top level.
 
 - `cancel_request`: `null`, or `{"by", "at", "via"}` once someone asked to cancel the job:
   `by` is the `user@hostname` of the CLI that ran `task cancel` (`via: "cli"`), or the server's

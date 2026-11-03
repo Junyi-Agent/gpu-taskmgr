@@ -18,7 +18,8 @@ Filling instructions (for humans and AI agents):
 - task.json fields: precompile.argv and precompile.timeout_seconds (optional, separate
   from timeout_seconds), entry.argv (the command; relative paths with "/" are package files,
   bare names like python3 are looked up on PATH remotely), gpus (nvidia-smi indices or
-  GPU-... UUIDs, [] for none), environment.venv / required_paths (absolute remote paths),
+  GPU-... UUIDs, [] for none; or {"count": N, "min_free_gb": X, "from": [...]} to take any
+  N GPUs that are free, with X GiB free each, when the job starts), environment.venv / required_paths (absolute remote paths),
   env (no CUDA_VISIBLE_DEVICES, CUDA_DEVICE_ORDER, VIRTUAL_ENV or TASKMGR_*),
   timeout_seconds (optional), result.required_outputs (keys that must be in outputs).
 - The entry script writes progress and results with taskmgr_task.py:

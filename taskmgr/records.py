@@ -15,6 +15,8 @@ __all__ = [
     "ErrorInfo",
     "GpuDecl",
     "GpuHolder",
+    "GpuRequest",
+    "GpuSelect",
     "Job",
     "JsonDict",
     "JsonValue",
@@ -41,6 +43,30 @@ class GpuDecl(TypedDict):
 
     declared: int | str
     uuid: str
+
+
+# "from" is a keyword, so the optional keys use the functional syntax.
+_GpuSelectOptional = TypedDict(
+    "_GpuSelectOptional", {"min_free_gb": float, "from": list[int | str]}, total=False
+)
+
+
+class GpuSelect(_GpuSelectOptional):
+    """task.json `gpus` as an object: any `count` GPUs that meet the conditions, chosen at
+    launch. `from` limits the candidates (indices or GPU-... UUIDs)."""
+
+    count: int
+
+
+class _GpuRequestBase(TypedDict):
+    count: int
+
+
+class GpuRequest(_GpuRequestBase, total=False):
+    """job.json gpu_request: task.json's GpuSelect with `from` resolved to UUIDs."""
+
+    min_free_gb: float
+    from_uuids: list[str]
 
 
 class _GpuHolderBase(TypedDict):
@@ -110,6 +136,9 @@ class Job(_JobBase, total=False):
     phase: str
     # Set by the first cancel request (`cancel_requested` becomes true at the same time).
     cancel_request: CancelRequest
+    # task.json `gpus` was an object: `gpus` is [] until the scheduler chose GPUs that meet
+    # the request at launch, and [] again when the job is queued after a GPU-busy exit.
+    gpu_request: GpuRequest
 
 
 class TakeoverNote(TypedDict):
@@ -212,7 +241,7 @@ class _TaskSpecBase(TypedDict):
     schema_version: int
     task_id: str
     entry: TaskEntry
-    gpus: list[int | str]
+    gpus: list[int | str] | GpuSelect
 
 
 class TaskSpec(_TaskSpecBase, total=False):

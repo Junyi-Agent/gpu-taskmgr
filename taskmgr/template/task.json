@@ -3,7 +3,7 @@
   "task_id": "{{TASK_ID}}",
   "precompile": "<REQUIRED: replace with an object such as {\"argv\": [\"python3\", \"precompile.py\", \"kernels.py\"], \"timeout_seconds\": 1800} when the task compiles anything; delete the precompile key if it compiles nothing>",
   "entry": {"argv": ["python3", "run.py"]},
-  "gpus": "<REQUIRED: JSON array of nvidia-smi GPU indices or full GPU UUIDs, e.g. [0, 1]; use [] for a CPU-only task>",
+  "gpus": "<REQUIRED: JSON array of nvidia-smi GPU indices or full GPU UUIDs, e.g. [0, 1]; use [] for a CPU-only task; or an object to let the server choose free GPUs at launch, e.g. {\"count\": 1, \"min_free_gb\": 40}>",
   "environment": {
     "venv": "<REQUIRED: absolute path of the remote venv, e.g. /opt/venvs/tune; delete the venv key if none>",
     "required_paths": []

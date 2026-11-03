@@ -5,10 +5,11 @@ import pwd
 import shutil
 import subprocess
 from collections.abc import Iterable, Sequence
+from typing import NamedTuple
 
 from . import procutil
 from .common import TaskmgrError
-from .records import GpuDecl, GpuHolder
+from .records import GpuDecl, GpuHolder, GpuRequest, GpuSelect
 
 # The command line of a GPU holder is cut to this many characters.
 HOLDER_COMMAND_MAX = 200
@@ -156,3 +157,104 @@ def gpu_holders(uuids: Iterable[str] | None = None) -> list[GpuHolder]:
         out.append(h)
     out.sort(key=lambda h: (h["gpu"] if h["gpu"] is not None else 1 << 30, h["pid"]))
     return out
+
+
+# ---------------------------------------------------------------------------
+# GPU selection (task.json `gpus` as an object, chosen at launch)
+
+MIB_PER_GB = 1024  # min_free_gb is in GiB, as nvidia-smi counts memory in MiB
+
+
+class GpuState(NamedTuple):
+    idx: int  # nvidia-smi index
+    uuid: str
+    free_mib: int | None
+    total_mib: int | None
+    mode: str  # compute mode: Default, Exclusive_Process, Prohibited, ...
+    apps: int  # processes with a CUDA context on it
+
+
+def query_gpu_state() -> list[GpuState]:
+    """Every GPU with its free memory, compute mode and number of compute processes."""
+    apps: dict[str, int] = {}
+    for uuid, _, _ in query_compute_apps():
+        apps[uuid] = apps.get(uuid, 0) + 1
+    out: list[GpuState] = []
+    for parts in _smi("--query-gpu=index,uuid,memory.free,memory.total,compute_mode"):
+        if len(parts) < 5:
+            continue
+        index = _int(parts[0])
+        if index is None:
+            continue
+        uuid = parts[1]
+        out.append(
+            GpuState(index, uuid, _int(parts[2]), _int(parts[3]), parts[4], apps.get(uuid, 0))
+        )
+    return out
+
+
+def request_from_task(spec: GpuSelect) -> GpuRequest:
+    """job.json gpu_request for a task.json `gpus` object (checked by validation):
+    `from` is resolved to UUIDs now, and the request must be possible on this machine."""
+    req: GpuRequest = {"count": spec["count"]}
+    if "min_free_gb" in spec:
+        req["min_free_gb"] = spec["min_free_gb"]
+    available = query_gpu_state()
+    if "from" in spec:
+        req["from_uuids"] = [g["uuid"] for g in resolve_declarations(list(spec["from"]))]
+    cand = [g for g in available if g.uuid in req.get("from_uuids", [g.uuid])]
+    if "min_free_gb" in req:
+        need = req["min_free_gb"] * MIB_PER_GB
+        cand = [g for g in cand if g.total_mib is None or g.total_mib >= need]
+    if len(cand) < req["count"]:
+        raise TaskmgrError(
+            "invalid_gpus",
+            "gpus asks for %s, but this machine has only %d such GPUs"
+            % (describe_request(req), len(cand)),
+        )
+    return req
+
+
+def describe_request(req: GpuRequest) -> str:
+    """E.g. "1 GPU with >= 40 GiB free" / "2 idle GPUs from 0, 1, 2"."""
+    n = req["count"]
+    if "min_free_gb" in req:
+        text = "%d GPU%s with >= %g GiB free" % (n, "" if n == 1 else "s", req["min_free_gb"])
+    else:
+        text = "%d idle GPU%s" % (n, "" if n == 1 else "s")
+    listed = req.get("from_uuids")
+    if listed:
+        text += " among %d listed" % len(listed)
+    return text
+
+
+def select_gpus(
+    req: GpuRequest, state: Sequence[GpuState], unavailable: Iterable[str]
+) -> tuple[list[GpuDecl] | None, str]:
+    """Choose GPUs for a request: (decls, "") or (None, why none). `unavailable` are the
+    UUIDs taskmgr's own jobs hold or reserve.
+
+    A GPU qualifies when it is a candidate (`from`), not unavailable, not Prohibited, has
+    no compute process if it is in Exclusive_Process mode (no context could be created),
+    and either has min_free_gb free or, without min_free_gb, no compute process at all.
+    Among the qualifying GPUs the ones with the most free memory win, then the lowest index.
+    """
+    busy = set(unavailable)
+    allowed = req.get("from_uuids")
+    need = req["min_free_gb"] * MIB_PER_GB if "min_free_gb" in req else None
+    ok: list[GpuState] = []
+    for g in state:
+        if allowed is not None and g.uuid not in allowed:
+            continue
+        if g.uuid in busy or g.mode.lower() == "prohibited":
+            continue
+        if g.apps and (need is None or "exclusive" in g.mode.lower()):
+            continue
+        if need is not None and (g.free_mib is None or g.free_mib < need):
+            continue
+        ok.append(g)
+    if len(ok) < req["count"]:
+        return None, "waiting for %s (%d qualify now)" % (describe_request(req), len(ok))
+    ok.sort(key=lambda g: (-(g.free_mib or 0), g.idx))
+    chosen = sorted(ok[: req["count"]], key=lambda g: g.idx)
+    return [{"declared": g.idx, "uuid": g.uuid} for g in chosen], ""

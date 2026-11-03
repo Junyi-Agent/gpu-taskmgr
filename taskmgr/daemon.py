@@ -17,13 +17,16 @@ from .common import (
     PHASE_GPU,
     PHASE_PRECOMPILE,
     TERMINAL_STATES,
+    TaskmgrError,
     try_flock_fd,
     utcnow_iso,
 )
+from .gpu import GpuState, query_gpu_state, select_gpus
 from .monitor import Takeover, assess, mark_unknown, may_have_started
 from .records import ErrorInfo, Job, Runner
 from .store import (
     Store,
+    choosing_gpus,
     end_without_result,
     finalize_run,
     has_run,
@@ -163,9 +166,43 @@ class Daemon:
             log("recovery of %s: %s" % (jobid, {k: v for k, v in res.items() if k != "takeover"}))
 
     # -- scheduling -----------------------------------------------------------
+    def gpu_state(self) -> tuple[list[GpuState] | None, str]:
+        """The GPUs' memory and processes for jobs that choose their GPUs, read before the
+        state lock is taken (nvidia-smi can be slow); (None, "") when no queued job needs
+        them, (None, why) when nvidia-smi failed."""
+        if not any(
+            j["state"] == "queued" and choosing_gpus(j) for _, j in self.store.iter_jobs(True)
+        ):
+            return None, ""
+        try:
+            return query_gpu_state(), ""
+        except TaskmgrError as e:
+            return None, e.message
+
+    def choose(
+        self, jobdir: str, job: Job, state: list[GpuState] | None, why: str, taken: set[str]
+    ) -> str | None:
+        """Choose GPUs for a queued job with a gpu_request; save them in job.json and return
+        the job dir, or record why it waits (pending_reason) and return None. Needs the lock."""
+        request = job.get("gpu_request")
+        assert request is not None
+        if state is None:
+            chosen, reason = None, "cannot choose GPUs: %s" % (why or "no GPU information")
+        else:
+            chosen, reason = select_gpus(request, state, taken)
+        if chosen is None:
+            if job.get("pending_reason") != reason:  # written only when the reason changes
+                job["pending_reason"] = reason
+                _ = self.store.save_job(jobdir, job)
+            return None
+        job["gpus"] = chosen
+        log("chose GPUs %s for %s" % ([g["declared"] for g in chosen], job["jobid"]))
+        return self.store.save_job(jobdir, job)
+
     def schedule_pass(self) -> None:
         st = self.store
         cfg = st.config
+        gpu_state, gpu_error = self.gpu_state()
         with st.state_lock():
             jobs = list(st.iter_jobs(active=True))
             held: dict[str, str] = {}  # uuid -> state of the holder
@@ -184,6 +221,14 @@ class Daemon:
             reserved: set[str] = set()
             max_cpu = cfg["max_cpu_jobs"]
             for jobdir, job in queued:
+                if choosing_gpus(job):
+                    # Any GPUs that meet the request, among those no job holds or an
+                    # earlier queued job waits for; it reserves nothing while it waits.
+                    taken = set(held) | reserved
+                    chose = self.choose(jobdir, job, gpu_state, gpu_error, taken)
+                    if chose is None:
+                        continue
+                    jobdir = chose
                 uuids = [g["uuid"] for g in run_gpus(job)]
                 if not uuids:
                     if (max_cpu is None or cpu_active < int(max_cpu)) and self.dispatch(

@@ -44,8 +44,9 @@ def display_state(job: JsonDict) -> str:
     phase = job.get("phase")
     if state == "running" and phase == PHASE_PRECOMPILE:
         return PRECOMPILING_STATE
+    choosing = bool(job.get("gpu_request")) and not job.get("gpus")
     if (state == "running" and job.get("pending_reason")) or (
-        state == "queued" and phase == PHASE_GPU
+        state == "queued" and (phase == PHASE_GPU or (choosing and phase != PHASE_PRECOMPILE))
     ):
         return PENDING_GPU_STATE
     return state
@@ -118,6 +119,22 @@ def _error_field(err: object) -> Fields:
     return [("error", "%s: %s" % (e.get("kind"), e.get("message")), RED)] if "kind" in e else []
 
 
+def _gpus_text(gpus: object) -> str:
+    """`0 (GPU-0000...), 2 (GPU-2222...)`, or `-` for none (yet)."""
+    rows_ = [as_dict(g) for g in cast(list[object], gpus)] if isinstance(gpus, list) else []
+    return ", ".join("%s (%s)" % (_s(g.get("declared")), _s(g.get("uuid"))) for g in rows_) or "-"
+
+
+def _request_text(req: Mapping[str, object]) -> str:
+    """`gpus` as an object, e.g. "1 GPU with >= 40 GiB free, chosen at launch"."""
+    n, gb = _s(req.get("count")), req.get("min_free_gb")
+    text = "%s idle GPU(s)" % n if gb is None else "%s GPU(s) with >= %s GiB free" % (n, _s(gb))
+    listed = req.get("from_uuids")
+    if isinstance(listed, list) and listed:
+        text += " among %d listed" % len(cast(list[object], listed))
+    return text + ", chosen at launch"
+
+
 HOLDER_TEXT_COMMAND = 100  # characters of a holder's command line in the text output
 
 
@@ -164,7 +181,7 @@ def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
         for k in ("validation_errors", "warnings"):
             if meta.get(k):
                 fields.append((k, _s(meta.get(k)), YELLOW))
-        skip = ("host", "complete", "retry_of", "retried_as", "cancel_request")
+        skip = ("host", "complete", "retry_of", "retried_as", "cancel_request", "gpu_request")
         keys = sorted(k for k in out if not k.startswith("_") and k not in skip)
         fields.append(("result", ", ".join(keys) or "-", None))
     else:
@@ -175,8 +192,11 @@ def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
             ("host", _s(out.get("host")), None),
             ("state", state, STATE_COLORS.get(state)),
             ("submitted_at", _s(out.get("submitted_at")), None),
-            ("gpus", _s(out.get("gpus")), None),
+            ("gpus", _gpus_text(out.get("gpus")), None),
         ]
+        req = as_dict(out.get("gpu_request"))
+        if req:
+            fields.append(("gpu_request", _request_text(req), None))
         if out.get("pending_reason"):
             fields.append(("pending_reason", _s(out.get("pending_reason")), YELLOW))
         if out.get("cancel_requested"):

@@ -58,7 +58,7 @@ up: "[[taskmgr/README.zh-CN]]"
 16. `_taskmgr.host` 是远程机器的主机名。
 17. 额外的配置键 `scheduler_poll_seconds`；额外的命令 `task host list|enable|disable|remove|ping`、`task whoami`、`task update`、`task version`。
 18. 重试或自动重跑的作业有自己的 `submitted_at`（创建时间），所以 `task jobs` 把它列为单独一行，
-    排在被重跑的作业之后。它沿用旧作业已解析的 GPU UUID，不重新校验。queued 作业如果已经有带执行身份的
+    排在被重跑的作业之后。它沿用旧作业已解析的 GPU UUID（或沿用 `gpu_request` 并重新挑选），不重新校验。queued 作业如果已经有带执行身份的
     `runner.json`（不应出现），它变为 `unknown`，`error.kind = "record_incomplete"`，不派发。
 19. GPU 忙（desc-2 D17）：某次重新启动持续运行满 `gpu_retry_interval_seconds` 后才删除
     `pending_reason`，而不是一启动就删除，这样反复退出 75 的作业不会在 `running` 和

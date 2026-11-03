@@ -255,6 +255,9 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
     for the next dispatch and runner.json is moved aside as runner.prev-N.json. A requested cancel ends the job
     as cancelled instead. Returns None when the run record does not show such an exit or
     the job is not running/stopping (an unknown job is never queued again).
+
+    A job whose GPUs the scheduler chose (`gpu_request`) gets them cleared, so that it
+    chooses again; its shim calls this right after the GPU-busy exit instead of waiting.
     """
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
@@ -274,6 +277,12 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
             job["stop_reason"] = None
             job["error"] = None
             _ = job.pop("pending_reason", None)
+            if job.get("gpu_request"):
+                # Its GPUs were chosen at dispatch and one turned out busy: choose again.
+                job["gpus"] = []
+                job["pending_reason"] = "entry exited %s (GPU busy); choosing GPUs again" % (
+                    runner.get("return_code")
+                )
             jobdir = store.save_job(jobdir, job)
             _ = store.set_runner_aside(jobdir)
             return job

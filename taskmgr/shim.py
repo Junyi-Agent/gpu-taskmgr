@@ -20,6 +20,7 @@ from .monitor import (
     may_have_started,
     record_unconfirmed,
     requested_stop,
+    requeue_gpu_busy,
     set_stopping,
 )
 from .records import ErrorInfo, Job, RemoteConfig, Runner, TaskEnvironment, TaskSpec
@@ -190,6 +191,12 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
     while True:
         pid = launch(store, jobdir, runner, argv, path, env, workdir, separator)
         if supervise(store, jobid, jobdir, runner, pid, timeout, cfg) != "gpu_busy":
+            return 0
+        if job.get("gpu_request"):
+            # The scheduler chose these GPUs; one is busy after all. Queue the job again
+            # so that the scheduler chooses again (maybe other GPUs) on its next pass.
+            requeued = requeue_gpu_busy(store, jobid)
+            log("entry exited GPU busy; job is now %s" % (requeued or job)["state"])
             return 0
         if not wait_for_gpu(store, jobid, jobdir, runner, cfg):
             return 0

@@ -33,6 +33,7 @@ from .common import (
 from .records import (
     ErrorInfo,
     GpuDecl,
+    GpuRequest,
     Job,
     JsonDict,
     JsonValue,
@@ -285,6 +286,12 @@ def initial_phase(task: TaskSpec) -> str | None:
     return PHASE_PRECOMPILE if task.get("precompile") else None
 
 
+def choosing_gpus(job: Job) -> bool:
+    """Whether the scheduler must choose the job's GPUs before its next run: it has a
+    gpu_request, no GPUs yet, and its next run is not a precompile (which needs none)."""
+    return bool(job.get("gpu_request")) and not job.get("gpus") and not precompiling(job)
+
+
 def run_gpus(job: Job) -> list[GpuDecl]:
     """The GPUs the job's current (or next) run uses: none while it precompiles."""
     return [] if precompiling(job) else job.get("gpus", [])
@@ -314,6 +321,7 @@ def job_summary(job: Job) -> dict[str, object]:
         "pending_reason": job.get("pending_reason"),
         "phase": job.get("phase"),
         "cancel_request": job.get("cancel_request"),
+        "gpu_request": job.get("gpu_request"),
     }
 
 
@@ -705,8 +713,10 @@ def new_job_record(
     auto_restarts: int = 0,
     retry_of: str | None = None,
     phase: str | None = None,
+    gpu_request: GpuRequest | None = None,
 ) -> Job:
-    """job.json of a job that has just been queued (a submission or a retry)."""
+    """job.json of a job that has just been queued (a submission or a retry). A job with
+    a gpu_request has no GPUs until the scheduler chooses them."""
     now = utcnow_iso()
     job: Job = {
         "schema_version": SCHEMA_VERSION,
@@ -729,6 +739,9 @@ def new_job_record(
     }
     if phase is not None:
         job["phase"] = phase
+    if gpu_request is not None:
+        job["gpu_request"] = gpu_request
+        job["gpus"] = []
     return job
 
 
@@ -839,6 +852,7 @@ def clone_job(
         auto_restarts=old.get("auto_restarts", 0) + 1 if automatic else 0,
         retry_of=old["jobid"],
         phase=initial_phase(load_task(old_jobdir)),  # a new job has an empty workdir
+        gpu_request=old.get("gpu_request"),  # chooses its GPUs again
     )
     enqueue_staged(store, staged, job)
     old["retried_as"] = old.get("retried_as", []) + [jobid]

@@ -54,6 +54,7 @@ shared files.
  "gpus": [{"declared": 0, "uuid": "GPU-..."}],
  "cancel_requested": false, "stop_reason": null | "cancel" | "timeout" | "leftover",
  "cancel_request": {"by": "junyi@laptop", "at": "...", "via": "cli" | "remote"},  (after a cancel)
+ "gpu_request": {"count": 1, "min_free_gb": 40, "from_uuids": [...]},  (gpus chosen at launch)
  "auto_restarts": 0, "dispatched_at": null | "...",
  "retry_of": null | "<jobid this job re-runs>", "retried_as": ["<jobids of its re-runs>"],
  "pending_reason": "entry exited 75 (GPU busy); retry #3 in 2 s",   (only while waiting)
@@ -140,7 +141,12 @@ under `max_cpu_jobs`. In phase `gpu` it is scheduled like any queued job, by its
 Each pass (under the state lock) walks queued jobs by `enqueue_seq` keeping a reserved set:
 a job starts only if all its GPUs are free and unreserved, otherwise its GPUs are added to
 the reserved set; a job touching a GPU held by an `unknown` job neither starts nor reserves.
-Jobs with `gpus: []` only obey `max_cpu_jobs`. Dispatch writes `runner.json`, then
+Jobs with `gpus: []` only obey `max_cpu_jobs`. A job with `gpu_request` and no GPUs yet
+(task.json `gpus` as an object, [[docs/task-package]] GPU selection) gets its GPUs chosen in
+its turn among those no job holds or reserves, using GPU memory and processes that the pass
+reads with nvidia-smi before it takes the state lock; the choice is saved in `job.json`
+`gpus` before dispatch. If none qualify, `pending_reason` says why (written only when the
+text changes) and the job reserves nothing. Dispatch writes `runner.json`, then
 `job.json` (running) and the rename, and only then double-forks the shim (new session,
 reparented to init) and hands it the already-locked `shim.lock`. The shim runs
 `python3 -m taskmgr.remote ... shim` with the daemon's code root first on `PYTHONPATH`;

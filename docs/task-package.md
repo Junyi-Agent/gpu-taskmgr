@@ -46,7 +46,11 @@ Other language: [[docs/task-package.zh-CN]]
 - `precompile` (optional): `{"argv": [...], "timeout_seconds": N}`, see Precompile.
   `argv` follows the rules of `entry.argv`; `timeout_seconds` is optional.
 - `gpus`: nvidia-smi indices (PCI bus order) or full `GPU-...` UUIDs; `[]` = no GPU. MIG
-  UUIDs and duplicates (also an index and a UUID naming the same GPU) are rejected.
+  UUIDs and duplicates (also an index and a UUID naming the same GPU) are rejected. Or an
+  object that lets the server choose the GPUs when the job is launched (see GPU selection
+  below; needs the server feature `gpu_select`):
+  `{"count": 1}` (any idle GPU), `{"count": 2, "min_free_gb": 40}`,
+  `{"count": 1, "min_free_gb": 40, "from": [4, 5, 6, 7]}`.
 - `env` names match `^[A-Za-z_][A-Za-z0-9_]*$`; values are strings. `env` may not set
   `CUDA_VISIBLE_DEVICES`, `CUDA_DEVICE_ORDER`, `VIRTUAL_ENV`, `TASKMGR_*`.
 
@@ -98,6 +102,7 @@ the key runs code older than the list and implements none of them):
 | --- | --- |
 | `strict_task_json` | the server rejects task.json keys it does not know (`unknown_key`) |
 | `precompile` | `task.json` `precompile` |
+| `gpu_select` | `task.json` `gpus` as an object (GPU selection) |
 | `gpu_holders` | `status` of a job waiting for GPUs lists the processes holding them ([[docs/usage]]) |
 | `cancel_by` | `cancel` records who asked (`cancel_request`, [[docs/usage]]) |
 
@@ -165,6 +170,43 @@ Compile before that. With `precompile` in `task.json`:
 `cutecache.load_precompiled("kernels.py")`; a kernel that was not precompiled fails the run
 instead of compiling on the GPU. The defaults describe an H200; `PRECOMPILE_ARCH`,
 `PRECOMPILE_QUACK_ARCH`, `PRECOMPILE_N_SM` and `PRECOMPILE_CAPABILITY` change them.
+
+## GPU selection
+
+With `gpus` as an object the job names no GPUs; the server chooses them each time the job is
+about to start:
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `count` | yes | how many GPUs, an integer >= 1 |
+| `min_free_gb` | no | each GPU must have at least this much memory free (GiB, 1024 MiB as nvidia-smi counts; a number > 0) |
+| `from` | no | the candidates: indices or `GPU-...` UUIDs, as in the list form (default: every GPU) |
+
+A GPU qualifies when, at that moment (nvidia-smi on the server):
+
+- no taskmgr job holds it (running, stopping, unknown) and no earlier queued job waits for it;
+- its compute mode is not `Prohibited`, and in `Exclusive_Process` mode no process holds a
+  CUDA context on it (none could be created);
+- with `min_free_gb`: its free memory is at least that; without: no process holds a CUDA
+  context on it at all ("any idle GPU").
+
+Among the qualifying GPUs the ones with the most free memory are taken, ties by lowest
+index. The choice is recorded in `job.json` `gpus` (`{"declared": <index>, "uuid"}`), so
+`task status` and `_taskmgr.gpus` in `result.json` show which GPUs the job got;
+`CUDA_VISIBLE_DEVICES` has their UUIDs as usual. `task status` also shows the request as
+`gpu_request` (`from` resolved to UUIDs as `from_uuids`).
+
+When fewer than `count` GPUs qualify, the job stays `queued` (shown `pending-gpu`) with a
+`pending_reason` such as `waiting for 2 GPUs with >= 40 GiB free (1 qualify now)`, and the
+scheduler tries again on every pass (`scheduler_poll_seconds`, default 1 s), like the
+GPU-busy relaunch. A waiting job reserves no GPU: a later job with fixed GPUs that are free
+can start before it. If the entry exits 75 on a chosen GPU (another process took it after the
+choice), the job is queued again at its place with its GPUs cleared, and the next pass
+chooses again; the workdir is kept as for any GPU-busy relaunch. A retry or an automatic
+re-run chooses its GPUs again. With `precompile`, GPUs are chosen after the precompile.
+
+At submit the server refuses a request this machine can never meet (`invalid_gpus`): more GPUs
+than it has (or than `from` lists), or `min_free_gb` above the total memory of enough GPUs.
 
 ## Entry process environment
 

@@ -344,6 +344,7 @@ def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, o
         out["retry_of"] = j.get("retry_of")
         out["retried_as"] = j.get("retried_as", [])
         out["cancel_request"] = j.get("cancel_request")
+        out["gpu_request"] = j.get("gpu_request")
         return out
     out = {
         "host": host,
@@ -357,6 +358,7 @@ def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, o
         "progress": st.get("progress"),
         "submitted_at": j["submitted_at"],
         "gpus": j["gpus"],
+        "gpu_request": j.get("gpu_request"),
         "error": j.get("error"),
         "retry_of": j.get("retry_of"),
         "retried_as": j.get("retried_as", []),

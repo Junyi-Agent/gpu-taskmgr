@@ -43,7 +43,10 @@ up: "[[taskmgr/README.zh-CN]]"
   使用 `["bash", "-c", "..."]`。
 - `precompile`（可选）：`{"argv": [...], "timeout_seconds": N}`，见“预编译”。`argv` 的规则与
   `entry.argv` 相同；`timeout_seconds` 可省略。
-- `gpus`：nvidia-smi 索引（PCI 总线顺序）或完整的 `GPU-...` UUID；`[]` 表示不用 GPU。MIG
+- `gpus`：nvidia-smi 索引（PCI 总线顺序）或完整的 `GPU-...` UUID；`[]` 表示不用 GPU。也可以是一个对象，
+  让服务器在作业启动时挑选 GPU（见下文“按条件选择 GPU”；需要服务器功能 `gpu_select`）：`{"count": 1}`
+  （任意一块空闲 GPU）、`{"count": 2, "min_free_gb": 40}`、`{"count": 1, "min_free_gb": 40, "from": [4, 5, 6, 7]}`。
+  列表形式中，MIG
   UUID 和重复项（包括索引和 UUID 指向同一块 GPU 的情况）会被拒绝。
 - `env` 的变量名须匹配 `^[A-Za-z_][A-Za-z0-9_]*$`，值须为字符串。`env` 不得设置
   `CUDA_VISIBLE_DEVICES`、`CUDA_DEVICE_ORDER`、`VIRTUAL_ENV`、`TASKMGR_*`。
@@ -91,6 +94,7 @@ up: "[[taskmgr/README.zh-CN]]"
 | --- | --- |
 | `strict_task_json` | 服务器拒绝它不认识的 task.json 键（`unknown_key`） |
 | `precompile` | `task.json` 的 `precompile` |
+| `gpu_select` | `task.json` 的 `gpus` 为对象（按条件选择 GPU） |
 | `gpu_holders` | 等待 GPU 的作业的 `status` 列出占用这些 GPU 的进程（[[docs/usage.zh-CN]]） |
 | `cancel_by` | `cancel` 记录是谁请求的（`cancel_request`，[[docs/usage.zh-CN]]） |
 
@@ -149,6 +153,38 @@ precompile support, needed by this package; run `task host add gpu1` to update i
 `cutecache.load_precompiled("kernels.py")` 加载；没有预编译的 kernel 会让运行失败，不会在 GPU 上
 编译。默认值对应 H200，可用 `PRECOMPILE_ARCH`、`PRECOMPILE_QUACK_ARCH`、`PRECOMPILE_N_SM` 和
 `PRECOMPILE_CAPABILITY` 修改。
+
+## 按条件选择 GPU
+
+`gpus` 为对象时，作业不指定具体的 GPU；服务器在作业每次即将启动时挑选：
+
+| 键 | 必需 | 含义 |
+| --- | --- | --- |
+| `count` | 是 | 需要几块 GPU，整数 >= 1 |
+| `min_free_gb` | 否 | 每块 GPU 至少要有这么多空闲显存（GiB，按 nvidia-smi 的 1024 MiB 计；数字 > 0） |
+| `from` | 否 | 候选 GPU：索引或 `GPU-...` UUID，规则与列表形式相同（默认：所有 GPU） |
+
+一块 GPU 在当时（以服务器上 nvidia-smi 的结果为准）满足以下条件才算合格：
+
+- 没有被 taskmgr 作业占用（running、stopping、unknown），也没有排在前面的 queued 作业在等它；
+- 计算模式不是 `Prohibited`；处于 `Exclusive_Process` 模式时，没有进程在它上面持有 CUDA context
+  （否则无法再创建）；
+- 有 `min_free_gb` 时，空闲显存不少于该值；没有时，完全没有进程在它上面持有 CUDA context（“任意空闲 GPU”）。
+
+在合格的 GPU 中优先选空闲显存最多的，相同时选索引小的。选择结果记录在 `job.json` 的 `gpus` 中
+（`{"declared": <索引>, "uuid"}`），所以 `task status` 和 `result.json` 的 `_taskmgr.gpus` 会显示作业拿到了
+哪些 GPU；`CUDA_VISIBLE_DEVICES` 照常是它们的 UUID。`task status` 还以 `gpu_request` 显示请求
+（`from` 解析为 UUID，键名 `from_uuids`）。
+
+合格的 GPU 不足 `count` 块时，作业保持 `queued`（显示为 `pending-gpu`），`pending_reason` 类似
+`waiting for 2 GPUs with >= 40 GiB free (1 qualify now)`，调度器每轮（`scheduler_poll_seconds`，默认 1 秒）
+重试，与 GPU 被占时的重新启动相同。等待中的作业不预留任何 GPU：后面指定了空闲 GPU 的作业可以先启动。
+如果入口在选中的 GPU 上退出 75（选定之后别的进程抢走了它），作业回到原来的排队位置并清空 GPU，下一轮
+重新挑选；workdir 与其他 GPU-busy 重启一样保留。重试或自动重跑会重新挑选 GPU。有 `precompile` 时，在预编译
+完成之后才挑选 GPU。
+
+提交时，服务器拒绝这台机器永远满足不了的请求（`invalid_gpus`）：要的 GPU 比机器上（或 `from` 列出的）多，
+或者 `min_free_gb` 超过了足够数量 GPU 的总显存。
 
 ## 入口进程的环境
 

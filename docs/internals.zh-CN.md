@@ -52,6 +52,7 @@ up: "[[taskmgr/README.zh-CN]]"
  "gpus": [{"declared": 0, "uuid": "GPU-..."}],
  "cancel_requested": false, "stop_reason": null | "cancel" | "timeout" | "leftover",
  "cancel_request": {"by": "junyi@laptop", "at": "...", "via": "cli" | "remote"},  （取消之后）
+ "gpu_request": {"count": 1, "min_free_gb": 40, "from_uuids": [...]},  （启动时挑选 GPU）
  "auto_restarts": 0, "dispatched_at": null | "...",
  "retry_of": null | "<本作业重跑的 jobid>", "retried_as": ["<重跑作业的 jobid>"],
  "pending_reason": "entry exited 75 (GPU busy); retry #3 in 2 s",   （只在等待期间存在）
@@ -130,7 +131,10 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 
 每轮调度（在状态锁下）按 `enqueue_seq` 遍历 queued 作业，并维护一个预留集合：作业所需的 GPU
 全部空闲且都不在预留集合中时才启动，否则把它需要的 GPU 加入预留集合；如果作业用到的某块 GPU
-被 `unknown` 作业占用，它既不启动也不预留。`gpus: []` 的作业只受 `max_cpu_jobs` 限制。派发时先
+被 `unknown` 作业占用，它既不启动也不预留。`gpus: []` 的作业只受 `max_cpu_jobs` 限制。带 `gpu_request` 且还没有 GPU 的作业（task.json 的 `gpus` 为对象，
+见 [[docs/task-package.zh-CN]] 按条件选择 GPU）轮到它时，在没有被占用或预留的 GPU 中挑选；挑选依据的显存和进程信息由
+本轮调度在拿状态锁之前用 nvidia-smi 读取；选择结果在派发前写入 `job.json` 的 `gpus`。没有合格的 GPU 时，
+`pending_reason` 说明原因（只在文字变化时写入），作业不预留任何 GPU。派发时先
 写 `runner.json`，再写 `job.json`（running）并重命名目录，最后才两次 fork 出 shim（新会话，被 init
 收养），并把已加锁的 `shim.lock` 交给它。shim 运行 `python3 -m taskmgr.remote ... shim`，
 `PYTHONPATH` 最前面是守护进程的代码根目录；在服务器上它是解析后的压缩包
