@@ -31,7 +31,8 @@ task --help
 
 ```sh
 task host add gpu1 --ssh tuner@10.0.0.12
-# 主要步骤，依次执行（全部十步见 docs/install.zh-CN.md）；每处改动先询问 [y/N]（--yes 全部回答 yes）：
+# 主要步骤，依次执行（全部十步见 docs/install.zh-CN.md）；每处改动先询问 [y/N]（--yes 回答 yes，但不删除：
+# remote_root 之外的旧代码需要 --prune-old-code；--plan 只输出会改什么，不做任何改动）：
 #  1. 检查 ssh、Linux、python3 >= 3.10、systemctl --user
 #  2. 上传 dist/taskmgr-remote.pyz 到 ~/.taskmgr-remote/versions/<version>.pyz，
 #     把 ~/.taskmgr-remote/taskmgr-remote.pyz 链接过去（不在本地构建；code version 与 task 不同时报错）

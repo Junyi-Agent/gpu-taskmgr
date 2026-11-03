@@ -32,7 +32,9 @@ task --help
 
 ```sh
 task host add gpu1 --ssh tuner@10.0.0.12
-# main steps, in order (all ten: docs/install.md); every change asks [y/N] first (--yes answers yes):
+# main steps, in order (all ten: docs/install.md); every change asks [y/N] first (--yes answers
+# yes, but never deletes: old code outside remote_root needs --prune-old-code; --plan
+# prints what would change and changes nothing):
 #  1. check ssh, Linux, python3 >= 3.10, systemctl --user
 #  2. upload dist/taskmgr-remote.pyz to ~/.taskmgr-remote/versions/<version>.pyz and
 #     point ~/.taskmgr-remote/taskmgr-remote.pyz at it (nothing is built locally; fails

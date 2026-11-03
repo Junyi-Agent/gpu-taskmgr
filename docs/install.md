@@ -72,16 +72,36 @@ root access is needed. `task host add` sets up a server, or updates one, over ss
 
 ```sh
 task host add NAME --ssh USER@HOST [--port N] [--identity-file PATH]
-              [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE] [--yes]
+              [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE]
+              [--yes] [--plan] [--prune-old-code]
 task host add gpu1 --ssh tuner@10.0.0.12          # new server
 task host add gpu1                                # existing entry: check and update
+task host add gpu1 --plan                         # print what would change; change nothing
+task host add gpu1 --yes                          # update without questions; old code is kept
+task host add gpu1 --yes --prune-old-code         # ... and delete the code of older versions
 ```
 
 It goes through ten steps. Each step prints what it checks and what it found. A step that
 needs to change something describes the change and asks `proceed? [y/N]`; anything but
 `y` stops the run there (exit 2), and the steps after it are not run. Read-only checks
-never ask. `--yes` answers every question with yes. Without `--yes` and without a terminal
-on stdin, the run stops at the first change it would make (exit 2) and nothing is changed.
+never ask. `--yes` answers every question with yes, except a deletion (below). Without
+`--yes` and without a terminal on stdin, the run stops at the first change it would make
+(exit 2) and nothing is changed.
+
+**Deletions are not covered by `--yes`.** Step `old_code` deletes directories and files
+outside `remote_root` (the code of older versions). `--yes` does not answer it: it runs only
+with `--prune-old-code`, or when you type `y` in a terminal (the question is asked even with
+`--yes`). Without either, the step reports `kept`, deletes nothing, names the flag, and the
+run still counts as complete (exit 0). Every other change only adds or replaces what
+`task host add` installs (the archive in `versions/`, the unit, `config.json` when missing,
+the machine entry) or moves job directories into a backup without deleting them.
+
+**`--plan`** (also `--dry-run`) runs every read-only check and reports each change the run
+would make as status `planned`, with the change as the detail; it asks nothing and changes
+nothing (no upload, no systemctl call, no machine-list write, not even the setup lock). Steps
+that depend on a planned change are `skipped` (`data` needs the new code in place, `verify`
+the finished setup). Exit 0: nothing to change; 1: changes are planned; 2: a check failed.
+The JSON has `"plan": true` and `"planned": [<step names>]`.
 
 The command is idempotent: on an up-to-date server every step reports `ok`, nothing is
 changed and nothing is asked. To update a server after `git pull` (or after editing the
@@ -99,13 +119,14 @@ only the code step and a service restart run.
 | `linger` | `loginctl show-user` | `loginctl enable-linger <user>`; if refused, the step fails with the command an admin has to run once, and the run continues |
 | `verify` | `taskmgr-remote --protocol-version N version` answers; the service's main PID holds `locks/daemon.lock` | none |
 | `machines` | the entry in `~/.taskmgr/machines.json` | add or update the entry (shows the change); other entries are left as they are |
-| `old_code` | code that older versions installed outside `remote_root`: the tree `~/taskmgr` (only when it holds the marker file `.taskmgr-code-version` and has no `.git`) and the `~/taskmgr.old-*` directories without `.git`; the first zipapp layout `~/taskmgr-remote.pyz` (a symlink) and `~/.taskmgr-remote/<version>.pyz` | delete them. Machine lists on other computers that still name them stop working; run `task host add NAME` there. If declined, the run reports it and the next run asks again |
+| `old_code` | code that older versions installed outside `remote_root`: the tree `~/taskmgr` (only when it holds the marker file `.taskmgr-code-version` and has no `.git`) and the `~/taskmgr.old-*` directories without `.git`; the first zipapp layout `~/taskmgr-remote.pyz` (a symlink) and `~/.taskmgr-remote/<version>.pyz` | delete them, only with `--prune-old-code` or a `y` typed in a terminal (`--yes` does not answer it); otherwise `kept`. Machine lists on other computers that still name them stop working; run `task host add NAME` there. If declined, the run reports it and the next run asks again |
 
 Progress and prompts go to stderr. Stdout gets a table of the steps (STEP, STATUS, DETAIL)
 and a `done:` or `incomplete:` line; with `--detail` it gets the JSON object
 `{"host", "steps": [{"name", "status", "detail"}], "complete"}` instead. `status` is one of
-`ok`, `changed`, `skipped`, `declined`, `failed`. Exit code 0 when every step is `ok` or
-`changed`, otherwise 2.
+`ok`, `changed`, `kept` (a deletion that was not allowed, see above), `planned` (`--plan`),
+`skipped`, `declined`, `failed`. Exit code 0 when every step is `ok`, `changed` or `kept`
+(`--plan`: see above), otherwise 2.
 
 The new machine entry gets absolute paths (`remote_root`, `remote_command =
 <remote_root>/taskmgr-remote.pyz`) and these ssh options, merged with `--ssh-option`

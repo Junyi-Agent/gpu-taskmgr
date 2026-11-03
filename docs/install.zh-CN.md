@@ -68,15 +68,30 @@ checkout 运行时默认取 checkout 里的 `dist/taskmgr-remote.pyz`；从 `tas
 
 ```sh
 task host add NAME --ssh USER@HOST [--port N] [--identity-file PATH]
-              [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE] [--yes]
+              [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE]
+              [--yes] [--plan] [--prune-old-code]
 task host add gpu1 --ssh tuner@10.0.0.12          # 新服务器
 task host add gpu1                                # 已有条目：检查并更新
+task host add gpu1 --plan                         # 只输出会改什么，不做任何改动
+task host add gpu1 --yes                          # 不询问直接更新；旧代码保留
+task host add gpu1 --yes --prune-old-code         # ……并删除旧版本的代码
 ```
 
 命令分十步执行。每一步都会输出它检查了什么、发现了什么。需要改动时，先说明要做的改动，再询问
 `proceed? [y/N]`；回答 `y` 以外的任何内容都会在这一步停止（退出码 2），后面的步骤不再执行。
-只读检查从不询问。`--yes` 对所有询问回答 yes。没有 `--yes`、stdin 也不是终端时，命令在第一处
-需要改动的地方停止（退出码 2），不做任何改动。
+只读检查从不询问。`--yes` 对所有询问回答 yes，删除除外（见下）。没有 `--yes`、stdin 也不是终端时，
+命令在第一处需要改动的地方停止（退出码 2），不做任何改动。
+
+**`--yes` 不包括删除。** `old_code` 步骤会删除 `remote_root` 之外的目录和文件（旧版本的代码）。
+`--yes` 不回答这一项：只有加 `--prune-old-code`，或在终端里输入 `y`（即使带 `--yes` 也会询问）时才执行。
+两者都没有时，这一步报告 `kept`，什么也不删，并给出该参数；这次运行仍算完成（退出码 0）。其他改动都只是
+新增或替换 `task host add` 安装的东西（`versions/` 里的压缩包、unit、缺失时的 `config.json`、机器条目），
+或把作业目录移入备份目录而不删除。
+
+**`--plan`**（也可写 `--dry-run`）执行所有只读检查，把这次运行会做的每处改动报告为状态 `planned`，
+detail 是改动内容；不询问，也不做任何改动（不上传、不调用 systemctl、不写机器列表，连 setup 锁也不拿）。
+依赖某个计划中改动的步骤报告 `skipped`（`data` 需要新代码就位，`verify` 需要配置完成）。退出码 0：
+没有要改的；1：有计划中的改动；2：某项检查失败。JSON 带 `"plan": true` 和 `"planned": [<步骤名>]`。
 
 这个命令是幂等的：服务器已是最新状态时，每一步都报告 `ok`，不做改动，也不询问。`git pull`
 （或修改代码）之后要更新服务器，先用 `python3 -m taskmgr.pyz -o dist` 重新构建，再执行一次
@@ -93,12 +108,13 @@ task host add gpu1                                # 已有条目：检查并更�
 | `linger` | `loginctl show-user` | `loginctl enable-linger <user>`；被拒绝时这一步失败，并给出管理员需要执行一次的命令，后续步骤继续执行 |
 | `verify` | `taskmgr-remote --protocol-version N version` 有应答；服务的主 PID 持有 `locks/daemon.lock` | 无 |
 | `machines` | `~/.taskmgr/machines.json` 中的条目 | 新增或更新该条目（显示改动）；其他条目保持原样 |
-| `old_code` | 旧版本装在 `remote_root` 之外的代码：代码目录 `~/taskmgr`（仅当其中有标记文件 `.taskmgr-code-version` 且没有 `.git`）和没有 `.git` 的 `~/taskmgr.old-*` 目录；第一版 zipapp 布局的 `~/taskmgr-remote.pyz`（符号链接）和 `~/.taskmgr-remote/<版本>.pyz` | 删除它们。其他电脑上的机器列表如果还写着这些路径，会无法使用，需要在那里执行一次 `task host add NAME`。回答 no 时这一步报告 declined，下次运行会再问 |
+| `old_code` | 旧版本装在 `remote_root` 之外的代码：代码目录 `~/taskmgr`（仅当其中有标记文件 `.taskmgr-code-version` 且没有 `.git`）和没有 `.git` 的 `~/taskmgr.old-*` 目录；第一版 zipapp 布局的 `~/taskmgr-remote.pyz`（符号链接）和 `~/.taskmgr-remote/<版本>.pyz` | 删除它们，只在加 `--prune-old-code` 或在终端里输入 `y` 时执行（`--yes` 不回答这一项）；否则报告 `kept`。其他电脑上的机器列表如果还写着这些路径，会无法使用，需要在那里执行一次 `task host add NAME`。回答 no 时这一步报告 declined，下次运行会再问 |
 
 进度和询问输出到 stderr。stdout 输出各步骤的表格（STEP、STATUS、DETAIL）和一行 `done:` 或
 `incomplete:`；加 `--detail` 时改为输出 JSON 对象
 `{"host", "steps": [{"name", "status", "detail"}], "complete"}`。`status` 取值为 `ok`、
-`changed`、`skipped`、`declined`、`failed`。所有步骤都是 `ok` 或 `changed` 时退出码为 0，否则为 2。
+`changed`、`kept`（未获允许的删除，见上文）、`planned`（`--plan`）、`skipped`、`declined`、`failed`。
+所有步骤都是 `ok`、`changed` 或 `kept` 时退出码为 0（`--plan` 见上文），否则为 2。
 
 新条目使用绝对路径（`remote_root`，`remote_command = <remote_root>/taskmgr-remote.pyz`），
 并带有以下 ssh 选项，与 `--ssh-option` 合并（同名选项以后者为准）：`ServerAliveInterval=15`、

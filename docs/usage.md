@@ -25,7 +25,8 @@ task cancel  <jobid> [--host H]
 task retry   <jobid> [--host H]        # creates a new job; prints its jobid
 task resolve <jobid> [--host H] [--as stopped --confirm <jobid>]
 task host add NAME [--ssh USER@HOST] [--port N] [--identity-file F]
-                   [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE] [--yes]
+                   [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE]
+                   [--yes] [--plan] [--prune-old-code]
 task host list                         # configured servers
 task host remove NAME [--yes]          # drop a server from the machine list
 task host enable NAME                  # use a server again
@@ -199,10 +200,13 @@ not followed.
 machine list; `task host add NAME` checks an existing server and updates it (code,
 `remote_root`, systemd user unit and service, linger, machine entry, removal of the code
 tree that versions before the zipapp installed). Each change is
-shown and asked with `[y/N]`; `--yes` answers yes. A second run on an up-to-date server
-changes nothing and asks nothing. Progress and prompts go to stderr; stdout gets a summary
+shown and asked with `[y/N]`; `--yes` answers yes, except for deleting the code of older
+versions, which needs `--prune-old-code` (or a `y` typed in a terminal) and is otherwise
+`kept`. `--plan` prints every change the run would make and changes nothing (exit 0
+nothing to change, 1 changes planned, 2 a check failed). A second run on an up-to-date
+server changes nothing and asks nothing. Progress and prompts go to stderr; stdout gets a summary
 of the steps (`--detail`: `{"host", "steps": [{"name", "status", "detail"}], "complete"}`),
-exit 0 if every step is `ok` or `changed`, otherwise 2. The steps are described in
+exit 0 if every step is `ok`, `changed` or `kept`, otherwise 2. The steps are described in
 [[docs/install]].
 
 - `task host list` lists the machine list.

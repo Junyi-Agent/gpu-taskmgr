@@ -507,7 +507,28 @@ class AddHostTest(Env):
         self.assertEqual(self.statuses(out)["old_code"], "declined")
         self.assertIn("delete %s" % legacy, err)
         self.assertTrue(os.path.isdir(legacy))
+        # --yes does not delete: without a terminal the old code is kept (the run is complete).
         rc, out, err = self.add("--yes", new=False)
+        self.assertEqual(rc, 0, err)
+        self.expect(out, err, old_code="kept")
+        self.assertIn("--prune-old-code", self.detail(out, "old_code"))
+        self.assertTrue(os.path.isdir(legacy))
+        rc, text, _ = self.task("host", "add", "h1", "--yes", "--pyz", self.remote_pyz, text=True)
+        self.assertEqual(rc, 0)
+        assert isinstance(text, str)
+        self.assertIn("--prune-old-code", text)
+        # In a terminal --yes still asks for the deletion; "n" keeps it.
+        rc, out, err = self.add("--yes", new=False, answers="n\n")
+        self.assertEqual(rc, 2, err)
+        self.expect(out, err, old_code="declined")
+        self.assertIn("--yes does not answer it", err)
+        self.assertTrue(os.path.isdir(legacy))
+        # --plan lists it and deletes nothing.
+        rc, out, err = self.add("--plan", new=False)
+        self.assertEqual(rc, 1, err)
+        self.expect(out, err, old_code="planned")
+        self.assertTrue(os.path.isdir(legacy))
+        rc, out, err = self.add("--yes", "--prune-old-code", new=False)
         self.assertEqual(rc, 0, err)
         self.expect(out, err, old_code="changed")
         self.assertFalse(os.path.exists(legacy))
@@ -526,7 +547,7 @@ class AddHostTest(Env):
         with open(self.rpath(".taskmgr-remote", old), "wb") as f:
             _ = f.write(data)
         os.symlink(".taskmgr-remote/" + old, self.rpath(hostlegacy.OLD_CODE_LINK))
-        rc, out, err = self.add("--yes")
+        rc, out, err = self.add("--yes", "--prune-old-code")
         self.assertEqual(rc, 0, err)
         self.expect(
             out,
@@ -545,6 +566,59 @@ class AddHostTest(Env):
         rc, out, err = self.add("--yes", new=False)
         self.assertEqual(rc, 0, err)
         self.expect(out, err)
+
+    def test_plan_changes_nothing(self) -> None:
+        """--plan runs every check and reports each change as planned; nothing changes on
+        the server or in the machine list (also no setup lock and no systemctl change)."""
+        machines = self.machines_raw()
+        rc, out, err = self.add("--plan")
+        self.assertEqual(rc, 1, err)
+        self.expect(
+            out,
+            err,
+            code="planned",
+            remote_root="planned",
+            data="skipped",
+            unit="planned",
+            service="planned",
+            linger="planned",
+            verify="skipped",
+            machines="planned",
+        )
+        self.assertIs(self.get(out, "plan"), True)
+        self.assertEqual(
+            self.strs(out, "planned"),
+            ["code", "remote_root", "unit", "service", "linger", "machines"],
+        )
+        self.assertIn("upload", self.detail(out, "code"))
+        self.assertIn("enable", self.detail(out, "service"))
+        self.assertNotIn("[y/N]", err)
+        self.assertEqual(sorted(os.listdir(self.rhome)), [".fake-systemd"])
+        self.assertEqual(self.machines_raw(), machines)
+        self.assertEqual([c for c in self.calls() if CHANGING.match(c)], [])
+        self.assertNotIn("holding the setup lock", err)
+        # Set up, then a plan has nothing to do (exit 0).
+        rc, _, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
+        snap, ncalls = self.snapshot(), len(self.calls())
+        rc, out, err = self.add("--plan", new=False)
+        self.assertEqual(rc, 0, err)
+        self.expect(out, err)
+        self.assertEqual(self.strs(out, "planned"), [])
+        rc, text, _ = self.task("host", "add", "h1", "--plan", "--pyz", self.remote_pyz, text=True)
+        self.assertEqual(rc, 0)
+        assert isinstance(text, str)
+        self.assertIn("plan: nothing to change on host h1", text)
+        self.assertEqual(self.snapshot(), snap)
+        # An older version installed: the plan names the upload and the restart.
+        self.set_installed_version("1" * 64)
+        snap = self.snapshot()
+        rc, out, err = self.add("--plan", new=False)
+        self.assertEqual(rc, 1, err)
+        self.expect(out, err, code="planned", data="skipped", service="planned", verify="skipped")
+        self.assertIn("restart", self.detail(out, "service"))
+        self.assertEqual(self.snapshot(), snap)
+        self.assertEqual([c for c in self.calls()[ncalls:] if CHANGING.match(c)], [])
 
     def test_old_remote_root_is_reported(self) -> None:
         """Data under ~/taskmgr-root (the old default) is not moved. Setting up another

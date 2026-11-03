@@ -46,7 +46,11 @@ def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) 
         help=helps["add"],
         description="Check the server step by step and change only what differs from the "
         + "wanted state (code, remote_root, systemd user service, linger, machine list). "
-        + "Every change is confirmed with [y/N]; a second run changes nothing. "
+        + "Every change is confirmed with [y/N]; a second run changes nothing. --yes answers "
+        + "yes to every change except deleting code of older versions outside remote_root "
+        + "(step old_code): that needs --prune-old-code or a y typed in a terminal, otherwise "
+        + "it is kept. --plan runs every check and prints what would change, changing nothing "
+        + "(exit 0: nothing to change, 1: changes planned, 2: a check failed). "
         + "The server's storage root is $TASKMGR_REMOTE_ROOT (default: the existing entry's, "
         + "else ~/.taskmgr-remote on the server); it holds config.json, the job data and "
         + "the code.",
@@ -83,7 +87,24 @@ def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) 
         + "dist/taskmgr-remote.pyz in the checkout, or next to task.pyz); its code version "
         + "must equal this task's",
     )
-    _ = h.add_argument("--yes", "-y", action="store_true", help="answer yes to every prompt")
+    _ = h.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="answer yes to every prompt, except deletions (see --prune-old-code)",
+    )
+    _ = h.add_argument(
+        "--plan",
+        "--dry-run",
+        action="store_true",
+        help="check everything and print every change it would make; change nothing",
+    )
+    _ = h.add_argument(
+        "--prune-old-code",
+        action="store_true",
+        help="delete the code older versions installed outside remote_root (~/taskmgr, "
+        + "~/taskmgr.old-*, ~/taskmgr-remote.pyz); never done by --yes alone",
+    )
     _ = sub.add_parser("list", parents=[common], help=helps["list"], description=helps["list"])
     h = sub.add_parser(
         "remove",
@@ -309,10 +330,33 @@ def text_enabled(out: Mapping[str, object], color: bool) -> str:
 
 
 def text_add(out: Mapping[str, object], color: bool) -> str:
+    steps = _rows(out, "steps")
     rows: Sequence[Sequence[str]] = [
-        [_s(s.get("name")), _s(s.get("status")), _s(s.get("detail"))] for s in _rows(out, "steps")
+        [_s(s.get("name")), _s(s.get("status")), _s(s.get("detail"))] for s in steps
     ]
     text = render_table(("STEP", "STATUS", "DETAIL"), rows, color, {1: STEP_COLORS})
+    host = out.get("host")
+    failed = any(s.get("status") in ("failed", "declined") for s in steps)
+    if out.get("plan"):
+        planned = [str(n) for n in cast(list[object], out.get("planned") or [])]
+        if failed:
+            return text + message("plan", RED, "a check failed on host %s" % host, color)
+        if not planned:
+            return text + message("plan", GREEN, "nothing to change on host %s" % host, color)
+        return (
+            text
+            + message(
+                "plan",
+                YELLOW,
+                "host %s: steps %s would change; nothing was changed" % (host, ", ".join(planned)),
+                color,
+            )
+            + hint("run it without --plan to make the changes", color)
+        )
+    if any(s.get("status") == "kept" for s in steps):
+        text += hint(
+            "old code was kept; `task host add %s --prune-old-code` deletes it" % host, color
+        )
     if out.get("complete"):
         return text + message("done", GREEN, "host %s is set up" % out.get("host"), color)
     return text + message(

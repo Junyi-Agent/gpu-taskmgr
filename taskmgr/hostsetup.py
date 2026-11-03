@@ -3,6 +3,10 @@
 Every step checks the server, prints what it found, and changes something only when the
 server differs from the wanted state; each change is confirmed with [y/N] (`--yes` answers
 yes). A run on an up-to-date server changes nothing and asks nothing. Nothing needs root.
+Deleting something outside the install (step old_code) is destructive: --yes does not
+answer it; it needs `--prune-old-code` or a "y" typed in a terminal, else it is kept.
+`--plan` runs every check and reports every change as "planned" without making it (and
+without taking the setup lock).
 
 Steps: ssh (read-only checks), code, remote_root, data, unit, service, linger, verify
 (read-only), machines (the local machine list), old_code (removes code that older versions
@@ -31,7 +35,7 @@ from typing import Protocol, TypedDict, cast
 from . import hostlegacy, pyz
 from .common import DEFAULT_REMOTE_CONFIG, TaskmgrError, read_code_file
 from .hostlegacy import OLD_REMOTE_ROOT, LegacyProbe
-from .prompt import Declined, NonInteractive, Ui
+from .prompt import Declined, Kept, NonInteractive, Planned, Ui
 from .records import JsonDict, JsonValue, Server, SshConfig
 from .textout import BOLD, CYAN, GREEN, RED, YELLOW
 from .transport import Remote, edit_machines, load_machines
@@ -82,6 +86,8 @@ class AddHostArgs(Protocol):
     enabled: bool | None
     pyz: str | None
     yes: bool
+    plan: bool
+    prune_old_code: bool
 
 
 class Probe(TypedDict, total=False):
@@ -122,7 +128,7 @@ class Step(TypedDict):
     """One entry of the step summary (the command's result)."""
 
     name: str
-    status: str  # ok | changed | skipped | declined | failed
+    status: str  # ok | changed | planned | kept | skipped | declined | failed
     detail: str
 
 
@@ -260,6 +266,8 @@ def destination(s: Server) -> str:
 STEP_COLORS = {
     "ok": GREEN,
     "changed": "1;32",  # bold green: done, and something was changed
+    "planned": CYAN,
+    "kept": YELLOW,
     "skipped": YELLOW,
     "declined": YELLOW,
     "failed": RED,
@@ -280,7 +288,7 @@ def server_script() -> str:
 class HostSetup:
     def __init__(self, args: AddHostArgs, home: str) -> None:
         self.args: AddHostArgs = args
-        self.ui: Ui = Ui(args.yes)
+        self.ui: Ui = Ui(args.yes, args.plan, args.prune_old_code)
         self.home: str = home
         self.machines_path: str = os.path.join(self.home, "machines.json")
         self.existing: Server | None = None
@@ -301,6 +309,7 @@ class HostSetup:
         self.unit_changed: bool = False
         self.locker: subprocess.Popen[bytes] | None = None  # holds the server's setup lock
         self.steps: list[Step] = []
+        self.planned: set[str] = set()  # --plan: the steps with a change to make
 
     # -- the wanted machine entry ---------------------------------------------
     def _wanted_entry(self) -> Server:
@@ -382,6 +391,14 @@ class HostSetup:
                 self.ui.say("[%d/%d] %s: %s" % (i + 1, len(plan), name, title), CYAN)
                 try:
                     status, detail = fn()
+                except Planned as e:
+                    status, detail = "planned", str(e)
+                    self.planned.add(name)
+                except Kept as e:
+                    status = "kept"
+                    detail = "not changed: %s. Destructive, so --yes does not do it; " % e + (
+                        "run `task host add %s --prune-old-code` to do it" % self.args.name
+                    )
                 except Declined as e:
                     status, detail = "declined", str(e)
                 except (StepFailed, NonInteractive) as e:
@@ -396,12 +413,23 @@ class HostSetup:
             if self.staged is not None:
                 self._discard_staged(stopped_by or "the run ended early")
             _ = self._unlock()
-        complete = all(s["status"] in ("ok", "changed") for s in self.steps)
+        failed = any(s["status"] in ("failed", "declined") for s in self.steps)
+        complete = not failed and all(s["status"] in ("ok", "changed", "kept") for s in self.steps)
+        out: dict[str, object] = {"host": self.args.name, "steps": self.steps, "complete": complete}
+        if self.ui.plan:
+            out["plan"] = True
+            out["planned"] = [s["name"] for s in self.steps if s["status"] == "planned"]
+            n = len(self.planned)
+            self.ui.say(
+                "plan: %s" % ("failed, see the steps" if failed else "%d steps would change" % n),
+                RED if failed else (YELLOW if n else GREEN),
+            )
+            # 0: nothing to change, 1: changes planned, 2: a check failed
+            return out, (2 if failed else 1 if n else 0)
         self.ui.say(
             "done: %s" % ("the server is set up" if complete else "NOT complete, see the steps"),
             GREEN if complete else RED,
         )
-        out: dict[str, object] = {"host": self.args.name, "steps": self.steps, "complete": complete}
         return out, (0 if complete else 2)
 
     # -- remote helpers ---------------------------------------------------------
@@ -531,7 +559,8 @@ class HostSetup:
                 + "(e.g. /scratch/<user>/taskmgr-remote) and run again."
             )
         self._check_root_switch()
-        self._lock()
+        if not self.ui.plan:  # a plan changes nothing, not even the lock file
+            self._lock()
         return "ok", "%s, Python %s, systemd user instance ok" % (self.destination(), vtext)
 
     def _check_root_switch(self) -> None:
@@ -555,7 +584,7 @@ class HostSetup:
             % (root, root, where)
         )
         keep = "to keep using it, run again with %s=%s" % (REMOTE_ROOT_ENV, others[0])
-        if self.ui.yes:
+        if self.ui.yes and not self.ui.plan:
             raise StepFailed(
                 "%s. Nothing was changed; %s, or to use %s anyway run without --yes and "
                 % (problem, keep, root)
@@ -795,6 +824,9 @@ class HostSetup:
         return Remote(self.server_entry(self.staged)).call(["inspect"], timeout=300)
 
     def step_data(self) -> tuple[str, str]:
+        if self.ui.plan and ({"code", "remote_root"} & self.planned):
+            # The check runs `taskmgr-remote inspect` of the new code in the new root.
+            return "skipped", "plan: checked once steps code and remote_root are done"
         result = self._check_data()
         if self.staged is not None:
             self._install_staged()
@@ -968,8 +1000,33 @@ class HostSetup:
             return "the daemon started before the current code or unit was installed"
         return None
 
+    def _service_plan(self, p: Probe) -> list[str]:
+        """--plan: what step service would do."""
+        todo: list[str] = []
+        if p.get("enabled") != "enabled":
+            todo.append("`systemctl --user enable %s`" % UNIT)
+        if p.get("active") != "active":
+            todo.append("`systemctl --user start %s`" % UNIT)
+        else:
+            reason = self._stale_reason()
+            if reason is None and {"code", "unit"} & self.planned:
+                reason = "step %s would change" % " and ".join(
+                    s for s in ("code", "unit") if s in self.planned
+                )
+            if reason is not None:
+                todo.append("`systemctl --user restart %s` (%s)" % (UNIT, reason))
+        if "code" in self.planned:
+            todo.append("remove archives in %s that no running job uses" % self.store_path())
+        return todo
+
     def step_service(self) -> tuple[str, str]:
         p = self.run_probe()
+        if self.ui.plan:
+            todo = self._service_plan(p)
+            if todo:
+                self.ui.info("would change: " + "; ".join(todo))
+                raise Planned("; ".join(todo))
+            return "ok", "%s is enabled and active (pid %s)" % (UNIT, p.get("main_pid"))
         done: list[str] = []
         if p.get("enabled") != "enabled":
             self.ui.info("%s is %s" % (UNIT, p.get("enabled") or "not enabled"))
@@ -1043,6 +1100,8 @@ class HostSetup:
 
     # -- 8. verify (read-only) ------------------------------------------------------
     def step_verify(self) -> tuple[str, str]:
+        if self.ui.plan and self.planned:
+            return "skipped", "plan: verified after the planned changes are made"
         reply = Remote(self.server_entry()).call(["version"], timeout=120)
         p = self.run_probe()
         problems: list[str] = []

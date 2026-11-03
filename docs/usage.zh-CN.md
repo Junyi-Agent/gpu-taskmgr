@@ -25,7 +25,8 @@ task cancel  <jobid> [--host H]
 task retry   <jobid> [--host H]        # 创建一个新作业，输出新的 jobid
 task resolve <jobid> [--host H] [--as stopped --confirm <jobid>]
 task host add NAME [--ssh USER@HOST] [--port N] [--identity-file F]
-                   [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE] [--yes]
+                   [--ssh-option KEY=VALUE ...] [--disabled | --enabled] [--pyz FILE]
+                   [--yes] [--plan] [--prune-old-code]
 task host list                         # 已配置的服务器
 task host remove NAME [--yes]          # 从机器列表删除一台服务器
 task host enable NAME                  # 重新使用一台服务器
@@ -179,10 +180,12 @@ jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key �
 
 `task host add NAME --ssh USER@HOST` 通过 ssh 配置一台 GPU 服务器，并把它加入机器列表；
 `task host add NAME` 检查一台已有的服务器并更新它（代码、`remote_root`、systemd 用户 unit 和
-服务、linger、机器列表条目，以及删除 zipapp 之前的版本安装的代码目录）。每一处改动都会先显示，再用 `[y/N]` 询问；`--yes` 回答 yes。
+服务、linger、机器列表条目，以及删除 zipapp 之前的版本安装的代码目录）。每一处改动都会先显示，再用 `[y/N]` 询问；`--yes` 回答 yes，但删除旧版本的代码除外：它需要
+`--prune-old-code`（或在终端里输入 `y`），否则报告 `kept`。`--plan` 输出这次运行会做的每处改动，不做任何改动
+（退出码 0 没有要改的，1 有计划中的改动，2 某项检查失败）。
 服务器已是最新状态时，再执行一次不做改动，也不询问。进度和询问写到 stderr；stdout 输出各步骤的
 摘要（`--detail`：`{"host", "steps": [{"name", "status", "detail"}], "complete"}`），所有步骤都是
-`ok` 或 `changed` 时退出码为 0，否则为 2。各步骤见 [[docs/install.zh-CN]]。
+`ok`、`changed` 或 `kept` 时退出码为 0，否则为 2。各步骤见 [[docs/install.zh-CN]]。
 
 - `task host list` 列出机器列表。
 - `task host remove NAME` 从机器列表删除一台服务器，不改动服务器本身。

@@ -78,7 +78,8 @@ def step_old_code(s: Setup) -> tuple[str, str]:
         s.ui.info("  " + t)
     s.ui.confirm(
         "delete %s. Machine lists on other computers that still name " % ", ".join(trees + files)
-        + "it stop working; run `task host add %s` there" % s.host_name()
+        + "it stop working; run `task host add %s` there" % s.host_name(),
+        destructive=True,  # outside remote_root: --yes does not answer it
     )
     # a git checkout is never deleted, even if it appeared since the probe
     script = "".join(

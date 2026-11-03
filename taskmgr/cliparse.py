@@ -52,6 +52,8 @@ class Args(argparse.Namespace):
     enabled: bool | None
     pyz: str | None
     yes: bool
+    plan: bool
+    prune_old_code: bool
 
 
 class Command(NamedTuple):
