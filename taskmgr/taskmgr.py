@@ -290,15 +290,21 @@ def query_targets(servers: list[Server], host: str | None) -> tuple[list[Server]
     return enabled, skipped
 
 
-def _strip(reply: JsonDict) -> JsonDict:
-    """A remote reply without the protocol fields."""
+def _strip(reply: JsonDict, keep_features: bool = False) -> JsonDict:
+    """A remote reply without the protocol fields (`features` is kept only for the commands
+    that report on servers: version, whoami)."""
     _ = reply.pop("protocol_version", None)
     _ = reply.pop("ok", None)
+    if not keep_features:
+        _ = reply.pop("features", None)
     return reply
 
 
 def query_hosts(
-    servers: list[Server], host: str | None, rargs: Sequence[object]
+    servers: list[Server],
+    host: str | None,
+    rargs: Sequence[object],
+    keep_features: bool = False,
 ) -> tuple[list[tuple[str, JsonDict]], dict[str, object], int]:
     """Call rargs on the query targets: ([(host, reply)] in machine-list order, the
     {"errors", "skipped", "complete"} part of the result, exit code).
@@ -307,7 +313,11 @@ def query_hosts(
     """
     servers, skipped = query_targets(servers, host)
     results, errors = query_all(servers, rargs)
-    replies = [(s["name"], _strip(results[s["name"]])) for s in servers if s["name"] in results]
+    replies = [
+        (s["name"], _strip(results[s["name"]], keep_features))
+        for s in servers
+        if s["name"] in results
+    ]
     out: dict[str, object] = {"errors": errors, "skipped": skipped, "complete": not errors}
     if servers and not results:
         out["error"] = {"code": "all_hosts_failed", "message": "no server could be queried"}
@@ -696,7 +706,9 @@ def cmd_host(args: Args) -> CmdResult:
 def _host_versions(args: Args) -> tuple[dict[str, object], int]:
     """`version` on the query targets: {"hosts": [reply + host], "errors", "skipped",
     "complete"}."""
-    replies, out, code = query_hosts(load_machines(home_dir(args)), args.host, ["version"])
+    replies, out, code = query_hosts(
+        load_machines(home_dir(args)), args.host, ["version"], keep_features=True
+    )
     out["hosts"] = [{"host": h, **r} for h, r in replies]
     return out, code
 

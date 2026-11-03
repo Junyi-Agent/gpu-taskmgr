@@ -20,6 +20,11 @@ class FeaturesTest(Env):
         self.assertEqual(self.strs(out, "features"), sorted(FEATURES))
         ping = self.ok("host", "ping", "s1")
         self.assertEqual(self.strs(ping, "hosts", 0, "features"), sorted(FEATURES))
+        version = self.ok("version", "--host", "s1")
+        self.assertEqual(self.strs(version, "hosts", 0, "features"), sorted(FEATURES))
+        # Command results other than the server reports do not repeat them.
+        j = self.submit(self.make_pkg())
+        self.assertNotIn("features", self.obj(self.ok("cancel", j, "--host", "s1")))
 
     def test_validate_lists_the_features_a_package_needs(self) -> None:
         out = self.ok("validate", self.make_pkg())
