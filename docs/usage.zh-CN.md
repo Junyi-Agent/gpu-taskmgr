@@ -119,7 +119,9 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 提交回执：`{"host", "jobid", "task_id", "submission_key", "deduplicated", "content_hash",
 "state"}`。如果提交结果不确定（连接失败，或没有收到有效回复：错误码 `remote_error`），stderr 会给出所选的服务器和
 submission key，并打印重试命令 `task submit --host H --submission-key K PATH`；CLI 不会自动
-改投其他服务器。
+改投其他服务器。任务包用到的功能（如 `precompile`）服务器的代码不支持时，`task submit` 在上传前以
+`unsupported_feature` 拒绝（退出码 2），并提示运行 `task host add H`（见
+[[docs/task-package.zh-CN]]，服务器功能）。
 
 对未结束的作业，`task status` 输出
 `{"host", "jobid", "task_id", "state", "pending_reason", "phase", "cancel_requested", "run": {status,

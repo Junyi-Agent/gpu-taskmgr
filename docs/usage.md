@@ -128,6 +128,9 @@ Submit receipt: `{"host", "jobid", "task_id", "submission_key", "deduplicated",
 "content_hash", "state"}`. If the outcome is uncertain (connection failure, or no valid
 reply: error code `remote_error`), stderr names the chosen host and the submission key and prints the retry command
 `task submit --host H --submission-key K PATH`; the CLI never resubmits to another server.
+A package that uses a feature (such as `precompile`) the server's code lacks is refused
+before the upload with `unsupported_feature` (exit 2) and the hint `task host add H` (see
+[[docs/task-package]], Server features).
 
 `task status` for an unfinished job prints
 `{"host", "jobid", "task_id", "state", "pending_reason", "phase", "cancel_requested", "run": {status,

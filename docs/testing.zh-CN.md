@@ -55,6 +55,7 @@ sleep：它提交空操作的探测任务并等每个都成功；调度出探测
 | 机器条目 `"local": {"fail": "msg"}` | `transport: local` 抛出连接错误 |
 | 机器条目 `"local": {"fail_if_exists": "/path"}` | 该文件存在期间报连接错误 |
 | `TASKMGR_TEST_PROTOCOL_VERSION` | 远程端报告这个协议版本 |
+| `TASKMGR_TEST_FEATURES` | 远程端报告这些功能（逗号分隔；`-` 表示没有） |
 | `TASKMGR_TEST_SKIP_DAEMON_LOCK=1` | 守护进程跳过 `daemon.lock`（多守护进程测试） |
 | `TASKMGR_SHIM_EXECUTABLE` | 用于 exec shim 的解释器（模拟 shim 启动失败） |
 | `TASKMGR_TEST_SHIM_CRASH=<point>` | shim 在 `before_identity`、`before_exec`、`after_exit_recorded`、`before_finalize` 处退出 |

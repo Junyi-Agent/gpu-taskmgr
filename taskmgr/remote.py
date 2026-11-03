@@ -22,6 +22,7 @@ from typing import IO, cast
 from . import package
 from .common import (
     CODE_ROOT,
+    FEATURES,
     GPU_HOLDING_STATES,
     JOB_DIRS,
     JOBID_RE,
@@ -83,9 +84,19 @@ def remote_protocol_version() -> int:
     return int(v) if v else PROTOCOL_VERSION
 
 
+def remote_features() -> list[str]:
+    # TASKMGR_TEST_FEATURES: test-only override (comma-separated; "-" for none) to simulate
+    # a server whose code lacks a feature.
+    v = os.environ.get("TASKMGR_TEST_FEATURES")
+    if v is not None:
+        return sorted(f for f in v.split(",") if f and f != "-")
+    return sorted(FEATURES)
+
+
 def emit(obj: Mapping[str, object], code: int = 0) -> int:
     out = dict(obj)
     out["protocol_version"] = remote_protocol_version()
+    out["features"] = remote_features()
     _ = sys.stdout.write(json.dumps(out, sort_keys=True) + "\n")
     _ = sys.stdout.flush()
     return code

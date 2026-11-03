@@ -135,6 +135,7 @@ class PackageTest(Env):
                     "valid": True,
                     "task_id": "AA-01",
                     "content_hash": self.obj(out).get("content_hash"),
+                    "features": [],
                     "warnings": [],
                 },
             ),

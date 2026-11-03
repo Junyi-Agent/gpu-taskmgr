@@ -18,7 +18,7 @@ up: "[[taskmgr/README.zh-CN]]"
 | `precompile.py`、`cutecache.py` | 模板自带 | 在 CPU 上编译 CuTe DSL kernel、在 GPU 上加载（见“预编译”）；任务不需要编译时删除 |
 | `taskmgr_task.py` | 模板自带 | 仅依赖标准库的辅助模块：`write_progress`、`update_progress`、`write_result`、`update_outputs`（flock + 原子替换）；`claim_gpu`、`gpu_busy`（见下文 GPU 约定） |
 
-`task.json`（允许出现未知的额外键，会被忽略）：
+`task.json`：
 
 ```json
 {
@@ -33,6 +33,10 @@ up: "[[taskmgr/README.zh-CN]]"
 }
 ```
 
+- 键：只允许这里列出的键（以及 `precompile`）。其他任何键，无论在顶层还是在 `entry`、
+  `precompile`、`environment`、`result` 里，在 `task validate`、`task submit` 和服务器上都是错误
+  （代码 `unknown_key`）：本 taskmgr 不认识的键可能是更新版本的功能，也可能是拼写错误，从不被忽略。
+  以 `x-` 开头的键是注释，会被忽略（`"x-owner": "junyi"`）。
 - `task_id` 须匹配 `^[A-Z]{2}-[0-9]{2,4}$`。
 - `entry.argv[0]`：包含 `/` 时视为路径（相对路径指包内文件，相对作业的工作目录解析，必须
   必须是包内的可执行文件）；否则视为命令名，在远程入口进程的 PATH 上查找。执行时不经过 shell；需要 shell 语法时
@@ -77,6 +81,23 @@ up: "[[taskmgr/README.zh-CN]]"
 ## 打包与校验
 
 `task validate` 和 `task submit` 在本地检查任务包；上传后服务器会再检查一次。
+
+### 服务器功能
+
+有些 `task.json` 键需要服务器的代码实现了对应功能。`taskmgr-remote` 的每个应答都带
+`"features"`：其代码实现的功能列表（已排序）。没有这个键的服务器运行的是早于该列表的代码，一个功能都不支持：
+
+| 功能 | 含义 |
+| --- | --- |
+| `strict_task_json` | 服务器拒绝它不认识的 task.json 键（`unknown_key`） |
+| `precompile` | `task.json` 的 `precompile` |
+
+`task validate --detail` 列出任务包需要的功能（`"features"`）。任务包需要功能时，`task submit`
+在上传前向服务器查询功能（`taskmgr-remote version`），服务器缺少其中任一个就拒绝：错误
+`unsupported_feature`（退出码 2，不上传任何东西），例如 `server gpu1 runs code 3f9a1c0e7b2d without
+precompile support, needed by this package; run `task host add gpu1` to update it`；`details` 里有
+`missing` 和 `server_features`。`task host ping --detail` 和 `task version --detail` 显示每台服务器的
+`features`。
 
 - 不打进归档、也不计入内容哈希的路径：任一路径分量名为 `__pycache__`、`.git` 或 `.DS_Store`，
   以 `.pyc` 或 `.json.lock` 结尾（`taskmgr_task.py` 的 flock 文件，例如本地试跑留下的），或以

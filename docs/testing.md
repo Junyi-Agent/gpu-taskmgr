@@ -65,6 +65,7 @@ EEXIST).
 | machine entry `"local": {"fail": "msg"}` | `transport: local` raises a connection error |
 | machine entry `"local": {"fail_if_exists": "/path"}` | connection error while the file exists |
 | `TASKMGR_TEST_PROTOCOL_VERSION` | remote reports this protocol version |
+| `TASKMGR_TEST_FEATURES` | remote reports these features (comma-separated; `-` for none) |
 | `TASKMGR_TEST_SKIP_DAEMON_LOCK=1` | daemon skips `daemon.lock` (multi-daemon test) |
 | `TASKMGR_SHIM_EXECUTABLE` | interpreter used to exec the shim (shim start failure) |
 | `TASKMGR_TEST_SHIM_CRASH=<point>` | shim exits at `before_identity`, `before_exec`, `after_exit_recorded`, `before_finalize` |

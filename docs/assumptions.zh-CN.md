@@ -29,7 +29,8 @@ up: "[[taskmgr/README.zh-CN]]"
    的时间，所以不应答的服务器不会延长等待。超时后输出最后一次得到的状态对象（没有任何查询成功时为空），
    并附带 `error`（`wait_timeout`），退出码 2。如果截止时刻之后返回的查询结果是终态（或
    `unknown`），以该状态为准，退出码也按该状态。Ctrl-C 输出 `interrupted` 错误，退出码 2。
-8. 协议兼容指 `protocol_version` 整数相等（当前为 2；1 是基于 attempt 的旧协议）。对
+8. 协议兼容指 `protocol_version` 整数相等（当前为 2；1 是基于 attempt 的旧协议）。不改变协议 2
+   的新增功能通过应答中的 `features` 键声明（[[docs/task-package.zh-CN]]，服务器功能）；客户端在依赖某个功能之前先检查它。对
    `taskmgr-remote` 子命令，ssh 退出码 255 视为连接失败。`task host add` 运行的 shell 脚本自己也
    可能以 255 退出，所以只有 stderr 看起来像 ssh 的错误（`ssh:`、`connection refused`、
    `permission denied (` 等）时，255 才算连接失败。ssh 以 `BatchMode=yes` 运行；机器条目没有设置时，

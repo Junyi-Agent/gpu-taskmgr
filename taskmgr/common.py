@@ -29,6 +29,14 @@ else:  # runtime stays stdlib-only; typing.override only exists from Python 3.12
 
 PROTOCOL_VERSION = 2
 
+# What this code implements beyond protocol 2, reported in every taskmgr-remote reply as
+# "features" (a sorted list). A server without the key runs code older than this list.
+#   strict_task_json  the server rejects task.json keys it does not know (no silent ignore)
+#   precompile        task.json `precompile` (compile without GPUs before the entry runs)
+# `task submit` refuses a package that uses a feature its server does not report
+# (package.task_features), before the upload.
+FEATURES: tuple[str, ...] = ("precompile", "strict_task_json")
+
 # The package directory. Inside a zipapp it is a path into the archive
 # (/path/task.pyz/taskmgr), which os.path functions accept but open() does not.
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))

@@ -52,7 +52,14 @@ from .textout import (
     set_color,
     warn,
 )
-from .transport import ConnError, Remote, load_machines, query_all, query_timeout
+from .transport import (
+    ConnError,
+    Remote,
+    load_machines,
+    query_all,
+    query_timeout,
+    require_features,
+)
 from .transport import json_obj as _obj
 
 
@@ -192,6 +199,7 @@ def cmd_validate(args: Args) -> CmdResult:
         "valid": True,
         "task_id": task["task_id"],
         "content_hash": chash,
+        "features": package.task_features(task),
         "warnings": warnings,
     }, 0
 
@@ -209,7 +217,7 @@ def cmd_submit(args: Args) -> CmdResult:
     if args.submission_key and not SUBMISSION_KEY_RE.match(args.submission_key):
         raise TaskmgrError("bad_args", "--submission-key must match ^[A-Za-z0-9._-]{1,128}$")
     path = os.path.abspath(args.path)
-    errors, _, _, _ = validate_path(path)  # the server checks the size
+    errors, task, _, _ = validate_path(path)  # the server checks the size
     if errors:
         raise TaskmgrError(
             "invalid_package", "package validation failed (%d errors)" % len(errors), details=errors
@@ -218,13 +226,16 @@ def cmd_submit(args: Args) -> CmdResult:
     servers = load_machines(home)
     server = find_server(servers, args.host) if args.host else pick_round_robin(home, servers)
     key = args.submission_key or ("cli-" + secrets.token_hex(16))
+    remote = Remote(server)
+    needed = package.task_features(task)
+    if needed:  # before the upload: a server without the feature must not get the package
+        require_features(remote.call(["version"]), needed, server["name"], "this package")
     with tempfile.TemporaryDirectory(prefix="taskmgr-submit-") as tmp:
         if os.path.isdir(path):
             upload = os.path.join(tmp, "package.tar.gz")
             package.pack_dir(path, upload)
         else:
             upload = path
-        remote = Remote(server)
         try:
             ack = remote.call(["receive", "--submission-key", key], stdin_path=upload)
         except (ConnError, KeyboardInterrupt) as e:

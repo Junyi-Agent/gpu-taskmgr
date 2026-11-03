@@ -18,7 +18,7 @@ Other language: [[docs/task-package.zh-CN]]
 | `precompile.py`, `cutecache.py` | template | compile CuTe DSL kernels on the CPU and load them on the GPU (see Precompile); delete them if the task compiles nothing |
 | `taskmgr_task.py` | template | stdlib helper: `write_progress`, `update_progress`, `write_result`, `update_outputs` (flock + atomic replace); `claim_gpu`, `gpu_busy` (GPU contract below) |
 
-`task.json` (unknown extra keys are allowed and ignored):
+`task.json`:
 
 ```json
 {
@@ -33,6 +33,11 @@ Other language: [[docs/task-package.zh-CN]]
 }
 ```
 
+- Keys: only the ones shown here (and `precompile`). Any other key, at the top level or
+  inside `entry`, `precompile`, `environment` or `result`, is an error (code
+  `unknown_key`) in `task validate`, `task submit` and on the server: a key this taskmgr does
+  not know may be a feature of a newer taskmgr, or a typo, and is never ignored. Keys
+  starting with `x-` are annotations and are ignored (`"x-owner": "junyi"`).
 - `task_id` matches `^[A-Z]{2}-[0-9]{2,4}$`.
 - `entry.argv[0]`: contains `/` → path (relative = package file, resolved against the
   job's workdir, must be an executable file in the package); otherwise a command name
@@ -82,6 +87,25 @@ the daemon's recovery or tracking of the job failed repeatedly, see [[docs/recov
 
 `task validate` and `task submit` check the package locally; the server checks it again
 after the upload.
+
+### Server features
+
+Some `task.json` keys need a server whose code implements them. Every `taskmgr-remote`
+reply carries `"features"`, the sorted list of what its code implements (a server without
+the key runs code older than the list and implements none of them):
+
+| Feature | Meaning |
+| --- | --- |
+| `strict_task_json` | the server rejects task.json keys it does not know (`unknown_key`) |
+| `precompile` | `task.json` `precompile` |
+
+`task validate --detail` lists the features a package needs (`"features"`). `task submit`
+asks the server for its features (`taskmgr-remote version`) before the upload when the
+package needs any, and refuses a server that lacks one: error `unsupported_feature` (exit
+2, nothing uploaded), e.g. `server gpu1 runs code 3f9a1c0e7b2d without precompile support,
+needed by this package; run `task host add gpu1` to update it`; `details` has `missing` and
+`server_features`. `task host ping --detail` and `task version --detail` show each server's
+`features`.
 
 - Left out of the packed archive and of the content hash: every path with a component
   named `__pycache__`, `.git` or `.DS_Store`, ending in `.pyc` or `.json.lock` (flock

@@ -36,7 +36,9 @@ Other language: [[docs/assumptions.zh-CN]]
    the deadline shows a terminal state (or `unknown`), that state wins and the exit code is
    the one of that state. Ctrl-C prints an `interrupted` error and exits 2.
 8. Protocol compatibility means equal integer `protocol_version` (currently 2; 1 was the
-   attempt-based protocol). ssh exit status 255 is treated as a connection failure for
+   attempt-based protocol). Additions that keep protocol 2 are announced in the reply key
+   `features` ([[docs/task-package]], Server features); a client checks a feature before it
+   relies on it. ssh exit status 255 is treated as a connection failure for
    `taskmgr-remote` subcommands. For the shell scripts `task host add` runs, a script may
    exit 255 itself, so 255 counts as a connection failure only when stderr reads like an
    ssh error (`ssh:`, `connection refused`, `permission denied (`, ...). ssh runs with

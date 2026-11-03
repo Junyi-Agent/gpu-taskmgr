@@ -334,6 +334,30 @@ class Remote:
         return 0
 
 
+def reply_features(reply: JsonDict) -> list[str]:
+    """The `features` a remote reply reports; [] for a server older than the list."""
+    raw = reply.get("features")
+    return [f for f in raw if isinstance(f, str)] if isinstance(raw, list) else []
+
+
+def require_features(reply: JsonDict, needed: Sequence[str], host: str, what: str) -> None:
+    """Raise unsupported_feature when the server that sent `reply` lacks one of `needed`."""
+    have = reply_features(reply)
+    missing = [f for f in needed if f not in have]
+    if not missing:
+        return
+    code = reply.get("code_version")
+    runs = "code %s" % code[:12] if isinstance(code, str) and code else "older code"
+    raise TaskmgrError(
+        "unsupported_feature",
+        "server %s runs %s without %s support, needed by %s; run `task host add %s` to update it"
+        % (host, runs, ", ".join(missing), what, host),
+        2,
+        host,
+        {"missing": missing, "server_features": have},
+    )
+
+
 def check_protocol(obj: JsonDict, host: str | None) -> None:
     v = obj.get("protocol_version")
     if v != PROTOCOL_VERSION:

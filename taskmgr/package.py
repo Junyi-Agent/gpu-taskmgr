@@ -27,6 +27,29 @@ RESERVED_ENV = ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "VIRTUAL_ENV")  # a
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 DEFAULT_MAX_PACKAGE_BYTES: int | None = DEFAULT_REMOTE_CONFIG["max_package_bytes"]
 
+# Every task.json key this code knows, per object ("" is the top level). Any other key is
+# an error (code unknown_key): a key this code does not know may be a feature of a newer
+# taskmgr (or a typo) and must never be ignored silently. Keys starting with "x-" are free
+# for annotations and are ignored.
+TASK_KEYS: dict[str, tuple[str, ...]] = {
+    "": (
+        "schema_version",
+        "task_id",
+        "entry",
+        "precompile",
+        "gpus",
+        "environment",
+        "env",
+        "timeout_seconds",
+        "result",
+    ),
+    "entry": ("argv",),
+    "precompile": ("argv", "timeout_seconds"),
+    "environment": ("venv", "required_paths"),
+    "result": ("required_outputs",),
+}
+ANNOTATION_PREFIX = "x-"
+
 # Never packed or hashed: caches, VCS data, editor junk and files a run leaves behind.
 EXCLUDED_NAMES = ("__pycache__", ".git", ".DS_Store")
 EXCLUDED_SUFFIXES = (".pyc", ".json.lock")  # .json.lock: flock files of taskmgr_task.py
@@ -130,12 +153,44 @@ def _inside(rel: str) -> bool:
 # Schemas
 
 
+def task_features(task: object) -> list[str]:
+    """The common.FEATURES a task.json needs from the server that runs it (sorted)."""
+    if not isinstance(task, dict):
+        return []
+    task = cast(JsonDict, task)
+    used: list[str] = []
+    if "precompile" in task:
+        used.append("precompile")
+    return sorted(used)
+
+
+def _check_keys(task: JsonDict, errors: list[Problem]) -> None:
+    """unknown_key errors for keys TASK_KEYS does not list (x-* annotations excepted)."""
+    for where, known in TASK_KEYS.items():
+        obj = task if not where else task.get(where)
+        if not isinstance(obj, dict):
+            continue
+        for k in obj:
+            if k in known or k.startswith(ANNOTATION_PREFIX):
+                continue
+            name = k if not where else "%s.%s" % (where, k)
+            _err(
+                errors,
+                "unknown_key",
+                "unknown key %r: not a task.json key of this taskmgr (a newer feature, or a " % name
+                + "typo?); update taskmgr or remove it; annotations start with %r"
+                % ANNOTATION_PREFIX,
+                "task.json",
+            )
+
+
 def check_task_json(task: object, errors: list[Problem]) -> None:
     """Schema checks for task.json (Section 2.2)."""
     if not isinstance(task, dict):
         _err(errors, "schema", "task.json must be a JSON object", "task.json")
         return
     task = cast(JsonDict, task)
+    _check_keys(task, errors)
     if task.get("schema_version") != SCHEMA_VERSION:
         _err(errors, "schema", "schema_version must be %d" % SCHEMA_VERSION, "task.json")
     tid = task.get("task_id")

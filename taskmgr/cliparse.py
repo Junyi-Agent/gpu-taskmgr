@@ -288,20 +288,31 @@ def build_parser(commands: Sequence[Command]) -> argparse.ArgumentParser:
     _ = common.add_argument("--detail", action="store_true", help=DETAIL_HELP)
     sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>", parser_class=Parser)
 
-    def add(name: str) -> argparse.ArgumentParser:
+    def add(name: str, description: str | None = None) -> argparse.ArgumentParser:
         c = by_name[name]
         # `host` puts the options on its subcommands; logs prints the log itself.
         parents = [plain] if name == "host" or c.text is None else [common]
-        return sub.add_parser(name, help=c.help, description=c.help, parents=parents)
+        return sub.add_parser(name, help=c.help, description=description or c.help, parents=parents)
 
     jobid_help = "the job's id (16 hex digits)"
     host_help = "server name (default: look the jobid up on every server)"
     s = add("init")
     _ = s.add_argument("task_id", help="task id, e.g. AA-01 (two capitals, dash, 2-4 digits)")
     _ = s.add_argument("--output", metavar="DIR", help="target directory (default ./<task_id>)")
-    s = add("validate")
+    s = add(
+        "validate",
+        "Check a task package directory or tar.gz. Keys task.json does not define are errors "
+        + "(keys starting with x- are annotations); --detail lists the server features the "
+        + "package needs (`features`).",
+    )
     _ = s.add_argument("path", help="package directory or .tar.gz")
-    s = add("submit")
+    s = add(
+        "submit",
+        "Submit a task package to a server. The package is validated first; if it uses a "
+        + "feature the server's code lacks (e.g. precompile on an older server), it is refused "
+        + "before the upload with unsupported_feature: run `task host add HOST` to update "
+        + "the server.",
+    )
     _ = s.add_argument("path", help="package directory or .tar.gz")
     _ = s.add_argument("--host", help="server name (default: round-robin over enabled servers)")
     _ = s.add_argument(

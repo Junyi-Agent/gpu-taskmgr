@@ -247,7 +247,7 @@ def _ping_one(server: Server) -> dict[str, object]:
         return row
     row["reachable"] = True
     row["ms"] = round((time.monotonic() - start) * 1000)
-    for k in ("protocol_version", "code_version", "code_dir", "user", "hostname"):
+    for k in ("protocol_version", "features", "code_version", "code_dir", "user", "hostname"):
         row[k] = reply.get(k)
     return row
 
