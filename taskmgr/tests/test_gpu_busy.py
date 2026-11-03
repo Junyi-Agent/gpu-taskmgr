@@ -1,5 +1,6 @@
 """An entry that cannot get its GPU exits 75 and is started again (desc-2 D17)."""
 
+import ast
 import contextlib
 import importlib.util
 import io
@@ -384,6 +385,44 @@ class TaskHelperTest(Env):
                     src = self.read_text(os.path.join(d, name))
                     self.assertNotRegex(src, r"(?m)^\s*(import|from)\s+taskmgr\b", name)
             self.assertIn("tt.claim_gpu()", self.read_text(os.path.join(d, "run.py")))
+
+    def test_entries_create_the_context_before_heavy_imports(self) -> None:
+        """The template (and the examples) teach the order: at module level only the
+        standard library and taskmgr_task, and claim_gpu() is the first call in main()."""
+        stdlib = set(sys.stdlib_module_names)
+        for d in [TEMPLATE] + [os.path.join(EXAMPLES, n) for n in sorted(os.listdir(EXAMPLES))]:
+            with self.subTest(d):
+                tree = ast.parse(self.read_text(os.path.join(d, "run.py")))
+                for node in tree.body:
+                    if isinstance(node, ast.Import):
+                        names = [a.name for a in node.names]
+                    elif isinstance(node, ast.ImportFrom):
+                        names = [node.module or ""]
+                    else:
+                        continue
+                    for n in names:
+                        top = n.split(".")[0]
+                        self.assertTrue(top == "taskmgr_task" or top in stdlib, n)
+                main = next(
+                    n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"
+                )
+                first = main.body[0]
+                self.assertIsInstance(first, ast.Expr)
+                assert isinstance(first, ast.Expr)
+                self.assertEqual(ast.unparse(first.value), "tt.claim_gpu()")
+        # Importing the helper loads nothing outside the standard library.
+        code = (
+            "import sys, taskmgr_task; "
+            + "print(sorted({m.split('.')[0] for m in sys.modules} - set(sys.stdlib_module_names) - {'__main__'}))"
+        )
+        p = subprocess.run(
+            [sys.executable, "-S", "-c", code],
+            cwd=TEMPLATE,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(p.stdout.strip(), "['taskmgr_task']", p.stderr)
 
     def read_text(self, path: str) -> str:
         with open(path) as f:

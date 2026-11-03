@@ -200,19 +200,40 @@ for this. Instead the task reports it:
 - Never exit 75 for any other reason: such a task is started again forever, until it is
   cancelled. The server can turn the convention off (`gpu_busy_exit_code: null`), and
   then 75 is an ordinary failure.
-- `taskmgr_task.claim_gpu()` (the template's `run.py` calls it first): if
-  `CUDA_VISIBLE_DEVICES` is empty or unset it does nothing; otherwise it loads
-  `libcuda.so.1` with ctypes, calls `cuInit` and, for every visible device, `cuDeviceGet` and
-  `cuDevicePrimaryCtxRetain`. The primary contexts stay retained for the life of the
-  process, and frameworks such as torch reuse them. If a call returns
-  `CUDA_ERROR_DEVICE_UNAVAILABLE` (46) it calls `gpu_busy("GPU <i> (<uuid>) is held by
-  another process ...")`; other CUDA errors and a missing `libcuda.so.1` raise
-  `RuntimeError` (the task declared GPUs, so that is a setup problem). Call it before
-  slow imports or compilation. Its `load` argument replaces the library loader in tests.
+- Create the CUDA context first, before importing torch or any other heavy library. The
+  template's `run.py` shows the order:
+
+  ```python
+  import taskmgr_task as tt   # module level: the standard library and taskmgr_task only
+
+  def main():
+      tt.claim_gpu()          # first: the CUDA context in milliseconds, or exit 75
+      import torch            # now; reuses the primary context claim_gpu created
+  ```
+
+  A busy GPU is then found in milliseconds and the relaunch about 1 s later is cheap; with
+  `import torch` first, every retry pays the import (seconds) again. taskmgr does not check
+  whether a GPU is free before it starts the entry, and the entry should not either: another
+  process can take the GPU between such a check and the moment the entry creates its
+  context. Creating the context is the check.
+- `taskmgr_task.claim_gpu()`: if `CUDA_VISIBLE_DEVICES` is empty or unset it does nothing;
+  otherwise it loads `libcuda.so.1` with ctypes (no CUDA Python package, no torch), calls
+  `cuInit` and, for every visible device, `cuDeviceGet` and `cuDevicePrimaryCtxRetain`, which
+  creates the device's primary context. The primary contexts stay retained for the life of
+  the process. The CUDA runtime uses the primary context of each device, so torch, triton,
+  cupy and CuTe imported later in the same process reuse these contexts and create none of
+  their own. If a call returns `CUDA_ERROR_DEVICE_UNAVAILABLE` (46) it calls
+  `gpu_busy("GPU <i> (<uuid>) is held by another process ...")`; other CUDA errors and a
+  missing `libcuda.so.1` raise `RuntimeError` (the task declared GPUs, so that is a setup
+  problem). Its `load` argument replaces the library loader in tests. An entry that is not
+  Python (a compiled binary) does the same itself: create the context first
+  (`cudaFree(0)` or `cuDevicePrimaryCtxRetain`) and exit 75 on error 46.
 - `taskmgr_task.gpu_busy(message="")` prints the message to stderr and exits with
   `taskmgr_task.gpu_busy_exit_code()`: the value of `TASKMGR_GPU_BUSY_EXIT_CODE`, or 75
   when it is unset or not an integer from 1 to 255. Call it when your own CUDA code sees
   "device busy/unavailable".
 - If the CUDA work runs in a subprocess, do not call `claim_gpu()` in the parent: in
-  exclusive-process mode the parent's context would block the child. Let the child exit 75
-  and forward it with `gpu_busy()`.
+  exclusive-process mode the parent's context would block the child. Let the child create
+  its context first, exit 75 when the GPU is busy, and forward that in the parent with
+  `gpu_busy()`. The same holds for a parent that forks after `claim_gpu()`: a forked child
+  cannot use the parent's CUDA context.

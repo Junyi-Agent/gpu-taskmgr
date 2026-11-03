@@ -11,12 +11,25 @@ Standard library only. Paths come from TASKMGR_PROGRESS_FILE / TASKMGR_RESULT_FI
 Never write the "_taskmgr" key; the runner owns it.
 
 GPU contract: exit code 75 (GPU_BUSY_EXIT_CODE, EX_TEMPFAIL) means "I could not get the
-GPU and did no work"; taskmgr then starts the entry again later, so the job waits instead
-of failing. The runner exports the server's code as TASKMGR_GPU_BUSY_EXIT_CODE; gpu_busy()
-uses it (75 when unset). Call claim_gpu() before any work; call gpu_busy() if your own CUDA code finds
-the device busy or unavailable. Never exit 75 for any other reason.
+GPU and did no work"; taskmgr then starts the entry again after about 1 s, so the job waits
+instead of failing. The runner exports the server's code as TASKMGR_GPU_BUSY_EXIT_CODE;
+gpu_busy() uses it (75 when unset). Never exit 75 for any other reason.
 
-    tt.claim_gpu()                             # first line of main()
+Create the CUDA context first, before importing torch or any other heavy library:
+
+    import taskmgr_task as tt                  # standard library only
+    tt.claim_gpu()                             # first line of main(): context or exit 75
+    import torch                               # reuses the primary context claim_gpu made
+
+claim_gpu() needs no CUDA Python package: it calls cuInit and cuDevicePrimaryCtxRetain in
+libcuda.so.1 through ctypes, which takes milliseconds, so a busy GPU costs a relaunch of
+about a second instead of a torch import per retry. The primary context it retains is the
+one the CUDA runtime (torch, triton, cupy, CuTe) uses, so it is not a probe: the GPU stays
+this process's from then on and no other process can take it before torch starts. If the
+CUDA work runs in a child process, do not call claim_gpu() in the parent (on an
+exclusive-process GPU the parent's context would block the child); let the child exit 75
+and forward it with gpu_busy(). Call gpu_busy() also if your own CUDA code finds the device
+busy or unavailable.
 """
 
 import contextlib
@@ -236,11 +249,22 @@ _retained: list[int] = []
 def claim_gpu(load: Callable[[], CudaDriver] = load_libcuda) -> None:
     """Take every visible GPU now by retaining its primary CUDA context, or exit 75.
 
-    Under Exclusive_Process compute mode a GPU held by another process cannot be used;
-    then this calls gpu_busy() and taskmgr starts the task again later. The contexts stay
-    retained for the life of the process, and frameworks such as torch reuse the primary
-    context in the same process. A task without GPUs (CUDA_VISIBLE_DEVICES empty or unset)
-    returns at once. Other CUDA errors raise RuntimeError. `load` exists for tests.
+    Call it first, before importing torch or other heavy libraries: it only loads
+    libcuda.so.1 (ctypes, no CUDA Python package) and calls cuInit, cuDeviceGet and
+    cuDevicePrimaryCtxRetain, so it takes milliseconds. cuDevicePrimaryCtxRetain creates
+    the device's primary context if it does not exist yet; that is when an Exclusive_Process
+    GPU held by another process is refused (CUDA_ERROR_DEVICE_UNAVAILABLE), and then this
+    calls gpu_busy() and taskmgr starts the task again about 1 s later.
+
+    The contexts stay retained for the life of the process. They are the primary contexts,
+    which the CUDA runtime uses for each device, so torch (and triton, cupy, CuTe) imported
+    afterwards in this process reuse them and create no context of their own. Nothing is
+    released between this call and the real work, so another process cannot take the GPU
+    in between. Do not call it in a process whose child does the CUDA work (the parent's
+    context would block the child on an exclusive-process GPU).
+
+    A task without GPUs (CUDA_VISIBLE_DEVICES empty or unset) returns at once. Other CUDA
+    errors and a missing libcuda.so.1 raise RuntimeError. `load` exists for tests.
     """
     visible = [d for d in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if d.strip()]
     if not visible:

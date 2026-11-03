@@ -27,9 +27,13 @@ Filling instructions (for humans and AI agents):
       tt.update_outputs(best_config={"block": 128}, speedup=1.37)
 - Put artifacts (profiles, CSVs, modified kernels) under ./artifacts/.
 - GPU contract: exit code 75 means "the GPU is held by another process and I did no
-  work"; taskmgr then starts the entry again after a short wait (the job shows as
-  "pending-gpu") instead of failing it. Call tt.claim_gpu() before any work
-  (run.py does). If your own CUDA code later sees "device busy/unavailable", call
+  work"; taskmgr then starts the entry again after about 1 s (the job shows as
+  "pending-gpu") instead of failing it. Create the CUDA context first: call
+  tt.claim_gpu() as the first line of main(), BEFORE importing torch or any other heavy
+  library (run.py does). It creates the GPU's primary CUDA context through libcuda in
+  milliseconds, or exits 75 when the GPU is busy, so each retry is cheap; torch imported
+  afterwards reuses that context, so the GPU cannot be taken in between. Do not replace it
+  with a "is the GPU free?" check. If your own CUDA code later sees "device busy/unavailable", call
   tt.gpu_busy("why") before producing side effects. The relaunch reuses the workdir, so
   files written before the exit 75 must be safe to reuse. Never exit 75 for any other reason:
   such a task would be started again forever (until cancelled). If the CUDA work runs in

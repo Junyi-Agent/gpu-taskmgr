@@ -179,15 +179,31 @@ GPU 服务器运行在 Exclusive_Process 计算模式下，taskmgr 之外的进�
   启动留下的文件（例如编译好的二进制），所以退出 75 之前写下的东西必须可以直接复用。
 - 不要因为其他原因退出 75：这样的任务会被一直重新启动，直到被取消。服务器可以关闭这个约定
   （`gpu_busy_exit_code: null`），此时 75 就是普通的失败。
-- `taskmgr_task.claim_gpu()`（模板的 `run.py` 第一步就调用它）：`CUDA_VISIBLE_DEVICES` 为空或未
-  设置时什么也不做；否则用 ctypes 加载 `libcuda.so.1`，调用 `cuInit`，并对每个可见设备调用
-  `cuDeviceGet` 和 `cuDevicePrimaryCtxRetain`。primary context 在进程整个生命周期内保持 retain，
-  torch 等框架会复用它。任一调用返回 `CUDA_ERROR_DEVICE_UNAVAILABLE`（46）时调用
-  `gpu_busy("GPU <i> (<uuid>) is held by another process ...")`；其他 CUDA 错误以及找不到
-  `libcuda.so.1` 时抛出 `RuntimeError`（任务声明了 GPU，这属于环境问题）。应在耗时的 import 或编译
-  之前调用。它的 `load` 参数用于在测试中替换库加载函数。
+- 先创建 CUDA context，再 import torch 或其他重量级库。模板的 `run.py` 给出了顺序：
+
+  ```python
+  import taskmgr_task as tt   # 模块顶层：只 import 标准库和 taskmgr_task
+
+  def main():
+      tt.claim_gpu()          # 第一步：几毫秒内建好 CUDA context，或退出 75
+      import torch            # 现在才 import；复用 claim_gpu 创建的 primary context
+  ```
+
+  这样 GPU 被占时几毫秒就能发现，约 1 秒后的重新启动代价很小；如果先 `import torch`，每次重试都要
+  再付一次 import 的时间（数秒）。taskmgr 不会在启动入口之前检查 GPU 是否空闲，入口也不应该这样做：
+  在检查和入口创建 context 之间，别的进程可能抢走 GPU。创建 context 本身就是检查。
+- `taskmgr_task.claim_gpu()`：`CUDA_VISIBLE_DEVICES` 为空或未设置时什么也不做；否则用 ctypes 加载
+  `libcuda.so.1`（不需要 CUDA Python 包，也不需要 torch），调用 `cuInit`，并对每个可见设备调用
+  `cuDeviceGet` 和 `cuDevicePrimaryCtxRetain`，后者会创建该设备的 primary context。primary context
+  在进程整个生命周期内保持 retain。CUDA runtime 对每个设备使用 primary context，所以之后在同一进程中
+  import 的 torch、triton、cupy、CuTe 会复用这些 context，不会再创建自己的。任一调用返回
+  `CUDA_ERROR_DEVICE_UNAVAILABLE`（46）时调用 `gpu_busy("GPU <i> (<uuid>) is held by another process
+  ...")`；其他 CUDA 错误以及找不到 `libcuda.so.1` 时抛出 `RuntimeError`（任务声明了 GPU，这属于环境
+  问题）。它的 `load` 参数用于在测试中替换库加载函数。入口不是 Python（编译好的二进制）时自己做同样
+  的事：先创建 context（`cudaFree(0)` 或 `cuDevicePrimaryCtxRetain`），遇到错误 46 退出 75。
 - `taskmgr_task.gpu_busy(message="")` 把消息写到 stderr，并以 `taskmgr_task.gpu_busy_exit_code()`
   退出：取 `TASKMGR_GPU_BUSY_EXIT_CODE` 的值；未设置或不是 1 到 255 的整数时用 75。你自己的 CUDA
   代码遇到 "device busy/unavailable" 时调用它。
 - 如果 CUDA 工作在子进程中进行，不要在父进程里调用 `claim_gpu()`：在 exclusive-process 模式下，
-  父进程的 context 会挡住子进程。让子进程退出 75，父进程再用 `gpu_busy()` 转发。
+  父进程的 context 会挡住子进程。让子进程先创建 context，GPU 被占时退出 75，父进程再用 `gpu_busy()`
+  转发。父进程在 `claim_gpu()` 之后 fork 也一样：fork 出的子进程不能使用父进程的 CUDA context。
