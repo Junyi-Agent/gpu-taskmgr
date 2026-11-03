@@ -33,9 +33,11 @@ PROTOCOL_VERSION = 2
 # "features" (a sorted list). A server without the key runs code older than this list.
 #   strict_task_json  the server rejects task.json keys it does not know (no silent ignore)
 #   precompile        task.json `precompile` (compile without GPUs before the entry runs)
+#   gpu_holders       `status` of a job waiting for GPUs lists who holds them
+#   cancel_by         `cancel --by USER@HOST` records who asked (job.json cancel_request)
 # `task submit` refuses a package that uses a feature its server does not report
 # (package.task_features), before the upload.
-FEATURES: tuple[str, ...] = ("precompile", "strict_task_json")
+FEATURES: tuple[str, ...] = ("cancel_by", "gpu_holders", "precompile", "strict_task_json")
 
 # The package directory. Inside a zipapp it is a path into the archive
 # (/path/task.pyz/taskmgr), which os.path functions accept but open() does not.

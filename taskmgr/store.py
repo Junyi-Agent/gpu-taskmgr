@@ -313,6 +313,7 @@ def job_summary(job: Job) -> dict[str, object]:
         "retried_as": job.get("retried_as", []),
         "pending_reason": job.get("pending_reason"),
         "phase": job.get("phase"),
+        "cancel_request": job.get("cancel_request"),
     }
 
 

@@ -35,10 +35,11 @@ from .common import (
     read_code_file,
     read_json,
     try_read_json,
+    utcnow_iso,
 )
-from .gpu import resolve_declarations
+from .gpu import gpu_holders, resolve_declarations
 from .monitor import assess, identity_of
-from .records import Job, JsonValue, KeyMapping, Runner, SkippedEntry
+from .records import CancelRequest, Job, JsonValue, KeyMapping, Runner, SkippedEntry
 from .store import (
     OPERATOR_MARKED_STOPPED,
     OPERATOR_STOPPED_ERROR,
@@ -53,6 +54,7 @@ from .store import (
     make_read_only,
     meta_block,
     new_job_record,
+    precompiling,
     remove_tree,
     stage_package,
     staging_dir,
@@ -72,6 +74,7 @@ class Args(argparse.Namespace):
     state: str | None = None
     jobid: str = ""
     as_: str | None = None
+    by: str | None = None
     confirm: str | None = None
     stream: str = "stdout"
     follow: bool = False
@@ -256,6 +259,15 @@ def synthesized_result(job: Job) -> dict[str, object]:
     return {"schema_version": SCHEMA_VERSION, "_taskmgr": meta}
 
 
+def waits_for_gpu(job: Job) -> bool:
+    """Whether the job waits for GPUs now: queued with GPUs (also in phase gpu), or running
+    and waiting to relaunch after a GPU-busy exit (`task jobs` shows both as pending-gpu
+    or queued)."""
+    if job["state"] == "running":
+        return bool(job.get("pending_reason")) and not precompiling(job)
+    return job["state"] == "queued" and not precompiling(job) and bool(job.get("gpus"))
+
+
 def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, object]:
     try:
         jd, job = store.load_job(jobid)  # also follows a directory that moves meanwhile
@@ -281,6 +293,12 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
                 return job_status(store, jobid, False)
         out["result"] = res if isinstance(res, dict) else synthesized_result(job)
         return out
+    if waits_for_gpu(job):
+        try:
+            out["gpu_holders"] = gpu_holders([g["uuid"] for g in job.get("gpus", [])] or None)
+        except TaskmgrError as e:
+            out["gpu_holders"] = None
+            out["gpu_holders_error"] = e.message
     if ran:
         found, _ = store.read_runner(jd)
         runner: Mapping[str, object] = found or {}
@@ -317,7 +335,17 @@ def cmd_status(store: Store, args: Args) -> int:
 # control (Section 13)
 
 
+def cancel_request(by: str | None) -> CancelRequest:
+    """Who asks for a cancel: `by` (the CLI's user@hostname, sent with --by), else the
+    user and hostname this command runs as on the server."""
+    if by:
+        return {"by": by, "at": utcnow_iso(), "via": "cli"}
+    who = "%s@%s" % (getpass.getuser(), socket.gethostname())
+    return {"by": who, "at": utcnow_iso(), "via": "remote"}
+
+
 def cmd_cancel(store: Store, args: Args) -> int:
+    request = cancel_request(args.by)
     with store.state_lock():
         jd, job = store.load_job(args.jobid)
         changed = False
@@ -325,20 +353,23 @@ def cmd_cancel(store: Store, args: Args) -> int:
             pass
         elif job["state"] == "queued":
             job["cancel_requested"] = True
+            job["cancel_request"] = request
             _ = end_without_result(store, jd, job, "cancelled", None, None)
             changed = True
         elif not job.get("cancel_requested"):
             job["cancel_requested"] = True  # shim / daemon picks it up within control_poll
+            job["cancel_request"] = request
             _ = store.save_job(jd, job)
             changed = True
-    return emit(
-        {
-            "jobid": job["jobid"],
-            "state": job["state"],
-            "changed": changed,
-            "cancel_requested": job.get("cancel_requested", False),
-        }
-    )
+    out: dict[str, object] = {
+        "jobid": job["jobid"],
+        "state": job["state"],
+        "changed": changed,
+        "cancel_requested": job.get("cancel_requested", False),
+    }
+    if "cancel_request" in job:
+        out["cancel_request"] = job["cancel_request"]
+    return emit(out)
 
 
 def cmd_retry(store: Store, args: Args) -> int:
@@ -617,6 +648,8 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("status", "cancel", "retry"):
         s = sub.add_parser(name)
         _ = s.add_argument("jobid")
+        if name == "cancel":
+            _ = s.add_argument("--by", help="user@hostname of the client asking for the cancel")
     s = sub.add_parser("resolve")
     _ = s.add_argument("jobid")
     _ = s.add_argument("--as", dest="as_")

@@ -53,11 +53,18 @@ shared files.
  "content_hash": "<sha256>", "submission_key": "cli-...",
  "gpus": [{"declared": 0, "uuid": "GPU-..."}],
  "cancel_requested": false, "stop_reason": null | "cancel" | "timeout" | "leftover",
+ "cancel_request": {"by": "junyi@laptop", "at": "...", "via": "cli" | "remote"},  (after a cancel)
  "auto_restarts": 0, "dispatched_at": null | "...",
  "retry_of": null | "<jobid this job re-runs>", "retried_as": ["<jobids of its re-runs>"],
  "pending_reason": "entry exited 75 (GPU busy); retry #3 in 2 s",   (only while waiting)
  "error": null}
 ```
+
+`cancel_request` is written by the first cancel request, together with `cancel_requested`:
+`by` is the `user@hostname` of the CLI that sent `task cancel` (`via: "cli"`, sent as
+`taskmgr-remote cancel --by`), or the server user and hostname when the cancel came without
+`--by`, e.g. `taskmgr-remote cancel` run on the server or an older CLI (`via: "remote"`).
+Later requests do not change it.
 
 `auto_restarts` counts the automatic re-runs in a chain (0 for a submission or a manual
 retry, the predecessor's count + 1 for an automatic re-run). `dispatched_at` is set when the

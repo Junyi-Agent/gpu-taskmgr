@@ -118,6 +118,36 @@ def _error_field(err: object) -> Fields:
     return [("error", "%s: %s" % (e.get("kind"), e.get("message")), RED)] if "kind" in e else []
 
 
+HOLDER_TEXT_COMMAND = 100  # characters of a holder's command line in the text output
+
+
+def _holder_fields(out: Mapping[str, object]) -> Fields:
+    """`gpu_holder` lines: who holds the GPUs a waiting job needs (status of the server)."""
+    if out.get("gpu_holders_error"):
+        return [("gpu_holders", "unknown: %s" % _s(out.get("gpu_holders_error")), YELLOW)]
+    holders = rows(out, "gpu_holders")
+    if not holders:
+        return [("gpu_holders", "none", None)] if isinstance(out.get("gpu_holders"), list) else []
+    fields: Fields = []
+    for h in holders:
+        cmd = _s(h.get("command"), "?")
+        if len(cmd) > HOLDER_TEXT_COMMAND:
+            cmd = cmd[: HOLDER_TEXT_COMMAND - 3] + "..."
+        mib = h.get("used_memory_mib")
+        mem = "%.1f GiB" % (mib / 1024) if isinstance(mib, int) else "? GiB"
+        job = " (taskmgr job %s)" % h["taskmgr_jobid"] if h.get("taskmgr_jobid") else ""
+        text = "GPU %s: pid %s user %s %s%s: %s" % (
+            _s(h.get("gpu"), "?"),
+            _s(h.get("pid")),
+            _s(h.get("user"), "?"),
+            mem,
+            job,
+            cmd,
+        )
+        fields.append(("gpu_holder", text, YELLOW))
+    return fields
+
+
 def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
     meta = as_dict(out.get("_taskmgr"))
     if meta:  # terminal: the job's result.json
@@ -134,7 +164,7 @@ def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
         for k in ("validation_errors", "warnings"):
             if meta.get(k):
                 fields.append((k, _s(meta.get(k)), YELLOW))
-        skip = ("host", "complete", "retry_of", "retried_as")
+        skip = ("host", "complete", "retry_of", "retried_as", "cancel_request")
         keys = sorted(k for k in out if not k.startswith("_") and k not in skip)
         fields.append(("result", ", ".join(keys) or "-", None))
     else:
@@ -151,6 +181,7 @@ def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
             fields.append(("pending_reason", _s(out.get("pending_reason")), YELLOW))
         if out.get("cancel_requested"):
             fields.append(("cancel_requested", "yes", YELLOW))
+        fields += _holder_fields(out)
         prog = as_dict(out.get("progress"))
         if prog:
             pct = prog.get("percent")
@@ -158,6 +189,12 @@ def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
             msg = " ".join(x for x in parts + (_s(prog.get("message"), ""),) if x)
             fields.append(("progress", msg or "-", None))
         fields += _error_field(out.get("error"))
+    req = as_dict(out.get("cancel_request"))
+    if req:
+        how = "" if req.get("via") != "remote" else " (on the server)"
+        fields.append(
+            ("cancelled_by", "%s at %s%s" % (_s(req.get("by")), _s(req.get("at")), how), YELLOW)
+        )
     if out.get("retry_of"):
         fields.append(("retry_of", _s(out.get("retry_of")), None))
     retried = out.get("retried_as")

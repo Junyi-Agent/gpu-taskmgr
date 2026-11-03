@@ -91,6 +91,8 @@ up: "[[taskmgr/README.zh-CN]]"
 | --- | --- |
 | `strict_task_json` | 服务器拒绝它不认识的 task.json 键（`unknown_key`） |
 | `precompile` | `task.json` 的 `precompile` |
+| `gpu_holders` | 等待 GPU 的作业的 `status` 列出占用这些 GPU 的进程（[[docs/usage.zh-CN]]） |
+| `cancel_by` | `cancel` 记录是谁请求的（`cancel_request`，[[docs/usage.zh-CN]]） |
 
 `task validate --detail` 列出任务包需要的功能（`"features"`）。任务包需要功能时，`task submit`
 在上传前向服务器查询功能（`taskmgr-remote version`），服务器缺少其中任一个就拒绝：错误

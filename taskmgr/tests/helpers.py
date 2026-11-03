@@ -45,6 +45,18 @@ GPUS = [
     (2, "GPU-22222222-2222-2222-2222-222222222222"),
     (3, "GPU-33333333-3333-3333-3333-333333333333"),
 ]
+# The fake nvidia-smi: --query-compute-apps prints the apps file, a query of memory or
+# compute mode the info file (default: every GPU idle, 81559 MiB free), anything else the
+# "index, uuid" lines of the GPU file.
+FAKE_SMI = """#!/bin/sh
+case "$*" in
+  *--query-compute-apps*) cat %(apps)s 2>/dev/null; exit 0 ;;
+  *memory.free*|*compute_mode*)
+    if [ -f %(info)s ]; then cat %(info)s; else sed 's/$/, 81559, 81559, Default/' %(gpus)s; fi
+    exit 0 ;;
+esac
+cat %(gpus)s
+"""
 LINUX_ONLY = "needs Linux (/proc, setsid); on macOS run the tests in Docker, see docs/testing.md"
 
 # Env instances whose sandbox has not been cleaned up yet. If the run ends without tearDown
@@ -94,6 +106,8 @@ class Env(unittest.TestCase):
     tmp: str = ""
     home: str = ""
     gpu_file: str = ""
+    apps_file: str = ""  # --query-compute-apps rows (set_gpu_apps)
+    info_file: str = ""  # memory / compute mode rows (set_gpu_info)
     smi: str = ""
     boot_file: str = ""
     env: dict[str, str] = {}
@@ -114,8 +128,12 @@ class Env(unittest.TestCase):
         self.gpu_file = os.path.join(self.tmp, "gpus.txt")
         self.set_gpus(GPUS)
         self.smi = os.path.join(self.tmp, "nvidia-smi")
+        self.apps_file = os.path.join(self.tmp, "gpu-apps.txt")
+        self.info_file = os.path.join(self.tmp, "gpu-info.txt")
         with open(self.smi, "w") as f:
-            _ = f.write("#!/bin/sh\ncat %s\n" % self.gpu_file)
+            _ = f.write(
+                FAKE_SMI % {"gpus": self.gpu_file, "apps": self.apps_file, "info": self.info_file}
+            )
         os.chmod(self.smi, 0o755)
         self.boot_file = os.path.join(self.tmp, "boot_id")
         self.set_boot("boot-1")
@@ -197,6 +215,20 @@ class Env(unittest.TestCase):
         with open(self.gpu_file, "w") as f:
             for i, u in gpus:
                 _ = f.write("%d, %s\n" % (i, u))
+
+    def set_gpu_apps(self, apps: Iterable[tuple[str, int, int]]) -> None:
+        """What the fake nvidia-smi --query-compute-apps reports: (uuid, pid, MiB) rows."""
+        with open(self.apps_file, "w") as f:
+            for uuid, pid, mib in apps:
+                _ = f.write("%s, %d, %d\n" % (uuid, pid, mib))
+
+    def set_gpu_info(self, rows: Iterable[tuple[int, str, int, int, str]]) -> None:
+        """What the fake nvidia-smi reports for memory.free, memory.total, compute_mode:
+        (index, uuid, free MiB, total MiB, mode) rows. Default: every GPU of set_gpus with
+        81559 MiB free of 81559, mode Default."""
+        with open(self.info_file, "w") as f:
+            for i, uuid, free, total, mode in rows:
+                _ = f.write("%d, %s, %d, %d, %s\n" % (i, uuid, free, total, mode))
 
     def set_boot(self, value: str) -> None:
         with open(self.boot_file, "w") as f:

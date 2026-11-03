@@ -5,12 +5,14 @@ Local state lives in $TASKMGR_HOME (default ~/.taskmgr):
     rr.json         round-robin cursor (updated under rr.lock)
 """
 
+import getpass
 import json
 import os
 import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -58,6 +60,7 @@ from .transport import (
     load_machines,
     query_all,
     query_timeout,
+    reply_features,
     require_features,
 )
 from .transport import json_obj as _obj
@@ -340,8 +343,9 @@ def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, o
         out["complete"] = complete
         out["retry_of"] = j.get("retry_of")
         out["retried_as"] = j.get("retried_as", [])
+        out["cancel_request"] = j.get("cancel_request")
         return out
-    return {
+    out = {
         "host": host,
         "jobid": j["jobid"],
         "task_id": j["task_id"],
@@ -356,8 +360,13 @@ def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, o
         "error": j.get("error"),
         "retry_of": j.get("retry_of"),
         "retried_as": j.get("retried_as", []),
+        "cancel_request": j.get("cancel_request"),
+        "gpu_holders": st.get("gpu_holders"),
         "complete": complete,
     }
+    if "gpu_holders_error" in st:
+        out["gpu_holders_error"] = st["gpu_holders_error"]
+    return out
 
 
 def automatic_rerun(job: JsonDict) -> str | None:
@@ -547,8 +556,23 @@ def _host_call(args: Args, rargs: Sequence[object]) -> CmdResult:
     return out, 0
 
 
+def local_actor() -> str:
+    """user@hostname of this CLI, recorded by the server as who asked for a cancel."""
+    try:
+        user = getpass.getuser()
+    except (KeyError, OSError):  # no user name for the uid (some containers)
+        user = str(os.getuid())
+    return "%s@%s" % (user, socket.gethostname())
+
+
 def cmd_cancel(args: Args) -> CmdResult:
-    return _host_call(args, ["cancel", args.jobid])
+    server, st = job_server(args)
+    rargs: list[object] = ["cancel", args.jobid]
+    if "cancel_by" in reply_features(st):  # an older server has no --by
+        rargs += ["--by", local_actor()]
+    out = _strip(Remote(server).call(rargs))
+    out["host"] = server["name"]
+    return out, 0
 
 
 def cmd_retry(args: Args) -> CmdResult:

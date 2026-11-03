@@ -128,8 +128,26 @@ submission key，并打印重试命令 `task submit --host H --submission-key K 
 dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries,
 last_gpu_busy_at, identity} 或 null, "progress":
 <progress.json 或 null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",
-"complete"}`。对已结束的作业，输出最终的 `result.json`，并在顶层加上 `host`、`complete`、
-`retry_of` 和 `retried_as`。
+"cancel_request", "gpu_holders", "complete"}`。对已结束的作业，输出最终的 `result.json`，并在顶层加上
+`host`、`complete`、`retry_of`、`retried_as` 和 `cancel_request`。
+
+- `cancel_request`：`null`，或者有人请求取消该作业后为 `{"by", "at", "via"}`：`by` 是运行
+  `task cancel` 的 CLI 的 `user@hostname`（`via: "cli"`）；在服务器上取消或由较旧的 CLI 取消时，是服务器
+  上的用户和主机名（`via: "remote"`）；`at` 是第一次请求的 UTC 时间。文本输出显示为
+  `cancelled_by: junyi@laptop at 2026-11-03T09:12:44Z`。
+- `gpu_holders`：对等待 GPU 的作业（带 GPU 的 queued 作业、`pending-gpu`），列出此刻在它的 GPU 上持有
+  CUDA context 的进程，来自服务器上的 `nvidia-smi --query-compute-apps` 和 `/proc`：`[{"gpu": <索引>,
+  "uuid", "pid", "user", "command"（截断到 200 个字符）, "used_memory_mib", "taskmgr_jobid"?}]`
+  （进程属于某个 taskmgr 作业时有 `taskmgr_jobid`）。没有进程占用时为 `[]`；不等待 GPU 的作业或没有
+  `gpu_holders` 功能的服务器为 `null`。nvidia-smi 失败时 `gpu_holders` 为 `null`，`gpu_holders_error`
+  说明原因。服务器的 `/proc` 看不到的 pid（其他 pid namespace 中的进程）`user` 和 `command` 为 `null`。
+  文本输出每个占用者一行：
+
+  ```
+  state:          pending-gpu
+  pending_reason: entry exited 75 (GPU busy); retry #12 in 1 s
+  gpu_holder:     GPU 0: pid 81234 user root 40.0 GiB: python /root/xbr/mkc/dl/tools/gpu_exec.py ...
+  ```
 
 ## 重试与重跑
 

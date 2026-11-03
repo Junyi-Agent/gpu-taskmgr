@@ -98,6 +98,8 @@ the key runs code older than the list and implements none of them):
 | --- | --- |
 | `strict_task_json` | the server rejects task.json keys it does not know (`unknown_key`) |
 | `precompile` | `task.json` `precompile` |
+| `gpu_holders` | `status` of a job waiting for GPUs lists the processes holding them ([[docs/usage]]) |
+| `cancel_by` | `cancel` records who asked (`cancel_request`, [[docs/usage]]) |
 
 `task validate --detail` lists the features a package needs (`"features"`). `task submit`
 asks the server for its features (`taskmgr-remote version`) before the upload when the

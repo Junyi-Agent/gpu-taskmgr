@@ -137,8 +137,30 @@ before the upload with `unsupported_feature` (exit 2) and the hint `task host ad
 dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries,
 last_gpu_busy_at, identity} or null, "progress":
 <progress.json or null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",
-"complete"}`. For a finished job it prints the final `result.json` with `host`, `complete`,
-`retry_of` and `retried_as` added at the top level.
+"cancel_request", "gpu_holders", "complete"}`. For a finished job it prints the final
+`result.json` with `host`, `complete`, `retry_of`, `retried_as` and `cancel_request` added at
+the top level.
+
+- `cancel_request`: `null`, or `{"by", "at", "via"}` once someone asked to cancel the job:
+  `by` is the `user@hostname` of the CLI that ran `task cancel` (`via: "cli"`), or the server's
+  user and hostname when the cancel was made on the server or by an older CLI
+  (`via: "remote"`); `at` is the UTC time of the first request. The text output shows it as
+  `cancelled_by: junyi@laptop at 2026-11-03T09:12:44Z`.
+- `gpu_holders`: for a job that waits for GPUs (queued with GPUs, `pending-gpu`), the
+  processes that hold a CUDA context on its GPUs right now, from `nvidia-smi
+  --query-compute-apps` and `/proc` on the server: `[{"gpu": <index>, "uuid", "pid",
+  "user", "command" (cut to 200 characters), "used_memory_mib", "taskmgr_jobid"?}]`
+  (`taskmgr_jobid` when the process belongs to a taskmgr job). `[]` when no process holds
+  them, `null` for a job that waits for no GPU or a server without the `gpu_holders`
+  feature. If nvidia-smi fails, `gpu_holders` is `null` and `gpu_holders_error` says why.
+  `user` and `command` are `null` for a pid the server's `/proc` does not show (a process in
+  another pid namespace). The text output has one line per holder:
+
+  ```
+  state:          pending-gpu
+  pending_reason: entry exited 75 (GPU busy); retry #12 in 1 s
+  gpu_holder:     GPU 0: pid 81234 user root 40.0 GiB: python /root/xbr/mkc/dl/tools/gpu_exec.py ...
+  ```
 
 ## Retry and re-runs
 

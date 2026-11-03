@@ -51,11 +51,17 @@ up: "[[taskmgr/README.zh-CN]]"
  "content_hash": "<sha256>", "submission_key": "cli-...",
  "gpus": [{"declared": 0, "uuid": "GPU-..."}],
  "cancel_requested": false, "stop_reason": null | "cancel" | "timeout" | "leftover",
+ "cancel_request": {"by": "junyi@laptop", "at": "...", "via": "cli" | "remote"},  （取消之后）
  "auto_restarts": 0, "dispatched_at": null | "...",
  "retry_of": null | "<本作业重跑的 jobid>", "retried_as": ["<重跑作业的 jobid>"],
  "pending_reason": "entry exited 75 (GPU busy); retry #3 in 2 s",   （只在等待期间存在）
  "error": null}
 ```
+
+`cancel_request` 由第一次取消请求写入，同时设置 `cancel_requested`：`by` 是发出 `task cancel` 的
+CLI 的 `user@hostname`（`via: "cli"`，通过 `taskmgr-remote cancel --by` 发送）；取消请求不带 `--by` 时
+（例如在服务器上直接运行 `taskmgr-remote cancel`，或较旧的 CLI），`by` 是服务器上的用户和主机名
+（`via: "remote"`）。之后的取消请求不会改变它。
 
 `auto_restarts` 是重跑链上的自动重跑次数（提交或手动重试的作业为 0，自动重跑的作业为前一个作业的
 值 + 1）。`dispatched_at` 在派发时写入；没有它的作业从未运行，也没有运行文件。入口进程以

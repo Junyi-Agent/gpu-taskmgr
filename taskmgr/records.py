@@ -11,8 +11,10 @@ JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dic
 JsonDict: TypeAlias = dict[str, JsonValue]
 
 __all__ = [
+    "CancelRequest",
     "ErrorInfo",
     "GpuDecl",
+    "GpuHolder",
     "Job",
     "JsonDict",
     "JsonValue",
@@ -39,6 +41,29 @@ class GpuDecl(TypedDict):
 
     declared: int | str
     uuid: str
+
+
+class _GpuHolderBase(TypedDict):
+    gpu: int | None  # nvidia-smi index
+    uuid: str
+    pid: int
+    user: str | None
+    command: str | None  # cut to gpu.HOLDER_COMMAND_MAX characters
+    used_memory_mib: int | None
+
+
+class GpuHolder(_GpuHolderBase, total=False):
+    """A process with a CUDA context on a GPU (`task status` gpu_holders)."""
+
+    taskmgr_jobid: str
+
+
+class CancelRequest(TypedDict):
+    """job.json cancel_request: who asked for the cancel, when, and through what."""
+
+    by: str  # user@hostname
+    at: str
+    via: str  # "cli" (by is the CLI's local user@hostname) or "remote" (the server user)
 
 
 class _ErrorBase(TypedDict):
@@ -83,6 +108,8 @@ class Job(_JobBase, total=False):
     pending_reason: str | None
     # "precompile" or "gpu" when task.json has `precompile`; see common.PHASE_*.
     phase: str
+    # Set by the first cancel request (`cancel_requested` becomes true at the same time).
+    cancel_request: CancelRequest
 
 
 class TakeoverNote(TypedDict):

@@ -337,7 +337,12 @@ def build_parser(commands: Sequence[Command]) -> argparse.ArgumentParser:
         metavar="N",
         help="show the N most recently submitted jobs, over all servers (default 10)",
     )
-    s = add("status")
+    s = add(
+        "status",
+        "Show one job, or wait for it to end. A job waiting for GPUs lists the processes that "
+        + "hold them on the server (gpu_holders: pid, user, command, GPU memory); a cancelled "
+        + "job shows who asked and when (cancel_request).",
+    )
     _ = s.add_argument("jobid", help=jobid_help)
     _ = s.add_argument("--host", help=host_help)
     _ = s.add_argument(
@@ -384,7 +389,13 @@ def build_parser(commands: Sequence[Command]) -> argparse.ArgumentParser:
         help="download into DIR/<host>/<jobid>/ (must not exist yet)",
     )
     for name in ("cancel", "retry"):
-        s = add(name)
+        s = add(
+            name,
+            "Cancel a job. The server records who asked (this CLI's user@hostname) and when; "
+            + "`task status` shows it as cancel_request."
+            if name == "cancel"
+            else None,
+        )
         _ = s.add_argument("jobid", help=jobid_help)
         _ = s.add_argument("--host", help=host_help)
     s = add("resolve")
