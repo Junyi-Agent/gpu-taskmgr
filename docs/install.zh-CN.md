@@ -95,7 +95,12 @@ detail 是改动内容；不询问，也不做任何改动（不上传、不调�
 
 这个命令是幂等的：服务器已是最新状态时，每一步都报告 `ok`，不做改动，也不询问。`git pull`
 （或修改代码）之后要更新服务器，先用 `python3 -m taskmgr.pyz -o dist` 重新构建，再执行一次
-`task host add NAME`：只有代码这一步和服务重启会执行。
+`task host update NAME`（或再执行一次 `task host add NAME`）：只有代码这一步和服务重启会执行。
+
+`task host update NAME [--pyz FILE] [--yes] [--plan] [--prune-old-code]` 对机器列表里已有的
+服务器执行同样的步骤，并保持它的条目不变：它不接受 ssh 选项（要改用 `task host add`），名字不在
+列表里时报 `unknown_host`，已禁用的服务器也能更新（更新后仍是禁用）。`task version` 或
+`task host ping` 显示某台服务器的代码版本不同，或命令报 `unsupported_feature` 时用它。
 
 | 步骤 | 检查 | 改动（每项都会询问） |
 | --- | --- | --- |

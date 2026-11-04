@@ -46,7 +46,7 @@ task host add gpu1 --ssh tuner@10.0.0.12
 ```
 
 To update the server (after `git pull` or a code change): run `python3 -m taskmgr.pyz -o dist`
-again, then `task host add gpu1`. `task host add` is idempotent: on an up-to-date server it
+again, then `task host update gpu1`. `task host add` and `task host update` are idempotent: on an up-to-date server it
 changes nothing and asks nothing. Every step, the data check and the manual fallback:
 [[docs/install]] ("Remote server: `task host add`").
 

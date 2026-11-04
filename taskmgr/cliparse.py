@@ -394,7 +394,7 @@ def build_parser(commands: Sequence[Command]) -> argparse.ArgumentParser:
         "submit",
         "Submit a task package to a server. The package is validated first; if it uses a "
         + "feature the server's code lacks (e.g. precompile on an older server), it is refused "
-        + "before the upload with unsupported_feature: run `task host add HOST` to update "
+        + "before the upload with unsupported_feature: run `task host update HOST` to update "
         + "the server.",
     )
     _ = s.add_argument("path", help="package directory or .tar.gz")

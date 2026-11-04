@@ -230,7 +230,7 @@ class CliTest(Env):
         self.assertEqual(rc, 0)
         self.assertRegex(out, r"(?m)^local: +taskmgr \S+$")
         self.assertRegex(out, r"(?m)^s1 +none +differs$")
-        self.assertIn("task host add NAME", out)
+        self.assertIn("task host update NAME", out)
 
     def test_an_empty_machine_list_is_not_a_failure(self) -> None:
         """jobs, whoami and version share one rule: exit 2 only when servers were asked and

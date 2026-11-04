@@ -42,7 +42,7 @@ class FeaturesTest(Env):
         msg = self.text(e, "message")
         self.assertIn("server s1 runs", msg)
         self.assertIn("without precompile support", msg)
-        self.assertIn("run `task host add s1`", msg)
+        self.assertIn("run `task host update s1`", msg)
         self.assertEqual(self.strs(e, "details", "missing"), ["precompile"])
         self.assertEqual(self.jobids(), set())  # nothing was uploaded
         incoming = os.path.join(self.root(), "incoming")

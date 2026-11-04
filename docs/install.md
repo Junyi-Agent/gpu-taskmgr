@@ -105,8 +105,15 @@ The JSON has `"plan": true` and `"planned": [<step names>]`.
 
 The command is idempotent: on an up-to-date server every step reports `ok`, nothing is
 changed and nothing is asked. To update a server after `git pull` (or after editing the
-code), rebuild with `python3 -m taskmgr.pyz -o dist` and run `task host add NAME` again:
-only the code step and a service restart run.
+code), rebuild with `python3 -m taskmgr.pyz -o dist` and run `task host update NAME` (or
+`task host add NAME` again): only the code step and a service restart run.
+
+`task host update NAME [--pyz FILE] [--yes] [--plan] [--prune-old-code]` runs the same steps
+for a server already in the machine list and keeps its entry as it is: it takes no ssh
+options (change those with `task host add`), fails with `unknown_host` for a name not in
+the list, and also updates a disabled server (which stays disabled). Use it when
+`task version` or `task host ping` shows a server on another code version, or when a
+command fails with `unsupported_feature`.
 
 | Step | Checks | Changes (each asked) |
 | --- | --- | --- |

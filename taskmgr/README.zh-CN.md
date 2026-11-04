@@ -43,7 +43,7 @@ task host add gpu1 --ssh tuner@10.0.0.12
 ```
 
 更新服务器（`git pull` 或改代码之后）：重新运行 `python3 -m taskmgr.pyz -o dist`，再运行
-`task host add gpu1`。`task host add` 是幂等的：服务器已是最新时，它不做改动，也不提问。每一步、
+`task host update gpu1`。`task host add` 和 `task host update` 都是幂等的：服务器已是最新时，它不做改动，也不提问。每一步、
 数据检查和手动部署方式见 [[docs/install.zh-CN]]（"远程服务器：`task host add`"）。
 
 **3. 使用**

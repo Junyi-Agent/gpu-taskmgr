@@ -1,4 +1,4 @@
-"""`task host add|list|remove|ping`: manage the machine list ($TASKMGR_HOME/machines.json).
+"""`task host add|update|list|remove|enable|disable|ping`: manage the machine list ($TASKMGR_HOME/machines.json).
 
 Interface used by taskmgr.py:
     HELP            [(subcommand, one-line help)], also shown in `task -h`
@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol, cast
 
 from .common import TaskmgrError
-from .hostsetup import STEP_COLORS, AddHostArgs, add_host, destination
+from .hostsetup import STEP_COLORS, AddHostArgs, add_host, destination, update_host
 from .prompt import Declined, NonInteractive, Ui
 from .records import JsonValue, Server
 from .textout import BOLD, GREEN, RED, YELLOW, CmdResult, cell, hint, message, render_table
@@ -24,6 +24,7 @@ from .transport import Remote, edit_machines, load_machines
 
 HELP = [
     ("add", "set up or update a server and add it to the machine list"),
+    ("update", "update a server's taskmgr-remote to this task's code version"),
     ("list", "list the configured servers"),
     ("remove", "remove a server from the machine list"),
     ("enable", "use a server again for submits and queries"),
@@ -105,6 +106,45 @@ def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) 
         help="delete the code older versions installed outside remote_root (~/taskmgr, "
         + "~/taskmgr.old-*, ~/taskmgr-remote.pyz); never done by --yes alone",
     )
+    h = sub.add_parser(
+        "update",
+        parents=[common],
+        help=helps["update"],
+        description="Update the taskmgr-remote code of a server already in the machine list to "
+        + "the code version of this task: upload the matching taskmgr-remote.pyz, check the job "
+        + "directories, restart the service on the new code and check that it answers. "
+        + "The same steps as `task host add NAME`, with the machine entry as it is (to change "
+        + "its ssh settings, use `task host add`). Running jobs keep running (KillMode=process). "
+        + "Every change is confirmed with [y/N] (--yes answers them); on an up-to-date server "
+        + "nothing changes and nothing is asked. A disabled server can be updated. "
+        + "--plan prints what would change (exit 0: nothing, 1: changes planned, 2: a check "
+        + "failed). Build the archive first with `python3 -m taskmgr.pyz -o dist`.",
+    )
+    _ = h.add_argument("name", help="name in the machine list")
+    _ = h.add_argument(
+        "--pyz",
+        metavar="FILE",
+        help="taskmgr-remote.pyz to upload (default: dist/taskmgr-remote.pyz in the checkout, "
+        + "or next to task.pyz); its code version must equal this task's",
+    )
+    _ = h.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="answer yes to every prompt, except deletions (see --prune-old-code)",
+    )
+    _ = h.add_argument(
+        "--plan",
+        "--dry-run",
+        action="store_true",
+        help="check everything and print every change it would make; change nothing",
+    )
+    _ = h.add_argument(
+        "--prune-old-code",
+        action="store_true",
+        help="also delete the code older versions installed outside remote_root",
+    )
+    h.set_defaults(ssh=None, port=None, identity_file=None, ssh_option=None, enabled=None)
     _ = sub.add_parser("list", parents=[common], help=helps["list"], description=helps["list"])
     h = sub.add_parser(
         "remove",
@@ -149,6 +189,8 @@ def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) 
 def run(args: HostArgs, home: str) -> CmdResult:
     if args.host_cmd == "add":
         return add_host(args, home)
+    if args.host_cmd == "update":
+        return update_host(args, home)
     if args.host_cmd == "list":
         return host_list(home)
     if args.host_cmd == "remove":
@@ -298,8 +340,8 @@ def _s(v: object, default: str = "") -> str:
 
 
 def render(args: HostArgs, out: Mapping[str, object], color: bool) -> str:
-    if args.host_cmd == "add":
-        return text_add(out, color)
+    if args.host_cmd in ("add", "update"):
+        return text_add(out, color, args.host_cmd)
     if args.host_cmd == "list":
         return text_list(out, color)
     if args.host_cmd == "remove":
@@ -329,7 +371,7 @@ def text_enabled(out: Mapping[str, object], color: bool) -> str:
     )
 
 
-def text_add(out: Mapping[str, object], color: bool) -> str:
+def text_add(out: Mapping[str, object], color: bool, command: str = "add") -> str:
     steps = _rows(out, "steps")
     rows: Sequence[Sequence[str]] = [
         [_s(s.get("name")), _s(s.get("status")), _s(s.get("detail"))] for s in steps
@@ -355,7 +397,8 @@ def text_add(out: Mapping[str, object], color: bool) -> str:
         )
     if any(s.get("status") == "kept" for s in steps):
         text += hint(
-            "old code was kept; `task host add %s --prune-old-code` deletes it" % host, color
+            "old code was kept; `task host %s %s --prune-old-code` deletes it" % (command, host),
+            color,
         )
     if out.get("complete"):
         return text + message("done", GREEN, "host %s is set up" % out.get("host"), color)

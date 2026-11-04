@@ -282,7 +282,9 @@ def text_whoami(_args: Args, out: Mapping[str, object], color: bool) -> str:
     table = [[_s(h.get("host")), _s(h.get("user")), _s(h.get("hostname"))] for h in hosts]
     text = render_table(("HOST", "USER", "HOSTNAME"), table, color, {}) if table else ""
     if any("user" not in h for h in hosts):
-        text += hint("- means the server runs older code; `task host add NAME` updates it", color)
+        text += hint(
+            "- means the server runs older code; `task host update NAME` updates it", color
+        )
     return text
 
 
@@ -317,7 +319,7 @@ def text_version(_args: Args, out: Mapping[str, object], color: bool) -> str:
             {2: {"up to date": GREEN, "differs": YELLOW}},
         )
         if any(not h.get("up_to_date") for h in hosts):
-            text += hint("`task host add NAME` installs the local version on a server", color)
+            text += hint("`task host update NAME` installs the local version on a server", color)
     return text
 
 
@@ -326,7 +328,7 @@ def text_update(_args: Args, out: Mapping[str, object], color: bool) -> str:
         return message("up to date", GREEN, "%s at %s" % (out["path"], out["after"]), color)
     return message(
         "updated", GREEN, "%s from %s to %s" % (out["path"], out["before"], out["after"]), color
-    ) + hint("servers keep their code until `task host add NAME` (see `task version`)", color)
+    ) + hint("servers keep their code until `task host update NAME` (see `task version`)", color)
 
 
 def text_host(args: Args, out: Mapping[str, object], color: bool) -> str:

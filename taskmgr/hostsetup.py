@@ -286,8 +286,9 @@ def server_script() -> str:
 
 
 class HostSetup:
-    def __init__(self, args: AddHostArgs, home: str) -> None:
+    def __init__(self, args: AddHostArgs, home: str, command: str = "add") -> None:
         self.args: AddHostArgs = args
+        self.command: str = command  # "add" or "update": names the command in messages
         self.ui: Ui = Ui(args.yes, args.plan, args.prune_old_code)
         self.home: str = home
         self.machines_path: str = os.path.join(self.home, "machines.json")
@@ -379,7 +380,9 @@ class HostSetup:
             ("machines", "local machine list", self.step_machines, True),
             ("old_code", "code of older versions outside remote_root", self.step_old_code, False),
         ]
-        self.ui.say("task host add %s: %s" % (self.args.name, self.destination()), BOLD)
+        self.ui.say(
+            "task host %s %s: %s" % (self.command, self.args.name, self.destination()), BOLD
+        )
         stopped_by: str | None = None
         try:
             for i, (name, title, fn, required) in enumerate(plan):
@@ -397,7 +400,8 @@ class HostSetup:
                 except Kept as e:
                     status = "kept"
                     detail = "not changed: %s. Destructive, so --yes does not do it; " % e + (
-                        "run `task host add %s --prune-old-code` to do it" % self.args.name
+                        "run `task host %s %s --prune-old-code` to do it"
+                        % (self.command, self.args.name)
                     )
                 except Declined as e:
                     status, detail = "declined", str(e)
@@ -618,7 +622,8 @@ class HostSetup:
         if line.startswith("busy "):
             _, path, pid = (line.split(" ", 2) + ["?", "?"])[:3]
             raise StepFailed(
-                "another `task host add` for this server is running (pid %s on the server " % pid
+                "another `task host add` or `task host update` for this server is running "
+                + "(pid %s on the server " % pid
                 + "holds %s); wait for it to end, then run again" % path
             )
         raise StepFailed("could not take the setup lock on the server: %s" % (line or err))
@@ -1187,3 +1192,18 @@ def _paths(entries: list[JsonDict]) -> str:
 def add_host(args: AddHostArgs, home: str) -> tuple[Mapping[str, object], int]:
     """`task host add`: (step summary, exit code). `home` is the local state dir."""
     return HostSetup(args, home).run()
+
+
+def update_host(args: AddHostArgs, home: str) -> tuple[Mapping[str, object], int]:
+    """`task host update`: `task host add` for a server already in the machine list, with its
+    entry as it is (no ssh options; the update parser leaves them None). It installs the
+    taskmgr-remote.pyz of this task's code version and restarts the service on it; the other
+    steps only check, unless something drifted. (step summary, exit code)."""
+    if not any(s["name"] == args.name for s in load_machines(home)):
+        raise TaskmgrError(
+            "unknown_host",
+            "host %r is not in the machine list; `task host add %s --ssh USER@HOST` sets it up"
+            % (args.name, args.name),
+            host=args.name,
+        )
+    return HostSetup(args, home, command="update").run()

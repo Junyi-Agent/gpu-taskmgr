@@ -209,14 +209,16 @@ class AddHostTest(Env):
         name: str = "h1",
         new: bool = True,
         archive: str | None = None,
+        cmd: str = "add",
     ) -> tuple[int, JsonDict, str]:
-        """Run `task host add --detail`; answers != None makes stdin an "interactive" pipe.
+        """Run `task host <cmd> --detail` (add, or update); answers != None makes stdin an
+        "interactive" pipe.
 
         Uploads the class's prebuilt taskmgr-remote.pyz unless `archive` names another file.
         """
         args = (
-            ["host", "add", name, "--detail", "--plain"]
-            + (["--ssh", "tuner@gpu.example"] if new else [])
+            ["host", cmd, name, "--detail", "--plain"]
+            + (["--ssh", "tuner@gpu.example"] if new and cmd == "add" else [])
             + ["--pyz", archive or self.remote_pyz]
             + list(extra)
         )
@@ -970,6 +972,76 @@ class AddHostTest(Env):
         rc, obj, _ = self.task("host", "add", "bad/name", "--ssh", "x@y")
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "bad_args")
+
+    # -- host update ------------------------------------------------------------------
+    def test_update_installs_this_version_and_keeps_the_entry(self) -> None:
+        rc, _, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
+        entry, pid1 = self.entry(), self.main_pid()
+        current = self.installed_version()
+        self.set_installed_version("1" * 64)  # the server runs older code
+        rc, out, err = self.add("--yes", cmd="update")
+        self.assertEqual(rc, 0, err)
+        self.expect(out, err, code="changed", service="changed")
+        self.assertIn("task host update h1:", err)
+        self.assertIn("restarted", self.detail(out, "service"))
+        self.assertEqual(self.installed_version(), current)
+        pid2 = self.main_pid()
+        self.assertTrue(pid2 and pid2 != pid1, (pid1, pid2))
+        self.assertEqual(self.entry(), entry)  # the machine entry is not touched
+        # up to date: nothing changes and nothing is asked
+        snap, ncalls = self.snapshot(), len(self.calls())
+        rc, out, err = self.add(cmd="update")
+        self.assertEqual(rc, 0, err)
+        self.expect(out, err)
+        self.assertNotIn("[y/N]", err)
+        self.assertIn("already up to date", self.detail(out, "code"))
+        self.assertEqual(self.snapshot(), snap)
+        self.assertEqual([c for c in self.calls()[ncalls:] if CHANGING.match(c)], [])
+        rc, text, _ = self.task("host", "update", "h1", "--pyz", self.remote_pyz, text=True)
+        self.assertEqual(rc, 0)
+        assert isinstance(text, str)
+        self.assertIn("host h1 is set up", text)
+
+    def test_update_plan_and_declined_change_nothing(self) -> None:
+        rc, _, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
+        self.set_installed_version("1" * 64)
+        snap, ncalls = self.snapshot(), len(self.calls())
+        rc, out, err = self.add("--plan", cmd="update")
+        self.assertEqual(rc, 1, err)
+        self.expect(out, err, code="planned", data="skipped", service="planned", verify="skipped")
+        self.assertEqual(self.snapshot(), snap)
+        rc, out, err = self.add(cmd="update", answers="n\n")
+        self.assertEqual(rc, 2, err)
+        self.assertEqual(self.statuses(out)["code"], "declined")
+        self.assertEqual(self.snapshot(), snap)
+        rc, out, err = self.add(cmd="update")  # no TTY and no --yes
+        self.assertEqual(rc, 2, err)
+        self.assertEqual(self.snapshot(), snap)
+        self.assertEqual([c for c in self.calls()[ncalls:] if CHANGING.match(c)], [])
+
+    def test_update_of_a_disabled_host(self) -> None:
+        rc, _, err = self.add("--yes")
+        self.assertEqual(rc, 0, err)
+        _ = self.ok("host", "disable", "h1")
+        self.set_installed_version("1" * 64)
+        rc, out, err = self.add("--yes", cmd="update")
+        self.assertEqual(rc, 0, err)
+        self.expect(out, err, code="changed", service="changed")
+        self.assertIs(self.entry()["enabled"], False)  # still disabled
+
+    def test_update_needs_a_known_host_and_takes_no_ssh_options(self) -> None:
+        before = self.machines_raw()
+        rc, obj, _ = self.task("host", "update", "nope", "--pyz", self.remote_pyz)
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.get(obj, "error", "code"), "unknown_host")
+        self.assertIn("task host add nope --ssh", self.text(self.get(obj, "error"), "message"))
+        rc, obj, _ = self.task("host", "update", "h1", "--ssh", "x@y")
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.get(obj, "error", "code"), "bad_args")
+        self.assertEqual(self.machines_raw(), before)
+        self.assertFalse(os.path.lexists(self.rcode()))
 
 
 class HostCmdsTest(Env):
