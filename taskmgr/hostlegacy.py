@@ -1,7 +1,7 @@
 """`task create host` step old_code: remove what older versions installed outside remote_root.
 
-Everything about the layouts of older versions is here (and in hostprobe.legacy, the probe
-key "legacy"); delete both once no server has them. Older layouts, all under the server's
+Everything about the layouts of older versions is here (and in hostserver.legacy(), the
+probe key "legacy"); delete both once no server has them. Older layouts, all under the server's
 $HOME:
   ~/taskmgr/              the code tree before the zipapp; the old installer wrote
                           LEGACY_MARKER into it. A tree without the marker, or a git
@@ -29,7 +29,7 @@ OLD_REMOTE_ROOT = "taskmgr-root"
 
 
 class LegacyProbe(TypedDict, total=False):
-    """hostprobe.legacy: what of the older layouts the server has."""
+    """The probe key "legacy" (hostserver.legacy()): what of the older layouts the server has."""
 
     tree: bool  # ~/taskmgr is a marked code tree (and no git checkout)
     backups: list[str]  # ~/taskmgr.old-* directories (no git checkouts)
@@ -69,8 +69,10 @@ def step_old_code(s: Setup) -> tuple[str, str]:
     files = ["%s/%s" % (home, OLD_CODE_LINK)] if p.get("link") else []
     old_store = "%s/%s" % (home, OLD_CODE_STORE)
     files += ["%s/%s" % (old_store, n) for n in p.get("files") or []]
+
     if not trees and not files:
         return "ok", "no code of an older version"
+
     s.ui.info(
         "the service runs %s; this code from older versions is not used any more:" % s.code_path()
     )
@@ -81,6 +83,7 @@ def step_old_code(s: Setup) -> tuple[str, str]:
         + "it stop working; run `task create host %s` there" % s.host_name(),
         destructive=True,  # outside remote_root: --yes does not answer it
     )
+
     # a git checkout is never deleted, even if it appeared since the probe
     script = "".join(
         "if [ -e %s ]; then echo %s is a git checkout, not deleted >&2; exit 1; fi\n"
@@ -90,6 +93,7 @@ def step_old_code(s: Setup) -> tuple[str, str]:
     script += "rm -rf -- %s\n" % " ".join(shlex.quote(t) for t in trees + files)
     if old_store != s.root():
         script += "rmdir %s 2>/dev/null || true\n" % shlex.quote(old_store)
+
     _ = s.sh(script)
     left = s.legacy_probe()
     if left.get("tree") or left.get("backups") or left.get("link") or left.get("files"):

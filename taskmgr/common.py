@@ -247,7 +247,7 @@ def try_flock_fd(path: str, create: bool = False, directory: bool = False) -> in
     """Try a non-blocking exclusive flock. Returns the fd (lock held) or None."""
     flags = os.O_RDONLY if directory else os.O_RDWR | (os.O_CREAT if create else 0)
     try:
-        fd = os.open(path, flags, 0o644)
+        fd = os.open(path, flags, 0o600)
     except OSError:
         return None
     try:

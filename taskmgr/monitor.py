@@ -4,6 +4,7 @@ Shared by the shim (normal supervision), the daemon (startup recovery, dead-shim
 detection, takeover) and `taskmgr-remote resolve`.
 """
 
+import math
 import os
 import signal
 import time
@@ -183,6 +184,7 @@ def record_unconfirmed(
     if runner is not None:
         runner["stop_unconfirmed_reason"] = reason
         store.write_runner(jobdir, runner)
+
     _ = mark_unknown(
         store,
         jobid,
@@ -203,6 +205,7 @@ def mark_unknown(
         jobdir, job = store.load_job(jobid)
         if job["state"] not in ("running", "stopping"):
             return job
+
         runner, _ = store.read_runner(jobdir)
         if runner is not None:
             runner["unknown"] = {
@@ -212,6 +215,7 @@ def mark_unknown(
                 "at": utcnow_iso(),
             }
             store.write_runner(jobdir, runner)
+
         job["state"] = "unknown"
         job["error"] = {"kind": kind, "message": message}
         _ = store.save_job(jobdir, job)
@@ -252,12 +256,15 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
 
     The entry did no work, so the same job goes back to queued (keeping its jobid and
     enqueue_seq; not an interruption, `auto_restarts` is unchanged): the workdir is kept
-    for the next dispatch and runner.json is moved aside as runner.prev-N.json. A requested cancel ends the job
-    as cancelled instead. Returns None when the run record does not show such an exit or
-    the job is not running/stopping (an unknown job is never queued again).
+    for the next dispatch and runner.json is moved aside as runner.prev-N.json. A
+    requested cancel ends the job as cancelled instead. Returns None when the run record
+    does not show such an exit or the job is not running/stopping (an unknown job is never
+    queued again).
 
     A job whose GPUs the scheduler chose (`gpu_request`) gets them cleared, so that it
     chooses again; its shim calls this right after the GPU-busy exit instead of waiting.
+    The scheduler dispatches it again no sooner than gpu_retry_interval_seconds from now
+    (`not_before_epoch`).
     """
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
@@ -268,6 +275,7 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
             or not store.ended_gpu_busy(runner)
         ):
             return None
+
         if not job.get("cancel_requested"):
             # The workdir stays: the next dispatch of this same job reuses it (GPU contract).
             # job.json first: a crash before the rename leaves a queued job whose runner.json
@@ -276,16 +284,29 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
             job["dispatched_at"] = None
             job["stop_reason"] = None
             job["error"] = None
+            job["gpu_busy_requeues"] = job.get("gpu_busy_requeues", 0) + 1
             _ = job.pop("pending_reason", None)
+
             if job.get("gpu_request"):
-                # Its GPUs were chosen at dispatch and one turned out busy: choose again.
+                # Its GPUs were chosen at dispatch and one turned out busy: choose again,
+                # once the retry interval has passed (the shim of a job with fixed GPUs
+                # waits it before its relaunch).
+                not_before = time.time() + float(store.config["gpu_retry_interval_seconds"])
                 job["gpus"] = []
-                job["pending_reason"] = "entry exited %s (GPU busy); choosing GPUs again" % (
-                    runner.get("return_code")
+                job["not_before_epoch"] = not_before
+                job["pending_reason"] = (
+                    "entry exited %s (GPU busy, #%d); choosing GPUs again from %s"
+                    % (
+                        runner.get("return_code"),
+                        job["gpu_busy_requeues"],
+                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(math.ceil(not_before))),
+                    )
                 )
+
             jobdir = store.save_job(jobdir, job)
             _ = store.set_runner_aside(jobdir)
             return job
+
     # Outside the lock: finalizing reads the task's result.json. end_cancelled re-checks
     # the state under the lock.
     return end_cancelled(store, jobid)
@@ -307,6 +328,7 @@ def finish_stopped(
         requeued = requeue_gpu_busy(store, jobid)
         if requeued is not None:
             return requeued
+
     if stop_reason in STOP_OUTCOME:
         return finalize_run(store, jobid, status=STOP_OUTCOME[stop_reason], warnings=warnings)
     if exited:
@@ -331,10 +353,12 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
     """
     jobdir, job = store.load_job(jobid)
     state = job["state"]
+
     # Without resolve an unknown job is left alone (the health check lists jobs under
     # the state lock but checks them without it, so the state may have changed).
     if state == "queued" or state in TERMINAL_STATES or (state == "unknown" and not resolve):
         return {"decision": "none", "state": state}
+
     runner, err = store.read_runner(jobdir)
     if runner is None:
         if not resolve:
@@ -355,6 +379,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
     lock_fd = try_flock_fd(lock_path)
     if lock_fd is None and os.path.exists(lock_path):
         return {"decision": "shim_alive", "identity": identity_of(runner)}
+
     keep_fd = False
     try:
         if runner.get("status") == "waiting_gpu":
@@ -363,6 +388,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             j = requeue_gpu_busy(store, jobid)
             if j is not None:
                 return {"decision": "requeued", "state": j["state"]}
+
         stop_reason = job.get("stop_reason") if state in ("stopping", "unknown") else None
         exited = bool(runner.get("exited"))
         if job.get("cancel_requested") and (
@@ -371,6 +397,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
             # A cancel request stays effective across restarts; on an unknown job it
             # turns into cancelled once the stop is confirmed (Section 13.2).
             stop_reason = "cancel"
+
         if not exited and not _has_identity(runner):
             if not may_have_started(runner):
                 j = interrupt_run(store, jobid, "entry command never started", rerun=not resolve)
@@ -382,6 +409,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
                 "reason": "identity record incomplete",
                 "identity": identity_of(runner),
             }
+
         try:
             current_boot = procutil.boot_id()
         except OSError as e:
@@ -392,12 +420,14 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
                 "reason": "cannot read boot_id",
                 "identity": identity_of(runner),
             }
+
         if runner.get("boot_id") != current_boot:
             if exited:
                 j = finish_stopped(store, jobid, stop_reason, True)
                 return {"decision": _finished(j), "state": j["state"]}
             j = interrupt_run(store, jobid, "machine rebooted", rerun=not resolve)
             return {"decision": "interrupted", "state": j["state"]}
+
         pgid, leader_start = _group_identity(runner)
         try:
             members = procutil.group_members(pgid, leader_start, jobid)
@@ -409,12 +439,14 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
                 "reason": "cannot read /proc",
                 "identity": identity_of(runner),
             }
+
         if not members:
             warnings: list[str] = []
             if "leftover" in (job.get("stop_reason"), runner.get("stop_unconfirmed_reason")):
                 warnings = ["leftover_processes"]
             j = finish_stopped(store, jobid, stop_reason, exited, warnings)
             return {"decision": _finished(j), "state": j["state"]}
+
         if resolve:
             if runner.get("stop_unconfirmed_reason"):
                 # SIGKILL already failed once: an operator has to look at it.
@@ -435,6 +467,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
                 "alive_pids": members,
                 "identity": identity_of(runner),
             }
+
         keep_fd = True
         tk = Takeover(store, jobid, jobdir, runner, lock_fd, exited, job)
         return {"decision": "takeover", "takeover": tk, "alive_pids": members}
@@ -486,10 +519,12 @@ class Takeover:
         self.last_poll: float = 0.0
         self.warnings: list[str] = []
         self.done: bool = False
+
         cfg = store.config
         self.poll: float = float(cfg["control_poll_seconds"])
         self.grace: float = cfg["stop_grace_seconds"]
         self.confirm: float = cfg["kill_confirm_seconds"]
+
         self._note()
         if self.exited:
             if self.stop_reason in (None, "leftover"):
@@ -530,6 +565,7 @@ class Takeover:
                 if not procutil.group_members(self.pgid, self.min_start, self.jobid):
                     _ = finish_stopped(self.store, self.jobid, None, self.exited, self.warnings)
                     return self.close()
+
                 now = time.monotonic()
                 if now - self.last_poll >= self.poll:
                     self.last_poll = now
@@ -541,10 +577,12 @@ class Takeover:
                     if reason:
                         self._begin_stop(reason)
                 return None
+
             now = time.monotonic()
             if now - self.last_poll >= self.poll:
                 self.last_poll = now
                 self.stopper.honor_cancel(self.store.load_job(self.jobid)[1])
+
             r = self.stopper.step()
             if r == "stopped":
                 _ = finish_stopped(

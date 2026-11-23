@@ -815,7 +815,9 @@ class HostSetup:
         self.ui.confirm(" and ".join(parts))
         script = (
             "set -e\n"
+            + "umask 077\n"  # remote_root is owner-only (docs/install.md)
             + "mkdir -p %s\n" % q(root)
+            + "if [ -O %s ]; then chmod go-rwx %s; fi\n" % (q(root), q(root))
             + "if [ ! -e %s ]; then (set -C; cat > %s); fi\n" % (q(cfg), q(cfg))
         )
         _ = self.sh(script, config_text().encode())

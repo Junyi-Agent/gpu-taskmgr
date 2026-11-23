@@ -139,6 +139,12 @@ class Job(_JobBase, total=False):
     # task.json `gpus` was an object: `gpus` is [] until the scheduler chose GPUs that meet
     # the request at launch, and [] again when the job is queued after a GPU-busy exit.
     gpu_request: GpuRequest
+    # Set when a job with a gpu_request is queued again after a GPU-busy exit: the
+    # scheduler does not dispatch it before this time (epoch seconds,
+    # gpu_retry_interval_seconds after the exit); removed at dispatch.
+    not_before_epoch: float
+    # How many times the job was queued again after a GPU-busy exit.
+    gpu_busy_requeues: int
 
 
 class TakeoverNote(TypedDict):

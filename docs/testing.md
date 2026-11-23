@@ -68,7 +68,7 @@ EEXIST).
 | `TASKMGR_TEST_FEATURES` | remote reports these features (comma-separated; `-` for none) |
 | `TASKMGR_TEST_SKIP_DAEMON_LOCK=1` | daemon skips `daemon.lock` (multi-daemon test) |
 | `TASKMGR_SHIM_EXECUTABLE` | interpreter used to exec the shim (shim start failure) |
-| `TASKMGR_TEST_SHIM_CRASH=<point>` | shim exits at `before_identity`, `before_exec`, `after_exit_recorded`, `before_finalize` |
+| `TASKMGR_TEST_SHIM_CRASH=<point>` | shim exits at `before_identity`, `before_exec`, `after_exit_recorded`, `before_finalize` (`test_recovery.py` checks the recovery after each) |
 | `TASKMGR_TEST_IGNORE_KILL=1` | stop procedure sends no signals (unconfirmed stop) |
 | `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` sleeps while holding the upload lock |
 | machine entry `"local": {"home": "/dir"}` | `transport: local` runs every command (and `task host add` scripts) with `HOME=/dir` |

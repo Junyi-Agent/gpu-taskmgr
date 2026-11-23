@@ -45,6 +45,10 @@ from .records import (
 
 # The job directories of jobs that are not terminal (done/ grows without bound).
 ACTIVE_JOB_DIRS = ("queue", "in-progress")
+# Modes of what taskmgr-remote creates under remote_root: only the server account may read
+# it (packages, task.json env, logs, results).
+PRIVATE_DIR = 0o700
+PRIVATE_FILE = 0o600
 
 
 def _type_ok(value: object, tp: object) -> bool:
@@ -71,7 +75,6 @@ class Store:
         if not root or not os.path.isabs(root):
             raise TaskmgrError("bad_root", "--root must be an absolute path: %r" % (root,))
         self.root: str = root
-        self._lock_fd: int | None = None
         self._lock_depth: int = 0
         self._config: RemoteConfig | None = None
 
@@ -80,8 +83,16 @@ class Store:
         return os.path.join(self.root, *parts)
 
     def ensure_layout(self) -> None:
+        """Create remote_root and its directories, owner-only (0700). An existing root this
+        user owns loses its group and other bits: packages, task.json env, logs and results
+        below it are readable only by the server account."""
+        os.makedirs(self.root, PRIVATE_DIR, exist_ok=True)
+        st = os.stat(self.root)
+        if st.st_uid == os.getuid() and stat.S_IMODE(st.st_mode) & 0o077:
+            os.chmod(self.root, stat.S_IMODE(st.st_mode) & ~0o077)
+
         for d in ("locks", "incoming", "submission-keys", "daemon") + JOB_DIRS:
-            os.makedirs(self.path(d), exist_ok=True)
+            os.makedirs(self.path(d), PRIVATE_DIR, exist_ok=True)
 
     @property
     def config(self) -> RemoteConfig:
@@ -90,16 +101,19 @@ class Store:
             obj, err = try_read_json(self.path("config.json"))
             if err and err != "missing":
                 raise TaskmgrError("bad_config", "config.json is %s" % err)
+
             if isinstance(obj, dict):
                 cfg.update(obj)
             elif err is None:
                 raise TaskmgrError("bad_config", "config.json is not a JSON object")
+
             for key, tp in cast(dict[str, object], RemoteConfig.__annotations__).items():
                 if not _type_ok(cfg.get(key), tp):
                     raise TaskmgrError(
                         "bad_config",
                         "config.json: %s has the wrong type: %r" % (key, cfg.get(key)),
                     )
+
             busy = cfg.get("gpu_busy_exit_code")
             if busy is not None and not (isinstance(busy, int) and 1 <= busy <= 255):
                 # taskmgr_task.py exits 75 for any value outside 1-255.
@@ -108,6 +122,7 @@ class Store:
                     "config.json: gpu_busy_exit_code must be null or an integer from 1 to 255: %r"
                     % busy,
                 )
+
             self._config = cast(RemoteConfig, cast(object, cfg))
         return self._config
 
@@ -121,8 +136,9 @@ class Store:
             finally:
                 self._lock_depth -= 1
             return
-        os.makedirs(self.path("locks"), exist_ok=True)
-        fd = os.open(self.path("locks", "state.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+
+        os.makedirs(self.path("locks"), PRIVATE_DIR, exist_ok=True)
+        fd = os.open(self.path("locks", "state.lock"), os.O_RDWR | os.O_CREAT, PRIVATE_FILE)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             self._lock_depth = 1
@@ -176,6 +192,7 @@ class Store:
         dirs = ACTIVE_JOB_DIRS if active else JOB_DIRS
         if not self._lock_depth:
             dirs += ("queue",)
+
         for i, d in enumerate(dirs):
             base = self.path(d)
             try:
@@ -195,6 +212,7 @@ class Store:
         assert self._lock_depth, "state lock required"
         job["updated_at"] = utcnow_iso()
         atomic_write_json(os.path.join(jobdir, "job.json"), job)
+
         want = self.dir_for(job["state"], job["jobid"])
         if os.path.abspath(jobdir) != want:
             os.rename(jobdir, want)
@@ -215,10 +233,12 @@ class Store:
         raw, _ = try_read_json(p)
         c: JsonDict = raw if isinstance(raw, dict) else {}
         seq = c.get("next_enqueue_seq")
+
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
             # Missing or corrupt counter: continue after the highest sequence number in use.
             used: list[object] = [j.get("enqueue_seq") for _, j in self.iter_jobs()]
             seq = max((n for n in used if isinstance(n, int)), default=0) + 1
+
         c["next_enqueue_seq"] = seq + 1
         atomic_write_json(p, c)
         return seq
@@ -238,26 +258,39 @@ class Store:
     def write_runner(jobdir: str, runner: Runner) -> None:
         atomic_write_json(os.path.join(jobdir, "runner.json"), runner)
 
-    @staticmethod
-    def set_runner_aside(jobdir: str) -> str | None:
-        """Rename runner.json to the first free runner.prev-N.json (kept for inspection)."""
+    def set_runner_aside(self, jobdir: str) -> str | None:
+        """Rename runner.json to the first free runner.prev-N.json (kept for inspection).
+
+        The record of a GPU-busy exit replaces the last runner.prev-N.json when that one is
+        a GPU-busy record too: a job that keeps exiting 75 keeps one such file, however
+        often it is queued again (job.json gpu_busy_requeues counts the requeues)."""
         src = os.path.join(jobdir, "runner.json")
         if not os.path.exists(src):
             return None
+
         i = 1
         while os.path.lexists(os.path.join(jobdir, "runner.prev-%d.json" % i)):
             i += 1
         dst = os.path.join(jobdir, "runner.prev-%d.json" % i)
+        if i > 1:
+            last = os.path.join(jobdir, "runner.prev-%d.json" % (i - 1))
+            if self._busy_record(src) and self._busy_record(last):
+                dst = last
+
         os.rename(src, dst)
         fsync_dir(jobdir)
         return dst
+
+    def _busy_record(self, path: str) -> bool:
+        """Whether the run record at path shows a GPU-busy exit (see ended_gpu_busy)."""
+        obj, _ = try_read_json(path)
+        return isinstance(obj, dict) and self.ended_gpu_busy(cast(Runner, cast(object, obj)))
 
     # -- GPU busy exits (the entry could not get its GPU) ----------------------
     @property
     def gpu_busy_exit_code(self) -> int | None:
         """The exit code meaning "GPU busy, start me again"; None when disabled."""
-        code: object = self.config.get("gpu_busy_exit_code", 75)
-        return code if isinstance(code, int) and not isinstance(code, bool) else None
+        return self.config["gpu_busy_exit_code"]
 
     def ended_gpu_busy(self, runner: Runner) -> bool:
         """Whether a non-final run record shows an entry that exited for "GPU busy" and was
@@ -290,6 +323,14 @@ def choosing_gpus(job: Job) -> bool:
     """Whether the scheduler must choose the job's GPUs before its next run: it has a
     gpu_request, no GPUs yet, and its next run is not a precompile (which needs none)."""
     return bool(job.get("gpu_request")) and not job.get("gpus") and not precompiling(job)
+
+
+def held_back(job: Job, now: float, interval: float) -> bool:
+    """Whether a job queued again after a GPU-busy exit must still wait before its next
+    dispatch (`now` in epoch seconds). A wait longer than `interval` (the wall clock was set
+    back, or the interval lowered) has passed."""
+    not_before = job.get("not_before_epoch")
+    return not_before is not None and 0 < not_before - now <= interval
 
 
 def run_gpus(job: Job) -> list[GpuDecl]:
@@ -375,6 +416,7 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
     p = os.path.join(workdir, "result.json")
     warnings: list[str] = []
     verrs: list[str] = []
+
     try:
         raw = read_regular_file(p, follow_symlinks=False)
     except FileNotFoundError:
@@ -388,6 +430,7 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
         )
     except OSError as e:
         return {"schema_version": SCHEMA_VERSION}, ["result.json unreadable: %s" % e], warnings
+
     try:
         parsed = cast(JsonValue, json.loads(raw.decode("utf-8")))
         if not isinstance(parsed, dict):
@@ -401,6 +444,7 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
             ["result.json is corrupt (kept as %s): %s" % (os.path.basename(keep), e)],
             warnings,
         )
+
     obj = parsed
     if "_taskmgr" in obj:
         meta = _as_dict(obj.pop("_taskmgr"))
@@ -412,6 +456,7 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
         )
         if not ours:
             warnings.append("task_wrote_taskmgr")
+
     _ = obj.setdefault("schema_version", SCHEMA_VERSION)
     return obj, verrs, warnings
 
@@ -476,7 +521,7 @@ def build_meta(
 def write_result(jobdir: str, business: JsonDict, meta: TaskmgrMeta) -> None:
     workdir = os.path.join(jobdir, "workdir")
     if not os.path.isdir(workdir):
-        os.makedirs(workdir, exist_ok=True)
+        os.makedirs(workdir, PRIVATE_DIR, exist_ok=True)
     res: dict[str, object] = dict(business)
     _ = res.pop("_taskmgr", None)
     _ = res.setdefault("schema_version", SCHEMA_VERSION)
@@ -516,9 +561,11 @@ def finalize_run(
             if not job.get("cancel_requested"):
                 return queue_for_gpus(store, jobdir, job)
             status = "cancelled"
+
     raw_runner, _ = store.read_runner(jobdir)
     runner: Runner = raw_runner or {"jobid": jobid}
     tm: object = runner.get("taskmgr")
+
     if runner.get("final") and isinstance(tm, dict):
         meta = tm
         if not result_complete(jobdir):
@@ -534,6 +581,7 @@ def finalize_run(
         warns += w2
         # A precompile writes no result: the entry does.
         verrs = [] if precompiling(job) else verrs or validate_outputs(business, task)
+
         if status is None:
             rc, sig = runner.get("return_code"), runner.get("signal")
             if sig is not None:
@@ -549,12 +597,15 @@ def finalize_run(
                 status = "invalid_result"
             else:
                 status = "succeeded"
+
         if status == "failed" and error and precompiling(job):
             error = {"kind": "precompile", "message": "precompile: %s" % error["message"]}
         warns = list(dict.fromkeys(warns))
+
         # Persist the step 2-3 findings first so a crash here does not lose them.
         runner["warnings"] = warns
         store.write_runner(jobdir, runner)
+
         meta = build_meta(store, job, runner, status, verrs, error, warns)
         write_result(jobdir, business, meta)
         runner.update(
@@ -566,6 +617,7 @@ def finalize_run(
             }
         )
         store.write_runner(jobdir, runner)
+
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
         if _settled(job):
@@ -665,8 +717,10 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
             return job
         if found is None or os.path.abspath(found) != os.path.abspath(jobdir):
             result = None  # read again under the lock
+
         stop_reason = job.get("stop_reason") if job["state"] in ("stopping", "unknown") else None
         runner = mark_run_interrupted(store, jobdir, jobid, reason)
+
         if job.get("cancel_requested"):
             _ = end_without_result(store, jobdir, job, "cancelled", None, runner, result)
             return job
@@ -678,13 +732,15 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
                 store, jobdir, job, "failed", OPERATOR_STOPPED_ERROR, runner, result
             )
             return job
+
         # A crash after the clone was renamed into queue/ but before this job was saved
         # leaves the clone behind; reuse it instead of cloning twice. Only this step
         # creates a job with retry_of == jobid while jobid is not terminal.
         rerun_job = next((j for _, j in store.iter_jobs() if j.get("retry_of") == jobid), None)
-        maxr = int(store.config.get("max_auto_restarts", 2))
+        maxr = store.config["max_auto_restarts"]
         restarts = job.get("auto_restarts", 0)
         error: ErrorInfo = {"kind": "interrupted", "message": reason}
+
         if rerun_job is not None:
             if rerun_job["jobid"] not in job.get("retried_as", []):
                 job["retried_as"] = job.get("retried_as", []) + [rerun_job["jobid"]]
@@ -699,6 +755,7 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
         else:
             _ = clone_job(store, jobdir, job, automatic=True)
             jobdir = cast(str, store.find_job_dir(jobid))
+
         _ = end_without_result(store, jobdir, job, "failed", error, runner, result)
         return job
 
@@ -754,7 +811,7 @@ def staging_dir(store: Store, prefix: str) -> Generator[str, None, None]:
     """A new directory incoming/<prefix>-<random>, flocked while in use (which keeps the
     daemon's clean_incoming away) and removed on exit unless it was enqueued."""
     updir = store.path("incoming", "%s-%s" % (prefix, secrets.token_hex(6)))
-    os.mkdir(updir)
+    os.mkdir(updir, PRIVATE_DIR)
     lock_fd = os.open(updir, os.O_RDONLY)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
@@ -803,6 +860,7 @@ def link_tree(src: str, dst: str) -> None:
                 os.symlink(os.readlink(s), t)
             elif name in filenames:
                 _link_or_copy(s, t)
+
     for s, t in reversed(made):
         os.chmod(t, stat.S_IMODE(os.lstat(s).st_mode))
 
@@ -841,6 +899,7 @@ def clone_job(
         with staging_dir(store, "retry") as updir:
             stage_package(old_jobdir, updir)
             return clone_job(store, old_jobdir, old, automatic=automatic, staged=updir)
+
     jobid = store.new_jobid()  # asserts the state lock
     job = new_job_record(
         jobid,
@@ -854,6 +913,7 @@ def clone_job(
         phase=initial_phase(load_task(old_jobdir)),  # a new job has an empty workdir
         gpu_request=old.get("gpu_request"),  # chooses its GPUs again
     )
+
     enqueue_staged(store, staged, job)
     old["retried_as"] = old.get("retried_as", []) + [jobid]
     _ = store.save_job(old_jobdir, old)
@@ -887,6 +947,7 @@ def end_without_result(
         if not runner.get("taskmgr"):
             runner["taskmgr"] = meta
             store.write_runner(jobdir, runner)
+
     job["state"] = state
     job["error"] = error
     job["ended_at"] = utcnow_iso()
@@ -895,12 +956,14 @@ def end_without_result(
 
 
 def make_read_only(root: str) -> None:
+    """Make a package copy read-only and owner-only: of the mode bits only the owner's read
+    and execute stay (an extracted or cloned package keeps no group or other bits)."""
     for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
         for f in filenames:
             p = os.path.join(dirpath, f)
             if not os.path.islink(p):
-                os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) & ~0o222)
-        os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) & ~0o222)
+                os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) & 0o500)
+        os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) & 0o500)
 
 
 def remove_tree(path: str) -> None:

@@ -92,6 +92,48 @@ class RecoveryTest(Env):
         with open(os.path.join(self.job_dir(j), "shim.log")) as f:
             self.assertIn("test crash", f.read())
 
+    def test_crash_before_exec_is_not_rerun(self) -> None:
+        """The shim dies after the identity record is durable, before it releases the child
+        to exec. The record says the entry may have run, so recovery must not run it again:
+        the child exits without exec when the pipe closes, the group is gone, and the job
+        ends failed / exit_code_lost (docs/recovery.md step 4.5)."""
+        _ = self.start_daemon(env={"TASKMGR_TEST_SHIM_CRASH": "before_exec"})
+        j = self.submit(self.make_pkg(script="echo x >> %s; " % self.counter() + OK_RESULT))
+        job = self.wait_state(j, "failed", timeout=20)
+
+        self.assertEqual(self.get(job, "error", "kind"), "exit_code_lost")
+        self.assertEqual(job["retried_as"], [])
+        self.assertEqual(self.jobids(), {j})
+        r = self.runner(j)
+        self.assertIsNotNone(r.get("pgid"))  # the identity was recorded
+        self.assertEqual((r.get("final"), r.get("return_code")), (True, None))
+        self.assertEqual(self.get(self.result(j), "_taskmgr", "status"), "failed")
+        self.assertEqual(self.runs(), 0)  # the entry command never executed
+        self.assertIn("test crash at before_exec", self.shim_log(j))
+
+    def test_crash_before_finalize_is_finalized_by_recovery(self) -> None:
+        """The shim dies after the exit is recorded and the group is gone, before it
+        finalizes: recovery finishes the finalization with the recorded exit and stop
+        reason, and nothing runs again (docs/recovery.md step 2)."""
+        _ = self.start_daemon(env={"TASKMGR_TEST_SHIM_CRASH": "before_finalize"})
+        ok = self.submit(self.make_pkg(script="echo x >> %s; " % self.counter() + OK_RESULT))
+        slow = self.submit(self.make_pkg(script="sleep 60", timeout=1))
+        job = self.wait_state(ok, "succeeded", timeout=20)
+
+        self.assertEqual(job["retried_as"], [])
+        r = self.runner(ok)
+        self.assertEqual((r.get("final"), r.get("return_code")), (True, 0))
+        self.assertEqual(self.get(self.result(ok), "_taskmgr", "status"), "succeeded")
+        self.assertEqual(self.runs(), 1)
+        self.assertIn("test crash at before_finalize", self.shim_log(ok))
+
+        # A stop for the timeout: the job was stopping, and recovery keeps the reason.
+        job = self.wait_state(slow, "timed_out", timeout=20)
+        self.assertEqual(job["stop_reason"], "timeout")
+        self.assertEqual(self.get(self.result(slow), "_taskmgr", "status"), "timed_out")
+        self.assertIn("test crash at before_finalize", self.shim_log(slow))
+        self.assertEqual(self.jobids(), {ok, slow})
+
     def test_crash_before_identity_reruns_as_new_jobs_up_to_the_limit(self) -> None:
         # max_auto_restarts=2: the original job and two automatic re-runs, each
         # interrupted before its entry command started; the last one gives up.

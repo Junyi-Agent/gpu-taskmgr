@@ -1,6 +1,7 @@
 """task.json `gpus` as an object: GPUs chosen by condition when the job is launched."""
 
 import os
+import time
 
 from taskmgr import gpu
 from taskmgr.records import GpuRequest, JsonDict, JsonValue
@@ -203,3 +204,84 @@ class GpuSelectRunTest(Env):
         )
         self.assertEqual(rc, 2)
         self.assertIn("without gpu_select support", self.text(out, "error", "message"))
+
+
+class GpuSelectBusyBackoffTest(Env):
+    remote_config: JsonDict = {"gpu_retry_interval_seconds": 1.5}
+
+    def test_busy_exit_waits_the_retry_interval_and_keeps_one_record(self) -> None:
+        """A job that chooses its GPUs and keeps exiting 75 is dispatched again only
+        gpu_retry_interval_seconds after each exit (not on the next pass), and its run
+        records set aside for those exits stay one file however often it is queued again."""
+        launches = os.path.join(self.tmp, "launches")
+        script = "date +%%s.%%N >> %s; exit 75" % launches
+        _ = self.start_daemon()
+        j = self.submit(self.make_pkg(script=script, extra={"gpus": {"count": 1}}))
+
+        def times() -> list[float]:
+            try:
+                with open(launches) as f:
+                    return [float(line) for line in f.read().split()]
+            except OSError:
+                return []
+
+        _ = self.wait_for(lambda: len(times()) >= 4, 30, "4 launches")
+        t = times()[:4]
+        gaps = [t[i + 1] - t[i] for i in range(len(t) - 1)]
+        self.assertGreaterEqual(min(gaps), 1.5, t)
+
+        def busy_reason() -> str:
+            try:
+                text = str(self.job(j).get("pending_reason"))
+            except (OSError, ValueError):  # the directory moved meanwhile
+                return ""
+            return text if "GPU busy, #" in text else ""
+
+        self.assertRegex(
+            self.wait_for(busy_reason, 10, "pending_reason"),
+            r"^entry exited 75 \(GPU busy, #\d+\); choosing GPUs again from \S+Z$",
+        )
+        _ = self.ok("cancel", j, "--host", "s1")
+        job = self.wait_state(j, "cancelled")
+
+        self.assertGreaterEqual(job.get("gpu_busy_requeues", 0), 3)
+        prev = sorted(n for n in os.listdir(self.job_dir(j)) if n.startswith("runner.prev-"))
+        self.assertEqual(prev, ["runner.prev-1.json"])
+
+
+class GpuStateReadTest(Env):
+    def test_reads_are_reused_and_a_hung_nvidia_smi_does_not_stall_other_jobs(self) -> None:
+        """A job waiting for GPUs to qualify does not make the daemon run nvidia-smi on
+        every pass, and a hung nvidia-smi holds up a CPU job by the selection timeout
+        (GPU_QUERY_TIMEOUT), not by the 60 s of other queries."""
+        calls = os.path.join(self.tmp, "smi-calls")
+        hang = os.path.join(self.tmp, "hang")
+        with open(self.smi) as f:
+            body = f.read()
+        hook = 'echo "$*" >> %s\nif [ -f %s ]; then exec sleep 1000; fi\n' % (calls, hang)
+        with open(self.smi, "w") as f:
+            _ = f.write(body.replace("#!/bin/sh\n", "#!/bin/sh\n" + hook, 1))
+        self.set_gpu_info([(i, uuid, FULL, FULL, "Prohibited") for i, uuid in GPUS])
+        _ = self.start_daemon()
+        j = self.submit(self.make_pkg(extra={"gpus": {"count": 1}}))
+        _ = self.wait_for(lambda: self.job(j).get("pending_reason"), 20, "pending_reason")
+
+        def count() -> int:
+            with open(calls) as f:
+                return len(f.read().splitlines())
+
+        before = count()
+        time.sleep(3)  # 15 passes at scheduler_poll_seconds 0.2
+        self.assertLessEqual(count() - before, 4)  # one read (two calls) per 5 s at most
+
+        open(hang, "w").close()
+        hung = count()
+        _ = self.wait_for(lambda: count() > hung, 20, "a hung nvidia-smi call")
+        t0 = time.monotonic()
+        cpu = self.submit(self.make_pkg())
+        os.unlink(hang)  # the call in progress stays hung
+        _ = self.wait_state(cpu, "succeeded", timeout=40)
+        self.assertLess(time.monotonic() - t0, 25)
+        self.assertEqual(self.daemon_log().count("cannot read the GPU state"), 1)
+        self.assertIn("timed out", str(self.job(j).get("pending_reason")))
+        _ = self.ok("cancel", j, "--host", "s1")

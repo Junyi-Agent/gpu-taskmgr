@@ -32,7 +32,8 @@ up: "[[taskmgr/README.zh-CN]]"
   package.tar.gz    原始上传文件，不可修改
   package/          只读的解压副本；运行从这里开始
   runner.json       运行的权威记录，只由 runner 写入
-  runner.prev-N.json  GPU 忙退出后作业重新排队时移到一边的运行记录
+  runner.prev-N.json  作业重新排队时（GPU 忙退出后，或预编译完成后等待 GPU）移到一边的运行记录；
+                      连续的 GPU 忙记录共用一个文件
   shim.lock         shim 在整个生命周期内持有的 flock
   stdout.log  stderr.log  shim.log   重新启动时追加写入，不清空
   workdir/          package/ 的副本（每个作业复制一次，GPU 忙后的重新启动继续使用），加上 progress.json、result.json、artifacts/
@@ -56,6 +57,7 @@ up: "[[taskmgr/README.zh-CN]]"
  "auto_restarts": 0, "dispatched_at": null | "...",
  "retry_of": null | "<本作业重跑的 jobid>", "retried_as": ["<重跑作业的 jobid>"],
  "pending_reason": "entry exited 75 (GPU busy); retry #3 in 2 s",   （只在等待期间存在）
+ "gpu_busy_requeues": 2, "not_before_epoch": 1761725702.5,   （GPU 忙后重新排队之后）
  "error": null}
 ```
 
@@ -69,6 +71,9 @@ CLI 的 `user@hostname`（`via: "cli"`，通过 `taskmgr-remote cancel --by` 发
 `gpu_busy_exit_code` 退出、shim 等待重新启动它期间（见下文 Shim），以及预编译成功后，设置
 `pending_reason`；某次运行真正开始或作业结束时删除。`phase` 只在 `task.json` 有 `precompile` 时存在，
 先是 `precompile`，然后是 `gpu`（见 [[docs/task-package.zh-CN]]）。`runner.json` 会复制它。
+`gpu_busy_requeues` 是作业因 GPU 忙退出而回到 `queued` 的次数。带 `gpu_request` 的作业这样重新排队时
+还会写入 `not_before_epoch`（退出时间加 `gpu_retry_interval_seconds`），`pending_reason` 写明这个时间；
+调度器在此之前跳过它（如果剩余等待超过这个间隔，比如时钟被往回调，视为已到时间），派发时删除这个键。
 
 `runner.json`：
 
@@ -102,6 +107,7 @@ CLI 的 `user@hostname`（`via: "cli"`，通过 `taskmgr-remote cancel --by` 发
 queued --派发--> running --退出--> succeeded | failed | invalid_result
 running --以 gpu_busy_exit_code 退出--> running（shim 等待后重新启动；显示 "pending-gpu"）
 running --shim 在 GPU 忙退出和重新启动之间死亡--> queued（同一个 jobid）
+running（有 gpu_request）--以 gpu_busy_exit_code 退出--> queued（同一个 jobid；过 gpu_retry_interval_seconds 后重新挑选 GPU）
 queued --取消--> cancelled
 running（precompile 阶段）--退出码 0--> queued（gpu 阶段；jobid、enqueue_seq、工作目录不变）
 running（precompile 阶段）--其他退出--> failed(precompile)
@@ -133,7 +139,11 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 全部空闲且都不在预留集合中时才启动，否则把它需要的 GPU 加入预留集合；如果作业用到的某块 GPU
 被 `unknown` 作业占用，它既不启动也不预留。`gpus: []` 的作业只受 `max_cpu_jobs` 限制。带 `gpu_request` 且还没有 GPU 的作业（task.json 的 `gpus` 为对象，
 见 [[docs/task-package.zh-CN]] 按条件选择 GPU）轮到它时，在没有被占用或预留的 GPU 中挑选；挑选依据的显存和进程信息由
-本轮调度在拿状态锁之前用 nvidia-smi 读取；选择结果在派发前写入 `job.json` 的 `gpus`。没有合格的 GPU 时，
+本轮调度在拿状态锁之前用 nvidia-smi 读取；选择结果在派发前写入 `job.json` 的 `gpus`。只有这样的作业
+到期（没有因 GPU 忙退出而被推迟）时才读取，读到的结果最多复用 5 秒，除非此后派发了带 GPU 的作业，或者
+占用 GPU 的 taskmgr 作业集合变了。一次读取的两次 nvidia-smi 调用共用 10 秒超时（超时后杀掉进程，不等它
+退出）；失败后（同一条消息只记一次日志）这些作业继续等待，`pending_reason` 为 `cannot choose GPUs: ...`，
+30 秒后再读，所以 nvidia-smi 挂住时其他作业每 30 秒最多被耽误 10 秒。没有合格的 GPU 时，
 `pending_reason` 说明原因（只在文字变化时写入），作业不预留任何 GPU。派发时先
 写 `runner.json`，再写 `job.json`（running）并重命名目录，最后才两次 fork 出 shim（新会话，被 init
 收养），并把已加锁的 `shim.lock` 交给它。shim 运行 `python3 -m taskmgr.remote ... shim`，

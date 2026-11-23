@@ -213,6 +213,7 @@ def _check_gpu_list(gpus: list[JsonValue], what: str, errors: list[Problem]) -> 
                 "GPU entry must be an integer index or UUID string: %r" % (g,),
                 "task.json",
             )
+
     keys = [json.dumps(g) for g in gpus]
     if len(set(keys)) != len(keys):
         _err(errors, "gpu", "%s contains duplicate entries" % what, "task.json")
@@ -223,10 +224,12 @@ def _check_gpu_select(spec: JsonDict, errors: list[Problem]) -> None:
     count = spec.get("count")
     if not (_is_int(count) and count >= 1):
         _err(errors, "schema", "gpus.count must be an integer >= 1", "task.json")
+
     if "min_free_gb" in spec:
         m = spec["min_free_gb"]
         if isinstance(m, bool) or not isinstance(m, (int, float)) or not m > 0:
             _err(errors, "schema", "gpus.min_free_gb must be a number > 0", "task.json")
+
     if "from" in spec:
         cand = spec["from"]
         if not (isinstance(cand, list) and cand):
@@ -248,9 +251,12 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
         _err(errors, "schema", "task.json must be a JSON object", "task.json")
         return
     task = cast(JsonDict, task)
+
     _check_keys(task, errors)
+
     if task.get("schema_version") != SCHEMA_VERSION:
         _err(errors, "schema", "schema_version must be %d" % SCHEMA_VERSION, "task.json")
+
     tid = task.get("task_id")
     if not isinstance(tid, str) or not TASK_ID_RE.match(tid):
         _err(
@@ -259,9 +265,11 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
             "task_id %r does not match ^[A-Z]{2}-[0-9]{2,4}$" % (tid,),
             "task.json",
         )
+
     argv = entry_argv(task)
     if not (argv and all(isinstance(a, str) for a in argv) and argv[0]):
         _err(errors, "schema", "entry.argv must be a non-empty array of strings", "task.json")
+
     if "precompile" in task:
         spec = task["precompile"]
         if not isinstance(spec, dict):
@@ -275,6 +283,7 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
                     "precompile.argv must be a non-empty array of strings",
                     "task.json",
                 )
+
             t = spec.get("timeout_seconds")
             if t is not None and not (_is_int(t) and t > 0):
                 _err(
@@ -283,6 +292,7 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
                     "precompile.timeout_seconds must be a positive integer",
                     "task.json",
                 )
+
     gpus = task.get("gpus")
     if isinstance(gpus, dict):
         _check_gpu_select(gpus, errors)
@@ -296,6 +306,7 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
         )
     else:
         _check_gpu_list(gpus, "gpus", errors)
+
     envi = task.get("environment")
     if envi is not None:
         if not isinstance(envi, dict):
@@ -314,6 +325,7 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
                     "environment.required_paths must be a list of absolute paths",
                     "task.json",
                 )
+
     env = task.get("env")
     if env is not None:
         if not isinstance(env, dict):
@@ -331,10 +343,12 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
                     _err(errors, "schema", "env value for %s must be a string" % k, "task.json")
                 if k in RESERVED_ENV or k.startswith("TASKMGR_"):
                     _err(errors, "env", "env must not set %s (set by the runner)" % k, "task.json")
+
     if "timeout_seconds" in task and task["timeout_seconds"] is not None:
         t = task["timeout_seconds"]
         if not (_is_int(t) and t > 0):
             _err(errors, "schema", "timeout_seconds must be a positive integer", "task.json")
+
     res = task.get("result")
     if res is not None:
         if not isinstance(res, dict):
@@ -411,9 +425,11 @@ def validate_dir(root: str, max_bytes: int | None = None) -> tuple[list[Problem]
     errors: list[Problem] = []
     if not os.path.isdir(root):
         raise TaskmgrError("not_found", "not a directory: %s" % root)
+
     for f in REQUIRED_FILES:
         if not os.path.isfile(os.path.join(root, f)) or os.path.islink(os.path.join(root, f)):
             _err(errors, "missing_file", "required file is missing", f)
+
     raw: dict[str, str] = {}
     for f in REQUIRED_FILES:
         p = os.path.join(root, f)
@@ -428,6 +444,7 @@ def validate_dir(root: str, max_bytes: int | None = None) -> tuple[list[Problem]
                     "unfilled <REQUIRED> placeholder on line(s) %s" % ",".join(map(str, lines)),
                     f,
                 )
+
     task: JsonValue = None
     if "task.json" in raw:
         try:
@@ -436,6 +453,7 @@ def validate_dir(root: str, max_bytes: int | None = None) -> tuple[list[Problem]
             _err(errors, "json", "task.json is not valid JSON: %s" % e, "task.json")
         else:
             check_task_json(task, errors)
+
     if "progress.json" in raw:
         try:
             prog = cast(JsonValue, json.loads(raw["progress.json"]))
@@ -443,6 +461,7 @@ def validate_dir(root: str, max_bytes: int | None = None) -> tuple[list[Problem]
             _err(errors, "json", "progress.json is not valid JSON: %s" % e, "progress.json")
         else:
             check_progress_json(prog, errors)
+
     for what, argv in (("entry", entry_argv(task)), ("precompile", precompile_argv(task))):
         if argv and isinstance(argv[0], str) and "/" in argv[0] and not argv[0].startswith("/"):
             a0 = argv[0]
@@ -462,6 +481,7 @@ def validate_dir(root: str, max_bytes: int | None = None) -> tuple[list[Problem]
                 why = None
             if why:
                 _err(errors, "entry", "%s argv[0] %s: %s" % (what, why, a0), "task.json")
+
     total = scan_tree(root, errors)
     if max_bytes is not None and total > max_bytes:
         _err(
@@ -469,6 +489,7 @@ def validate_dir(root: str, max_bytes: int | None = None) -> tuple[list[Problem]
             "package_too_large",
             size_exceeded("package size of", total, max_bytes),
         )
+
     # Converted via object: a JsonDict and a TypedDict do not overlap for the checker.
     return errors, (cast(TaskSpec, cast(object, task)) if isinstance(task, dict) else None)
 
@@ -520,6 +541,7 @@ def pack_dir(root: str, dest: str) -> None:
             ti.uid = ti.gid = 0
             ti.uname = ti.gname = ""
             ti.mode = stat.S_IMODE(st.st_mode)
+
             if stat.S_ISLNK(st.st_mode):
                 ti.type = tarfile.SYMTYPE
                 ti.linkname = os.readlink(full)
@@ -593,6 +615,7 @@ def safe_extract(
         raise TaskmgrError("unsafe_package", "unsafe archive entry %r: %s" % (name, why))
 
     links: list[tuple[str, str]] = []
+
     try:
         if isinstance(tar_path_or_fileobj, (str, os.PathLike)):
             tar = tarfile.open(tar_path_or_fileobj, mode="r:*")
@@ -600,11 +623,13 @@ def safe_extract(
             tar = tarfile.open(fileobj=tar_path_or_fileobj, mode="r|*")
     except (tarfile.TarError, EOFError, OSError, gzip.BadGzipFile) as e:
         raise TaskmgrError("bad_archive", "cannot read archive: %s" % e) from e
+
     try:
         for m in tar:
             name = _member_name(m)
             if name in ("", "."):
                 continue
+
             if m.name.startswith("/") or name.startswith("/"):
                 reject(m.name, "absolute path")
                 continue
@@ -616,6 +641,7 @@ def safe_extract(
             if key in seen:
                 reject(m.name, "duplicate entry")
                 continue
+
             target = os.path.join(dest, *parts)
             # Never write through a symlink created by an earlier entry: every existing
             # parent must be a real directory (lstat also sees "y" when asked for "Y" on a
@@ -632,9 +658,11 @@ def safe_extract(
                 if not stat.S_ISDIR(pst.st_mode):
                     bad_parent = True
                     break
+
             if bad_parent:
                 reject(m.name, "parent is not a directory")
                 continue
+
             if m.islnk():
                 reject(m.name, "hard links are not allowed")
                 continue
@@ -644,6 +672,7 @@ def safe_extract(
             if m.isfifo():
                 reject(m.name, "FIFOs are not allowed")
                 continue
+
             if m.issym():
                 ln = m.linkname
                 if ln.startswith("/"):
@@ -652,12 +681,14 @@ def safe_extract(
                 if not _inside(posixpath.join(posixpath.dirname(name), ln)):
                     reject(m.name, "symlink points outside the package")
                     continue
+
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 try:
                     os.symlink(ln, target)
                 except FileExistsError:
                     reject(m.name, "path already exists")
                     continue
+
                 # Chains such as x -> . and y -> x/x/../../F pass the lexical check.
                 if not _link_resolves_inside(dest, target):
                     os.unlink(target)
@@ -680,6 +711,7 @@ def safe_extract(
                     raise TaskmgrError(
                         "package_too_large", size_exceeded("extracted size of", total, max_bytes)
                     )
+
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 src = tar.extractfile(m)
                 if src is None:
@@ -697,11 +729,13 @@ def safe_extract(
             else:
                 reject(m.name, "unsupported entry type")
                 continue
+
             seen.add(key)
     except (tarfile.TarError, EOFError, OSError, gzip.BadGzipFile) as e:
         raise TaskmgrError("bad_archive", "cannot read archive: %s" % e) from e
     finally:
         tar.close()
+
     # A later link can redirect an earlier one (y -> a/../F, then a -> .). Nothing was
     # written through a link above; now drop every link that escapes, until none does.
     changed = True
@@ -712,6 +746,7 @@ def safe_extract(
                 os.unlink(target)
                 changed = True
                 reject(name, "symlink resolves outside the package")
+
     return skipped
 
 
@@ -778,10 +813,12 @@ def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> list[Skipp
         entries = [("", root)] + _sorted_entries(root)
     except OSError:
         return skipped
+
     for rel, full in entries:
         if posixpath.basename(rel).startswith(".tmp-"):
             continue  # in-flight atomic writes
         arc = arcroot if not rel else arcroot + "/" + rel
+
         try:
             st = os.lstat(full)
             if not (
@@ -799,6 +836,7 @@ def add_tree_to_tar(tar: tarfile.TarFile, root: str, arcroot: str) -> list[Skipp
                 ti.size = os.fstat(f.fileno()).st_size
         except OSError:
             continue  # vanished while walking a running job
+
         if f is None:
             tar.addfile(ti)
             continue
