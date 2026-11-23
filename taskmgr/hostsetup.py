@@ -38,7 +38,7 @@ from .hostlegacy import OLD_REMOTE_ROOT, LegacyProbe
 from .prompt import Declined, Kept, NonInteractive, Planned, Ui
 from .records import JsonDict, JsonValue, Server, SshConfig
 from .textout import BOLD, CYAN, GREEN, RED, YELLOW
-from .transport import Remote, edit_machines, load_machines
+from .transport import Remote, edit_machines, load_machines, unknown_host
 
 # Under remote_root:
 CODE_FILE = pyz.REMOTE_PYZ  # the installed code, a symlink into CODE_STORE
@@ -1203,10 +1203,7 @@ def update_host(args: AddHostArgs, home: str) -> tuple[Mapping[str, object], int
     taskmgr-remote.pyz of this task's code version and restarts the service on it; the other
     steps only check, unless something drifted. (step summary, exit code)."""
     if not any(s["name"] == args.name for s in load_machines(home)):
-        raise TaskmgrError(
-            "unknown_host",
-            "host %r is not in the machine list; `task create host %s --ssh USER@HOST` sets it up"
-            % (args.name, args.name),
-            host=args.name,
+        raise unknown_host(
+            args.name, "`task create host %s --ssh USER@HOST` sets it up" % args.name
         )
     return HostSetup(args, home, command="update").run()

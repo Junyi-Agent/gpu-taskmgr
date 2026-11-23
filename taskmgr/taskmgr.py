@@ -59,6 +59,7 @@ from .transport import (
     ConnError,
     NoReplyError,
     Remote,
+    find_server,
     load_machines,
     query_all,
     query_timeout,
@@ -82,13 +83,6 @@ def _arr(v: JsonValue) -> list[JsonValue]:
 def home_dir(args: Args) -> str:
     h = args.home or os.environ.get("TASKMGR_HOME") or "~/.taskmgr"
     return os.path.abspath(os.path.expanduser(h))
-
-
-def find_server(servers: list[Server], name: str | None) -> Server:
-    for s in servers:
-        if s["name"] == name:
-            return s
-    raise TaskmgrError("unknown_host", "host %r is not in the machine list" % name, host=name)
 
 
 def pick_round_robin(home: str, servers: list[Server]) -> Server:

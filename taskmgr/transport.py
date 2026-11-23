@@ -7,7 +7,7 @@ import os
 import shlex
 import subprocess
 from collections.abc import Callable, Sequence
-from typing import IO, TypedDict, cast
+from typing import IO, TypedDict, TypeGuard, cast
 
 from .common import PROTOCOL_VERSION, TaskmgrError, atomic_write_bytes, flocked, read_json
 from .records import JsonDict, JsonValue, LocalInjection, Server, SshConfig
@@ -144,6 +144,25 @@ def load_machines(home: str) -> list[Server]:
             )
     # Checked above: every entry is an object with name, remote_root and remote_command.
     return cast(list[Server], servers)
+
+
+def unknown_host(name: str | None, hint: str = "") -> TaskmgrError:
+    """The error for a server name that is not in the machine list; hint follows "; "."""
+    msg = "host %r is not in the machine list" % name
+    return TaskmgrError("unknown_host", msg + ("; " + hint if hint else ""), host=name)
+
+
+def find_server(servers: list[Server], name: str | None) -> Server:
+    """The entry of server `name` (raises unknown_host)."""
+    for s in servers:
+        if s["name"] == name:
+            return s
+    raise unknown_host(name)
+
+
+def is_entry(entry: JsonValue, name: str) -> TypeGuard[JsonDict]:
+    """Whether an entry of the raw "servers" array (see edit_machines) is server `name`."""
+    return isinstance(entry, dict) and entry.get("name") == name
 
 
 class Remote:

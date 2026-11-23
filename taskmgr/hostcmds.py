@@ -26,7 +26,14 @@ from .prompt import Declined, NonInteractive, Ui
 from .records import JsonValue, Server
 from .textout import BOLD, GREEN, RED, YELLOW, CmdResult, cell, hint, message, render_table
 from .textout import rows as _rows
-from .transport import Remote, edit_machines, load_machines
+from .transport import (
+    Remote,
+    edit_machines,
+    find_server,
+    is_entry,
+    load_machines,
+    unknown_host,
+)
 
 PING_TIMEOUT = 60.0
 
@@ -184,7 +191,7 @@ def host_list(name: str | None, home: str) -> CmdResult:
     """The machine list, or the entry of one server."""
     servers = load_machines(home)
     if name is not None:
-        servers = [_find(servers, name)]
+        servers = [find_server(servers, name)]
 
     return {
         "machines": os.path.join(home, "machines.json"),
@@ -205,32 +212,21 @@ def host_list(name: str | None, home: str) -> CmdResult:
 # remove
 
 
-def _find(servers: list[Server], name: str) -> Server:
-    for s in servers:
-        if s["name"] == name:
-            return s
-    raise TaskmgrError("unknown_host", "host %r is not in the machine list" % name, host=name)
-
-
-def _is(s: JsonValue, name: str) -> bool:
-    return isinstance(s, dict) and s.get("name") == name
-
-
 def _must_have(servers: list[JsonValue], name: str) -> None:
     """The entry may have been removed since load_machines read the file."""
-    if not any(_is(s, name) for s in servers):
-        raise TaskmgrError("unknown_host", "host %r is not in the machine list" % name, host=name)
+    if not any(is_entry(s, name) for s in servers):
+        raise unknown_host(name)
 
 
 def host_set_enabled(name: str, enabled: bool, home: str) -> CmdResult:
     """`task enable|disable host NAME`: set `enabled` in the machine entry (local only)."""
     path = os.path.join(home, "machines.json")
-    changed = _find(load_machines(home), name).get("enabled", True) != enabled
+    changed = find_server(load_machines(home), name).get("enabled", True) != enabled
 
     def set_flag(servers: list[JsonValue]) -> None:
         _must_have(servers, name)
         for s in servers:
-            if isinstance(s, dict) and s.get("name") == name:
+            if is_entry(s, name):
                 s["enabled"] = enabled
 
     if changed:
@@ -240,7 +236,7 @@ def host_set_enabled(name: str, enabled: bool, home: str) -> CmdResult:
 
 def host_remove(name: str, yes: bool, home: str) -> CmdResult:
     path = os.path.join(home, "machines.json")
-    entry = _find(load_machines(home), name)
+    entry = find_server(load_machines(home), name)
     ui = Ui(yes)
     ui.say(
         "task delete host %s: %s, remote_root %s"
@@ -256,7 +252,7 @@ def host_remove(name: str, yes: bool, home: str) -> CmdResult:
 
     def drop(servers: list[JsonValue]) -> None:
         _must_have(servers, name)
-        servers[:] = [s for s in servers if not _is(s, name)]
+        servers[:] = [s for s in servers if not is_entry(s, name)]
 
     edit_machines(home, drop)
     return {
@@ -297,7 +293,7 @@ def host_ping(name: str | None, home: str) -> CmdResult:
     servers = load_machines(home)
     skipped: list[str] = []
     if name is not None:
-        servers = [_find(servers, name)]
+        servers = [find_server(servers, name)]
     else:
         skipped = [s["name"] for s in servers if not s.get("enabled", True)]
         servers = [s for s in servers if s.get("enabled", True)]
