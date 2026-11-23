@@ -45,6 +45,10 @@ from .records import (
 
 # The job directories of jobs that are not terminal (done/ grows without bound).
 ACTIVE_JOB_DIRS = ("queue", "in-progress")
+# Modes of what taskmgr-remote creates under remote_root: only the server account may read
+# it (packages, task.json env, logs, results).
+PRIVATE_DIR = 0o700
+PRIVATE_FILE = 0o600
 
 
 def _type_ok(value: object, tp: object) -> bool:
@@ -79,8 +83,16 @@ class Store:
         return os.path.join(self.root, *parts)
 
     def ensure_layout(self) -> None:
+        """Create remote_root and its directories, owner-only (0700). An existing root this
+        user owns loses its group and other bits: packages, task.json env, logs and results
+        below it are readable only by the server account."""
+        os.makedirs(self.root, PRIVATE_DIR, exist_ok=True)
+        st = os.stat(self.root)
+        if st.st_uid == os.getuid() and stat.S_IMODE(st.st_mode) & 0o077:
+            os.chmod(self.root, stat.S_IMODE(st.st_mode) & ~0o077)
+
         for d in ("locks", "incoming", "submission-keys", "daemon") + JOB_DIRS:
-            os.makedirs(self.path(d), exist_ok=True)
+            os.makedirs(self.path(d), PRIVATE_DIR, exist_ok=True)
 
     @property
     def config(self) -> RemoteConfig:
@@ -120,8 +132,8 @@ class Store:
             finally:
                 self._lock_depth -= 1
             return
-        os.makedirs(self.path("locks"), exist_ok=True)
-        fd = os.open(self.path("locks", "state.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+        os.makedirs(self.path("locks"), PRIVATE_DIR, exist_ok=True)
+        fd = os.open(self.path("locks", "state.lock"), os.O_RDWR | os.O_CREAT, PRIVATE_FILE)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             self._lock_depth = 1
@@ -496,7 +508,7 @@ def build_meta(
 def write_result(jobdir: str, business: JsonDict, meta: TaskmgrMeta) -> None:
     workdir = os.path.join(jobdir, "workdir")
     if not os.path.isdir(workdir):
-        os.makedirs(workdir, exist_ok=True)
+        os.makedirs(workdir, PRIVATE_DIR, exist_ok=True)
     res: dict[str, object] = dict(business)
     _ = res.pop("_taskmgr", None)
     _ = res.setdefault("schema_version", SCHEMA_VERSION)
@@ -774,7 +786,7 @@ def staging_dir(store: Store, prefix: str) -> Generator[str, None, None]:
     """A new directory incoming/<prefix>-<random>, flocked while in use (which keeps the
     daemon's clean_incoming away) and removed on exit unless it was enqueued."""
     updir = store.path("incoming", "%s-%s" % (prefix, secrets.token_hex(6)))
-    os.mkdir(updir)
+    os.mkdir(updir, PRIVATE_DIR)
     lock_fd = os.open(updir, os.O_RDONLY)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
@@ -915,12 +927,14 @@ def end_without_result(
 
 
 def make_read_only(root: str) -> None:
+    """Make a package copy read-only and owner-only: of the mode bits only the owner's read
+    and execute stay (an extracted or cloned package keeps no group or other bits)."""
     for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
         for f in filenames:
             p = os.path.join(dirpath, f)
             if not os.path.islink(p):
-                os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) & ~0o222)
-        os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) & ~0o222)
+                os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) & 0o500)
+        os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) & 0o500)
 
 
 def remove_tree(path: str) -> None:

@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -411,6 +412,9 @@ class AddHostTest(Env):
         )
         with open(os.path.join(self.rroot(), "config.json")) as f:
             self.assertEqual(f.read(), hostsetup.config_text())
+        # owner-only, although step code created remote_root under the default umask
+        for p, mode in ((self.rroot(), 0o700), (os.path.join(self.rroot(), "config.json"), 0o600)):
+            self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), mode, p)
         self.assertTrue(os.path.exists(self.rpath(".fake-systemd", "enabled")))
         self.assertTrue(os.path.exists(self.rpath(".fake-systemd", "linger")))
         self.assertTrue(self.main_pid())

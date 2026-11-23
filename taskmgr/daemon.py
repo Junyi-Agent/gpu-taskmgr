@@ -25,6 +25,7 @@ from .gpu import GpuState, query_gpu_state, select_gpus
 from .monitor import Takeover, assess, mark_unknown, may_have_started
 from .records import ErrorInfo, Job, Runner
 from .store import (
+    PRIVATE_FILE,
     Store,
     choosing_gpus,
     end_without_result,
@@ -379,7 +380,7 @@ class Daemon:
 
     def spawn_shim(self, jobid: str, jobdir: str) -> str | None:
         """Double-fork a shim into its own session, handing it the locked shim.lock."""
-        lock_fd = os.open(os.path.join(jobdir, "shim.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+        lock_fd = os.open(os.path.join(jobdir, "shim.lock"), os.O_RDWR | os.O_CREAT, PRIVATE_FILE)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         pkg_parent = CODE_ROOT  # a directory, or the .pyz (zip files work on PYTHONPATH)
         # TASKMGR_SHIM_EXECUTABLE: test-only override to simulate a shim that cannot start.
@@ -411,7 +412,9 @@ class Daemon:
                 if os.fork() > 0:
                     os._exit(0)
                 log_fd = os.open(
-                    os.path.join(jobdir, "shim.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+                    os.path.join(jobdir, "shim.log"),
+                    os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                    PRIVATE_FILE,
                 )
                 devnull = os.open(os.devnull, os.O_RDONLY)
                 _ = os.dup2(devnull, 0)
@@ -476,7 +479,10 @@ class Daemon:
             )
             return 2
         global _log_file
-        _log_file = open(st.path("daemon", "daemon.log"), "a")
+        log_flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        _log_file = os.fdopen(
+            os.open(st.path("daemon", "daemon.log"), log_flags, PRIVATE_FILE), "a"
+        )
         _ = signal.signal(signal.SIGTERM, self._on_signal)
         _ = signal.signal(signal.SIGINT, self._on_signal)
         _ = signal.signal(signal.SIGCHLD, signal.SIG_DFL)

@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 import time
 from typing import cast
 
@@ -115,6 +116,45 @@ class ExecTest(Env):
         st = self.ok("status", j, "--host", "s1")
         self.assertEqual(self.get(st, "_taskmgr", "status"), "succeeded")
         self.assertEqual(self.get(st, "outputs"), {"speedup": 1.5})
+
+    def test_remote_root_is_owner_only(self) -> None:
+        """Nothing under remote_root is readable by other users, whatever the umask: the
+        package (with task.json env), logs, run records and results."""
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        self.stop_daemon()  # restart under that umask
+        _ = self.start_daemon()
+        pkg = self.make_pkg(env={"SECRET": "hunter2"}, files={"tool.sh": "#!/bin/sh\n"})
+        os.chmod(os.path.join(pkg, "tool.sh"), 0o755)
+        j = self.submit(pkg)
+        _ = self.wait_state(j, "succeeded")
+
+        root = self.root()
+        jd = self.job_dir(j)
+        loose: list[str] = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            for name in [*dirnames, *filenames, ""]:
+                p = os.path.join(dirpath, name) if name else dirpath
+                if p == os.path.join(root, "config.json"):
+                    continue  # the test wrote it (`task host add` does under umask 077)
+                st = os.lstat(p)
+                if not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o077:
+                    loose.append("%o %s" % (stat.S_IMODE(st.st_mode), os.path.relpath(p, root)))
+        self.assertEqual(loose, [])
+        modes = {
+            rel: stat.S_IMODE(os.stat(os.path.join(jd, rel)).st_mode)
+            for rel in ("", "stdout.log", "shim.log", "package/task.json", "workdir/tool.sh")
+        }
+        self.assertEqual(
+            modes,
+            {
+                "": 0o700,
+                "stdout.log": 0o600,
+                "shim.log": 0o600,
+                "package/task.json": 0o400,
+                "workdir/tool.sh": 0o700,
+            },
+        )
 
     def test_cuda_visible_devices_empty_without_gpus(self) -> None:
         out = os.path.join(self.tmp, "cvd")

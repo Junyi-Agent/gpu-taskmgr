@@ -43,6 +43,7 @@ from .records import CancelRequest, Job, JsonValue, KeyMapping, Runner, SkippedE
 from .store import (
     OPERATOR_MARKED_STOPPED,
     OPERATOR_STOPPED_ERROR,
+    PRIVATE_FILE,
     Store,
     clone_job,
     end_without_result,
@@ -119,7 +120,8 @@ def cmd_receive(store: Store, args: Args) -> int:
     # Flocked for the whole upload and reception.
     with staging_dir(store, "up-%s" % time.strftime("%Y%m%d%H%M%S")) as updir:
         tar_path = os.path.join(updir, "package.tar.gz")
-        with open(tar_path, "wb") as f:
+        fd = os.open(tar_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, PRIVATE_FILE)
+        with os.fdopen(fd, "wb") as f:
             receive_upload(sys.stdin.buffer, f, store.config["max_package_bytes"])
         if os.environ.get("TASKMGR_TEST_RECEIVE_PAUSE"):  # test-only: hold the upload open
             time.sleep(float(os.environ["TASKMGR_TEST_RECEIVE_PAUSE"]))

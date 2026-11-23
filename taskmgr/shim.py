@@ -25,6 +25,8 @@ from .monitor import (
 )
 from .records import ErrorInfo, Job, RemoteConfig, Runner, TaskEnvironment, TaskSpec
 from .store import (
+    PRIVATE_DIR,
+    PRIVATE_FILE,
     Store,
     end_without_result,
     finalize_run,
@@ -133,12 +135,13 @@ def prepare_workdir(jobdir: str) -> str:
     if os.path.exists(workdir):
         raise RuntimeError("workdir already exists: %s" % workdir)
     _ = shutil.copytree(os.path.join(jobdir, "package"), workdir, symlinks=True)
+    # Writable by the owner, no group or other bits (a package of an older version has them).
     for dirpath, _dirnames, filenames in os.walk(workdir):
-        os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) | 0o700)
+        os.chmod(dirpath, PRIVATE_DIR)
         for f in filenames:
             p = os.path.join(dirpath, f)
             if not os.path.islink(p):
-                os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) | 0o600)
+                os.chmod(p, (stat.S_IMODE(os.lstat(p).st_mode) & 0o700) | PRIVATE_FILE)
     return workdir
 
 
@@ -240,12 +243,9 @@ def launch(
     Returns the leader pid. `separator` is appended as a line to both logs first (logs are
     appended across relaunches, never truncated).
     """
-    out_fd = os.open(
-        os.path.join(jobdir, "stdout.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
-    )
-    err_fd = os.open(
-        os.path.join(jobdir, "stderr.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
-    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    out_fd = os.open(os.path.join(jobdir, "stdout.log"), flags, PRIVATE_FILE)
+    err_fd = os.open(os.path.join(jobdir, "stderr.log"), flags, PRIVATE_FILE)
     if separator:
         for fd in (out_fd, err_fd):
             _ = os.write(fd, (separator + "\n").encode())

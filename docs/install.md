@@ -119,7 +119,7 @@ command fails with `unsupported_feature`.
 | --- | --- | --- |
 | `ssh` | ssh works (BatchMode), Linux, `python3` >= 3.10, `systemctl --user` works, linger, installed code version, unit file, service state, filesystem of `remote_root` (warns on NFS, CIFS, FUSE, ...) | none; a failed check stops the run |
 | `code` | the prebuilt `taskmgr-remote.pyz` (`--pyz`, default see above) exists and has the code version of the running `task` (otherwise the step fails: rebuild with `python3 -m taskmgr.pyz -o dist`); the code version inside `<remote_root>/taskmgr-remote.pyz` against it | upload that file to `<remote_root>/versions/<version>.pyz.new-*`; after the `data` step it is renamed to `<remote_root>/versions/<version>.pyz` and the symlink `<remote_root>/taskmgr-remote.pyz` is switched to it (one rename). The archive the link pointed to before is kept. Upload files `*.new-*` older than 10 minutes (left by an interrupted run) are removed as part of this confirmed change; on an up-to-date server they are only listed in the detail |
-| `remote_root` | `remote_root` and `config.json` exist | `mkdir -p`, write `config.json` with the defaults when it is missing; an existing `config.json` is never overwritten |
+| `remote_root` | `remote_root` and `config.json` exist | `mkdir -p` with mode 0700 (an existing `remote_root` the user owns loses its group and other bits), write `config.json` with the defaults when it is missing; an existing `config.json` is never overwritten |
 | `data` | `taskmgr-remote inspect` (read-only): job directories that the new code cannot handle (protocol-1 `attempts/`, `job.json` missing current fields) | stop the service, then move those directories (and their `submission-keys/*.json`) into `<remote_root>/backups/<UTC time>/`; nothing is deleted. Jobs that may still run (running, stopping, unknown, or in `in-progress/`) are never moved: the step fails and lists them |
 | `unit` | `~/.config/systemd/user/taskmgr-remote.service` against the generated unit (shows a diff) | write it, `systemctl --user daemon-reload` |
 | `service` | enabled, active, and whether the running daemon is older than the installed code or unit | `enable`; `start`; `restart` (running tasks keep running, `KillMode=process`); then waits until the daemon holds `locks/daemon.lock`. After a code change, once the daemon runs the new code, removes the archives in `versions/` other than the current one, the previous one and any a running process uses (a running job's shim imports from the archive it started with) |
@@ -173,6 +173,14 @@ Notes:
   given as an absolute path, so the version checked in step `ssh` is the one that runs.
 - Data in `remote_root` is never deleted. Incompatible job directories are moved after you
   confirm; live ones stay where they are until they end.
+- Only the server account can read `remote_root`: packages, the `env` of `task.json`, logs and
+  results are not visible to other users of the server. `taskmgr-remote` creates directories
+  with mode 0700 and files with 0600 (logs, uploads, records); a job's `package/` keeps only
+  the owner's read and execute bits, and its `workdir/` copy is 0700 / 0600 (0700 for
+  executables). Every `taskmgr-remote` command except `inspect` and `version` also removes
+  the group and other bits of an existing `remote_root` that its user owns, so directories
+  created by older versions are covered. Files that a task writes get the daemon's umask,
+  inside that tree.
 - Two `host add` runs for the same server user do not overlap: from the end of step `ssh`
   to the end of the run a process on the server holds a lock file
   (`$XDG_RUNTIME_DIR/taskmgr-hostsetup-<uid>.lock`, else in `/tmp`), and a second run
