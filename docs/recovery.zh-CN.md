@@ -11,7 +11,7 @@ up: "[[taskmgr/README.zh-CN]]"
 
 守护进程启动时先获取 `daemon.lock`，删除 `incoming/` 中能加锁且超过 1 小时的条目，然后在状态锁
 下检查每个作业。对 shim 已死的 running/stopping 作业，同样的检查每隔 `control_poll_seconds` 也会
-执行一次（假设：需求文档只要求在启动时检查）；`task resolve` 对 unknown 作业执行同样的检查。
+执行一次（假设：需求文档只要求在启动时检查）；`task resolve job` 对 unknown 作业执行同样的检查。
 定期检查在状态锁下列出作业，然后逐个检查时不持有状态锁：每次状态变更各自加锁，任务的
 `result.json` 在加锁之前读取。
 
@@ -40,13 +40,13 @@ up: "[[taskmgr/README.zh-CN]]"
 5. 重跑：`runner.json` 标记为 `interrupted`；若 `cancel_requested` → cancelled；作业正在因超时
    停止（`stop_reason = "timeout"`）→ `timed_out`；运行记录已被操作者标记为停止
    （`interrupted_reason = "operator_marked_stopped"`，由中途失败的 `resolve --as stopped` 留下）→
-   `failed` / `operator_marked_stopped`；对 `unknown` 作业执行 `task resolve` → `failed` /
-   `interrupted`，不创建重跑作业（需要重跑时执行 `task retry`）；
+   `failed` / `operator_marked_stopped`；对 `unknown` 作业执行 `task resolve job` → `failed` /
+   `interrupted`，不创建重跑作业（需要重跑时执行 `task retry job`）；
    `auto_restarts` 已达 `max_auto_restarts` → `failed` / `too_many_interruptions`；否则作业以
    `failed` 结束，`error.kind = "interrupted"`，并用它的包新建一个作业（硬链接到同一批文件；自动重试）：新作业
    保留原 `enqueue_seq`，`auto_restarts` 加 1，`retry_of` 指向被中断的作业，被中断作业的
    `retried_as` 记下新 jobid。这一步中途崩溃时，会复用已经创建的重跑作业，不会再建第二个。
-   `task status --wait` 会跟随这个重跑作业。
+   `task wait job` 会跟随这个重跑作业。
 
 有两种错误不走上面的规则：
 
@@ -63,7 +63,7 @@ up: "[[taskmgr/README.zh-CN]]"
 `unknown` 作业不会自动重跑，也不会释放 GPU（GPU 忙退出后也一样：对这样的作业执行 resolve，会以
 退出码 75 结束为 `failed`）。
 
-1. `task resolve <jobid> --host H` 重新执行检查。如果进程组已全部退出，按上面的规则结束作业（已
+1. `task resolve job <jobid> --host H` 重新执行检查。如果进程组已全部退出，按上面的规则结束作业（已
    请求取消的标记为 cancelled）；机器重启过或入口命令从未执行时，作业以 `failed` / `interrupted`
    结束（正在因超时停止的作业为 `timed_out`），不创建重跑作业。如果仍有进程存活，或记录无法读取，
    作业保持 unknown，输出中会给出
@@ -73,8 +73,8 @@ up: "[[taskmgr/README.zh-CN]]"
    `cat /proc/sys/kernel/random/boot_id`、`nvidia-smi`（查看该作业 GPU 上的进程）。
 3. 杀掉残留进程：先 `kill -TERM -<pgid>`，再 `kill -KILL -<pgid>`。处于 `D` 状态的进程可能要
    先修复底层设备或驱动问题，或者重启机器。
-4. 再执行一次 `task resolve <jobid> --host H`；或者在确认所有进程都已退出后执行
-   `task resolve <jobid> --host H --as stopped --confirm <jobid>` → `failed`
+4. 再执行一次 `task resolve job <jobid> --host H`；或者在确认所有进程都已退出后执行
+   `task resolve job <jobid> --host H --as stopped --confirm <jobid>` → `failed`
    （`operator_marked_stopped`）或 `cancelled`；GPU 被释放，不会自动重跑。`runner.json` 在
    `result.json` 和 `job.json` 之后写入：命令失败时作业保持 unknown，运行记录不变。
-5. 如需再次运行，执行 `task retry <jobid> --host H`（会创建一个新作业）。
+5. 如需再次运行，执行 `task retry job <jobid> --host H`（会创建一个新作业）。

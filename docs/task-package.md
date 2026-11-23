@@ -9,7 +9,7 @@ up: "[[taskmgr/README]]"
 
 Other language: [[docs/task-package.zh-CN]]
 
-`task init` writes a template to fill in; `task pack` builds a package from project files and
+`task create package` writes a template to fill in; `task build package` builds a package from project files and
 options ([[docs/usage]], Packing).
 
 | File | Required | Notes |
@@ -38,7 +38,7 @@ options ([[docs/usage]], Packing).
 
 - Keys: only the ones shown here (and `precompile`). Any other key, at the top level or
   inside `entry`, `precompile`, `environment` or `result`, is an error (code
-  `unknown_key`) in `task validate`, `task submit` and on the server: a key this taskmgr does
+  `unknown_key`) in `task validate package`, `task create job` and on the server: a key this taskmgr does
   not know may be a feature of a newer taskmgr, or a typo, and is never ignored. Keys
   starting with `x-` are annotations and are ignored (`"x-owner": "junyi"`).
 - `task_id` matches `^[A-Z]{2}-[0-9]{2,4}$`.
@@ -79,20 +79,20 @@ Result is valid when it is a JSON object with an `outputs` object containing eve
 (including JSON nested too deeply to parse), or a `result.json` that is not a regular file
 (directory, FIFO, symlink: links are not followed), is kept as `result.json.corrupt` and
 reported in `validation_errors`. A `progress.json` that is not a regular file shows as
-`{"error": ...}` in `task status`. A task-written
+`{"error": ...}` in `task get job`. A task-written
 `_taskmgr` is dropped with warning `task_wrote_taskmgr`.
 
 `error.kind` values: `setup`, `precompile` (the precompile command failed), `shim_start_failed`, `shim_error` (the shim failed before
 it started the entry; the job ends `failed` and is not re-run), `exit_code`, `signal`,
 `exit_code_lost`, `interrupted` (the run was cut off; an automatic re-run was created unless
-`task resolve` ended an `unknown` job),
+`task resolve job` ended an `unknown` job),
 `too_many_interruptions`, `operator_marked_stopped`, `stop_unconfirmed` (job in unknown),
 `record_incomplete` / `undeterminable` (unknown after recovery), `recovery_error` (unknown:
 the daemon's recovery or tracking of the job failed repeatedly, see [[docs/recovery]]).
 
 ## Packing and validation
 
-`task validate` and `task submit` check the package locally; the server checks it again
+`task validate package` and `task create job` check the package locally; the server checks it again
 after the upload.
 
 ### Server features
@@ -106,15 +106,16 @@ the key runs code older than the list and implements none of them):
 | `strict_task_json` | the server rejects task.json keys it does not know (`unknown_key`) |
 | `precompile` | `task.json` `precompile` |
 | `gpu_select` | `task.json` `gpus` as an object (GPU selection) |
-| `gpu_holders` | `status` of a job waiting for GPUs lists the processes holding them ([[docs/usage]]) |
-| `cancel_by` | `cancel` records who asked (`cancel_request`, [[docs/usage]]) |
+| `gpu_holders` | `task get job` of a job waiting for GPUs lists the processes holding them ([[docs/usage]]) |
+| `cancel_by` | `task cancel job` records who asked (`cancel_request`, [[docs/usage]]) |
+| `jobs_limit` | `task get jobs -n N` gets only the N newest jobs from each server (an older server sends all its jobs and the CLI keeps the newest N) |
 
-`task validate --detail` lists the features a package needs (`"features"`). `task submit`
+`task validate package -o json` lists the features a package needs (`"features"`). `task create job`
 asks the server for its features (`taskmgr-remote version`) before the upload when the
 package needs any, and refuses a server that lacks one: error `unsupported_feature` (exit
 2, nothing uploaded), e.g. `server gpu1 runs code 3f9a1c0e7b2d without precompile support,
-needed by this package; run `task host add gpu1` to update it`; `details` has `missing` and
-`server_features`. `task host ping --detail` and `task version --detail` show each server's
+needed by this package; run `task update host gpu1` to update it`; `details` has `missing` and
+`server_features`. `task ping host -o json` and `task version -o json` show each server's
 `features`.
 
 - Left out of the packed archive and of the content hash: every path with a component
@@ -123,24 +124,24 @@ needed by this package; run `task host add gpu1` to update it`; `details` has `m
   (unfinished atomic writes); at the package root also `result.json` and names starting
   with `result.json.corrupt`. Other names such as `result.jsonl` are packed. The server
   deletes these entries from an uploaded archive before it computes the content hash, so
-  a stale `result.json` in an archive never becomes a run's result. `task validate` lists
+  a stale `result.json` in an archive never becomes a run's result. `task validate package` lists
   every left-out path as a warning (code `excluded`; below an excluded directory only the
   directory).
 - Size: the server refuses a package whose regular files total more than its
   `max_package_bytes` while extracting (error `package_too_large`), and stops receiving an
-  upload that is larger than the limit plus 1/16 plus 1 MiB. `task submit` does not check
-  the size locally. `task validate` warns (code `package_too_large`) when the package is
+  upload that is larger than the limit plus 1/16 plus 1 MiB. `task create job` does not check
+  the size locally. `task validate package` warns (code `package_too_large`) when the package is
   larger than the server default (1073741824 bytes); a server may allow more or less.
 - Symlinks must be relative and resolve inside the package (also through other links);
   special files (FIFOs, devices, sockets) are rejected.
 - A relative `entry.argv[0]` must name a regular file inside the package that is not left
   out of packing and has the executable bit (error `entry`; fix with `chmod +x` or run it
   through an interpreter, e.g. `["python", "run.py"]`).
-- Extracting an archive (on the server, and `task validate` of a `.tar.gz`) refuses
+- Extracting an archive (on the server, and `task validate package` of a `.tar.gz`) refuses
   absolute paths, `..`, duplicate entries (compared case-insensitively), hard links,
   device files, FIFOs, and symlinks that point or resolve outside the package. Nothing is
   written through a symlink an earlier entry created, and no existing file is
-  overwritten. `task validate` lists every unsafe entry; the server stops at the first
+  overwritten. `task validate package` lists every unsafe entry; the server stops at the first
   (`unsafe_package`).
 
 ## Precompile
@@ -164,10 +165,10 @@ Compile before that. With `precompile` in `task.json`:
   "precompile"` and the entry never runs. `TASKMGR_GPU_BUSY_EXIT_CODE` is not set.
 - `precompile.timeout_seconds` limits the precompile; `timeout_seconds` limits only the entry.
   The time in `pending-gpu` counts toward neither.
-- `task cancel` works in every phase. `task logs` shows the output of both commands.
+- `task cancel job` works in every phase. `task logs job` shows the output of both commands.
 - A retry or an automatic re-run is a new job with an empty workdir: it precompiles again.
 
-`task init` adds `precompile.py` and `cutecache.py`. `precompile.py` runs the file's
+`task create package` adds `precompile.py` and `cutecache.py`. `precompile.py` runs the file's
 `_*compile_all()` steps on the CPU and stores the kernels in `kernel-cache/` in the workdir
 (`CUTECACHE_DIR` overrides it). The entry loads them with
 `cutecache.load_precompiled("kernels.py")`; a kernel that was not precompiled fails the run
@@ -195,8 +196,8 @@ A GPU qualifies when, at that moment (nvidia-smi on the server):
 
 Among the qualifying GPUs the ones with the most free memory are taken, ties by lowest
 index. The choice is recorded in `job.json` `gpus` (`{"declared": <index>, "uuid"}`), so
-`task status` and `_taskmgr.gpus` in `result.json` show which GPUs the job got;
-`CUDA_VISIBLE_DEVICES` has their UUIDs as usual. `task status` also shows the request as
+`task get job` and `_taskmgr.gpus` in `result.json` show which GPUs the job got;
+`CUDA_VISIBLE_DEVICES` has their UUIDs as usual. `task get job` also shows the request as
 `gpu_request` (`from` resolved to UUIDs as `from_uuids`).
 
 When fewer than `count` GPUs qualify, the job stays `queued` (shown `pending-gpu`) with a
@@ -205,8 +206,8 @@ scheduler tries again on every pass (`scheduler_poll_seconds`, default 1 s), lik
 GPU-busy relaunch. It reads nvidia-smi for this at most every 5 s, and again as soon as a
 taskmgr job with GPUs starts or ends; when nvidia-smi fails or takes more than 10 s, these
 jobs wait (`pending_reason` `cannot choose GPUs: ...`) and the next read is 30 s later,
-while other jobs are scheduled as usual. A waiting job reserves no GPU: a later job with fixed GPUs that are free
-can start before it. If the entry exits 75 on a chosen GPU (another process took it after the
+while other jobs are scheduled as usual. A waiting job reserves no GPU: a later job with
+fixed GPUs that are free can start before it. If the entry exits 75 on a chosen GPU (another process took it after the
 choice), the job is queued again at its place with its GPUs cleared, and the first pass after
 `gpu_retry_interval_seconds` chooses again (until then `pending_reason` reads
 `entry exited 75 (GPU busy, #N); choosing GPUs again from <time>`, N counting these
@@ -231,7 +232,7 @@ than it has (or than `from` lists), or `min_free_gb` above the total memory of e
 
 stdin is `/dev/null`; stdout/stderr go to `stdout.log` / `stderr.log` in the job directory.
 
-A job runs once. `retry_of` is the jobid this job re-runs (`task retry` or an automatic
+A job runs once. `retry_of` is the jobid this job re-runs (`task retry job` or an automatic
 re-run after an interruption), `null` for a submission.
 
 ## GPU contract: exit code 75
@@ -244,9 +245,9 @@ for this. Instead the task reports it:
   process means "I could not get the GPU and did no work; start me again later". The
   shim then waits `gpu_retry_interval_seconds` (default 1) and starts the entry again
   in the same workdir (logs are appended, with a separator line). The job
-  stays `running`, keeps its GPUs, and `task jobs` shows it as `pending-gpu`.
+  stays `running`, keeps its GPUs, and `task get jobs` shows it as `pending-gpu`.
   Waiting does not count toward `timeout_seconds`; each launch is timed from its own start.
-  `task cancel` works while it waits.
+  `task cancel job` works while it waits.
 - Exit 75 before producing side effects (files outside the workdir, results). The workdir
   is kept: a relaunch sees the files the previous launch left there (e.g. a compiled
   binary), so anything written before the exit 75 must be safe to reuse.

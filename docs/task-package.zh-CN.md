@@ -9,7 +9,7 @@ up: "[[taskmgr/README.zh-CN]]"
 
 其他语言：[[docs/task-package]]
 
-`task init` 生成一个需要填写的模板；`task pack` 用项目文件和参数构建任务包（[[docs/usage.zh-CN]] 的“打包”）。
+`task create package` 生成一个需要填写的模板；`task build package` 用项目文件和参数构建任务包（[[docs/usage.zh-CN]] 的“打包”）。
 
 | 文件 | 是否必需 | 说明 |
 | --- | --- | --- |
@@ -36,7 +36,7 @@ up: "[[taskmgr/README.zh-CN]]"
 ```
 
 - 键：只允许这里列出的键（以及 `precompile`）。其他任何键，无论在顶层还是在 `entry`、
-  `precompile`、`environment`、`result` 里，在 `task validate`、`task submit` 和服务器上都是错误
+  `precompile`、`environment`、`result` 里，在 `task validate package`、`task create job` 和服务器上都是错误
   （代码 `unknown_key`）：本 taskmgr 不认识的键可能是更新版本的功能，也可能是拼写错误，从不被忽略。
   以 `x-` 开头的键是注释，会被忽略（`"x-owner": "junyi"`）。
 - `task_id` 须匹配 `^[A-Z]{2}-[0-9]{2,4}$`。
@@ -73,19 +73,19 @@ up: "[[taskmgr/README.zh-CN]]"
 中列出的每个键。文件不存在时生成 `{"schema_version", "_taskmgr"}`；文件损坏（包括嵌套过深、无法
 解析的 JSON），或 `result.json` 不是普通文件（目录、FIFO、符号链接：不跟随链接）时，原文件保留为
 `result.json.corrupt`，并在 `validation_errors` 中报告。`progress.json` 不是普通文件时，
-`task status` 中显示为 `{"error": ...}`。任务自己写的 `_taskmgr` 会被丢弃，并记录
+`task get job` 中显示为 `{"error": ...}`。任务自己写的 `_taskmgr` 会被丢弃，并记录
 警告 `task_wrote_taskmgr`。
 
 `error.kind` 的取值：`setup`、`precompile`（预编译命令失败）、`shim_start_failed`、`shim_error`（shim 在启动入口命令之前出错；
 作业以 `failed` 结束，不会重跑）、`exit_code`、`signal`、`exit_code_lost`、
-`interrupted`（运行被中断；除 `task resolve` 结束的 `unknown` 作业外，已创建自动重跑作业）、
+`interrupted`（运行被中断；除 `task resolve job` 结束的 `unknown` 作业外，已创建自动重跑作业）、
 `too_many_interruptions`、`operator_marked_stopped`、`stop_unconfirmed`（作业处于 unknown）、
 `record_incomplete` / `undeterminable`（恢复后处于 unknown）、`recovery_error`（处于 unknown：
 守护进程对该作业的恢复或跟踪反复出错，见 [[docs/recovery.zh-CN]]）。
 
 ## 打包与校验
 
-`task validate` 和 `task submit` 在本地检查任务包；上传后服务器会再检查一次。
+`task validate package` 和 `task create job` 在本地检查任务包；上传后服务器会再检查一次。
 
 ### 服务器功能
 
@@ -97,14 +97,15 @@ up: "[[taskmgr/README.zh-CN]]"
 | `strict_task_json` | 服务器拒绝它不认识的 task.json 键（`unknown_key`） |
 | `precompile` | `task.json` 的 `precompile` |
 | `gpu_select` | `task.json` 的 `gpus` 为对象（按条件选择 GPU） |
-| `gpu_holders` | 等待 GPU 的作业的 `status` 列出占用这些 GPU 的进程（[[docs/usage.zh-CN]]） |
-| `cancel_by` | `cancel` 记录是谁请求的（`cancel_request`，[[docs/usage.zh-CN]]） |
+| `gpu_holders` | 等待 GPU 的作业的 `task get job` 列出占用这些 GPU 的进程（[[docs/usage.zh-CN]]） |
+| `cancel_by` | `task cancel job` 记录是谁请求的（`cancel_request`，[[docs/usage.zh-CN]]） |
+| `jobs_limit` | `task get jobs -n N` 只从每台服务器取最新的 N 个作业（较旧的服务器发回它的全部作业，由 CLI 保留最新的 N 个） |
 
-`task validate --detail` 列出任务包需要的功能（`"features"`）。任务包需要功能时，`task submit`
+`task validate package -o json` 列出任务包需要的功能（`"features"`）。任务包需要功能时，`task create job`
 在上传前向服务器查询功能（`taskmgr-remote version`），服务器缺少其中任一个就拒绝：错误
 `unsupported_feature`（退出码 2，不上传任何东西），例如 `server gpu1 runs code 3f9a1c0e7b2d without
-precompile support, needed by this package; run `task host add gpu1` to update it`；`details` 里有
-`missing` 和 `server_features`。`task host ping --detail` 和 `task version --detail` 显示每台服务器的
+precompile support, needed by this package; run `task update host gpu1` to update it`；`details` 里有
+`missing` 和 `server_features`。`task ping host -o json` 和 `task version -o json` 显示每台服务器的
 `features`。
 
 - 不打进归档、也不计入内容哈希的路径：任一路径分量名为 `__pycache__`、`.git` 或 `.DS_Store`，
@@ -112,18 +113,18 @@ precompile support, needed by this package; run `task host add gpu1` to update i
   `.tmp-` 开头（未完成的原子写入）；另外，包根目录下的 `result.json` 和以
   `result.json.corrupt` 开头的名字。`result.jsonl` 这类其他名字照常打包。服务器收到归档后，
   先删除这些条目再计算内容哈希，所以归档里残留的 `result.json` 不会被当成本次运行的结果。
-  `task validate` 把每个被排除的路径列为警告（代码 `excluded`；被排除的目录只列目录本身）。
+  `task validate package` 把每个被排除的路径列为警告（代码 `excluded`；被排除的目录只列目录本身）。
 - 大小：服务器解包时，普通文件总大小超过它的 `max_package_bytes` 就拒收（错误码
-  `package_too_large`）；上传数据超过上限加 1/16 再加 1 MiB 时，直接停止接收。`task submit`
-  不在本地检查大小。包超过服务器默认值（1073741824 字节）时，`task validate` 给出警告（代码
+  `package_too_large`）；上传数据超过上限加 1/16 再加 1 MiB 时，直接停止接收。`task create job`
+  不在本地检查大小。包超过服务器默认值（1073741824 字节）时，`task validate package` 给出警告（代码
   `package_too_large`）；各服务器的上限可以更大或更小。
 - 符号链接必须是相对路径，并且（包括经过其他链接后）解析到包内；特殊文件（FIFO、设备、socket）
   会被拒绝。
 - 相对路径的 `entry.argv[0]` 必须指向包内一个不被排除在打包之外、带可执行位的普通文件（错误码
   `entry`；用 `chmod +x` 修复，或通过解释器运行，例如 `["python", "run.py"]`）。
-- 解包归档时（服务器上，以及对 `.tar.gz` 运行 `task validate` 时）拒绝：绝对路径、`..`、重复条目
+- 解包归档时（服务器上，以及对 `.tar.gz` 运行 `task validate package` 时）拒绝：绝对路径、`..`、重复条目
   （不区分大小写比较）、硬链接、设备文件、FIFO，以及指向或解析到包外的符号链接。不会经由前面条目
-  创建的符号链接写文件，也不会覆盖已存在的文件。`task validate` 列出所有不安全的条目；服务器遇到
+  创建的符号链接写文件，也不会覆盖已存在的文件。`task validate package` 列出所有不安全的条目；服务器遇到
   第一个就停止（`unsafe_package`）。
 
 ## 预编译
@@ -147,10 +148,10 @@ precompile support, needed by this package; run `task host add gpu1` to update i
   运行。预编译时不设置 `TASKMGR_GPU_BUSY_EXIT_CODE`。
 - `precompile.timeout_seconds` 限制预编译，`timeout_seconds` 只限制入口。`pending-gpu` 的等待时间
   两者都不计。
-- 每个阶段都能 `task cancel`。`task logs` 显示两条命令的输出。
+- 每个阶段都能 `task cancel job`。`task logs job` 显示两条命令的输出。
 - 重试和自动重跑都是工作目录为空的新作业，会重新预编译。
 
-`task init` 会带上 `precompile.py` 和 `cutecache.py`。`precompile.py` 在 CPU 上运行文件中的
+`task create package` 会带上 `precompile.py` 和 `cutecache.py`。`precompile.py` 在 CPU 上运行文件中的
 `_*compile_all()` 步骤，把 kernel 存到工作目录的 `kernel-cache/`（可用 `CUTECACHE_DIR` 覆盖）。入口用
 `cutecache.load_precompiled("kernels.py")` 加载；没有预编译的 kernel 会让运行失败，不会在 GPU 上
 编译。默认值对应 H200，可用 `PRECOMPILE_ARCH`、`PRECOMPILE_QUACK_ARCH`、`PRECOMPILE_N_SM` 和
@@ -174,8 +175,8 @@ precompile support, needed by this package; run `task host add gpu1` to update i
 - 有 `min_free_gb` 时，空闲显存不少于该值；没有时，完全没有进程在它上面持有 CUDA context（“任意空闲 GPU”）。
 
 在合格的 GPU 中优先选空闲显存最多的，相同时选索引小的。选择结果记录在 `job.json` 的 `gpus` 中
-（`{"declared": <索引>, "uuid"}`），所以 `task status` 和 `result.json` 的 `_taskmgr.gpus` 会显示作业拿到了
-哪些 GPU；`CUDA_VISIBLE_DEVICES` 照常是它们的 UUID。`task status` 还以 `gpu_request` 显示请求
+（`{"declared": <索引>, "uuid"}`），所以 `task get job` 和 `result.json` 的 `_taskmgr.gpus` 会显示作业拿到了
+哪些 GPU；`CUDA_VISIBLE_DEVICES` 照常是它们的 UUID。`task get job` 还以 `gpu_request` 显示请求
 （`from` 解析为 UUID，键名 `from_uuids`）。
 
 合格的 GPU 不足 `count` 块时，作业保持 `queued`（显示为 `pending-gpu`），`pending_reason` 类似
@@ -206,7 +207,7 @@ precompile support, needed by this package; run `task host add gpu1` to update i
 
 stdin 接到 `/dev/null`；stdout/stderr 分别写入作业目录下的 `stdout.log` / `stderr.log`。
 
-一个作业只运行一次。`retry_of` 是本作业重跑的 jobid（`task retry` 或中断后的自动重跑），直接提交的
+一个作业只运行一次。`retry_of` 是本作业重跑的 jobid（`task retry job` 或中断后的自动重跑），直接提交的
 作业为 `null`。
 
 ## GPU 约定：退出码 75
@@ -217,8 +218,8 @@ GPU 服务器运行在 Exclusive_Process 计算模式下，taskmgr 之外的进�
 - 入口进程以 **75**（`EX_TEMPFAIL`，即 `taskmgr_task.GPU_BUSY_EXIT_CODE`）退出，表示"拿不到
   GPU，没有做任何工作，稍后再启动我"。shim 等待 `gpu_retry_interval_seconds`（默认 1 秒）后，在
   同一个 workdir 中重新启动入口命令（日志追加写入，并加一行分隔）。作业保持 `running`，继续占用
-  它的 GPU，`task jobs` 显示为 `pending-gpu`。等待时间不计入 `timeout_seconds`，每次启动
-  都从自己的启动时刻计时。等待期间可以 `task cancel`。
+  它的 GPU，`task get jobs` 显示为 `pending-gpu`。等待时间不计入 `timeout_seconds`，每次启动
+  都从自己的启动时刻计时。等待期间可以 `task cancel job`。
 - 在产生任何副作用（workdir 之外的文件、结果）之前退出 75。workdir 会保留：重新启动时能看到上一次
   启动留下的文件（例如编译好的二进制），所以退出 75 之前写下的东西必须可以直接复用。
 - 不要因为其他原因退出 75：这样的任务会被一直重新启动，直到被取消。服务器可以关闭这个约定

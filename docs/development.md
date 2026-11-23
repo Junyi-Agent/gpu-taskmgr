@@ -88,11 +88,11 @@ From macOS use Docker as described in [[docs/testing]].
 ## Zipapps
 
 ```sh
-uv run python -m taskmgr.pyz -o dist    # dist/task.pyz, dist/taskmgr-remote.pyz
+bin/task build pyz    # dist/task.pyz, dist/taskmgr-remote.pyz
 ```
 
 `taskmgr/pyz.py` builds both archives from the package (without `tests/` and
-`__pycache__`). `task host add` does not build: it uploads a prebuilt
+`__pycache__`). `task create host` does not build: it uploads a prebuilt
 `taskmgr-remote.pyz` (`pyz.default_remote_pyz()` or `--pyz`) and fails when its code
 version differs from the running code, so rebuild after every code change. Code that runs from an archive cannot
 open package files with `open()`: use `common.copy_package_tree` and

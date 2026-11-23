@@ -39,7 +39,7 @@ Other language: [[docs/internals.zh-CN]]
   workdir/          copy of package/ (made once per job, reused by GPU-busy relaunches) + progress.json, result.json, artifacts/
 ```
 
-A job runs at most once. A retry (`task retry`) or an automatic re-run after an interruption
+A job runs at most once. A retry (`task retry job`) or an automatic re-run after an interruption
 is a new job with its own jobid and directory, built under `incoming/retry-<jobid>/` and
 renamed into `queue/`. Its `package.tar.gz` and the files of `package/` are hard links to
 the old job's (copied where linking fails); they are read-only and never modified, so the
@@ -64,7 +64,7 @@ shared files.
 ```
 
 `cancel_request` is written by the first cancel request, together with `cancel_requested`:
-`by` is the `user@hostname` of the CLI that sent `task cancel` (`via: "cli"`, sent as
+`by` is the `user@hostname` of the CLI that sent `task cancel job` (`via: "cli"`, sent as
 `taskmgr-remote cancel --by`), or the server user and hostname when the cancel came without
 `--by`, e.g. `taskmgr-remote cancel` run on the server or an older CLI (`via: "remote"`).
 Later requests do not change it.
@@ -136,7 +136,7 @@ directory is renamed; if they disagree, `job.json` wins and daemon startup moves
 directory. Run status (`runner.json`) is a terminal state or `interrupted` once final;
 `waiting_gpu` while the shim waits to relaunch.
 
-`task jobs` shows a running job with `pending_reason` set, and a queued job in phase `gpu`,
+`task get jobs` shows a running job with `pending_reason` set, and a queued job in phase `gpu`,
 as STATE `pending-gpu` (yellow), and a running job in phase `precompile` as `precompiling`
 (cyan). These are displays only; the state machine has no such states. A running job keeps its
 GPUs while it waits, so later jobs on those GPUs keep waiting behind it (FIFO). A job in phase

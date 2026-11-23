@@ -39,7 +39,7 @@ up: "[[taskmgr/README.zh-CN]]"
   workdir/          package/ 的副本（每个作业复制一次，GPU 忙后的重新启动继续使用），加上 progress.json、result.json、artifacts/
 ```
 
-一个作业最多运行一次。重试（`task retry`）或中断后的自动重跑都是一个新作业，有自己的 jobid 和
+一个作业最多运行一次。重试（`task retry job`）或中断后的自动重跑都是一个新作业，有自己的 jobid 和
 目录：在 `incoming/retry-<jobid>/` 下构建，再重命名到 `queue/`。它的 `package.tar.gz` 和
 `package/` 中的文件是旧作业对应文件的硬链接（无法链接时复制）；这些文件只读、从不修改，所以两个
 作业可以共用。删除作业目录时只把目录改为可写，不改共用的文件。
@@ -61,7 +61,7 @@ up: "[[taskmgr/README.zh-CN]]"
  "error": null}
 ```
 
-`cancel_request` 由第一次取消请求写入，同时设置 `cancel_requested`：`by` 是发出 `task cancel` 的
+`cancel_request` 由第一次取消请求写入，同时设置 `cancel_requested`：`by` 是发出 `task cancel job` 的
 CLI 的 `user@hostname`（`via: "cli"`，通过 `taskmgr-remote cancel --by` 发送）；取消请求不带 `--by` 时
 （例如在服务器上直接运行 `taskmgr-remote cancel`，或较旧的 CLI），`by` 是服务器上的用户和主机名
 （`via: "remote"`）。之后的取消请求不会改变它。
@@ -127,7 +127,7 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 `job.json` 为准，守护进程启动时会把目录移到正确位置。运行状态（`runner.json`）final 后是某个终态
 或 `interrupted`；shim 等待重新启动期间是 `waiting_gpu`。
 
-`task jobs` 把设置了 `pending_reason` 的 running 作业和 `gpu` 阶段的 queued 作业的 STATE 显示为
+`task get jobs` 把设置了 `pending_reason` 的 running 作业和 `gpu` 阶段的 queued 作业的 STATE 显示为
 `pending-gpu`（黄色），把 `precompile` 阶段的 running 作业显示为 `precompiling`（青色）。这些只是显示，
 状态机里没有这些状态。running 作业等待期间继续占用它的 GPU，所以之后要用这些 GPU 的作业仍排在它
 后面（FIFO）。`precompile` 阶段的作业不占用也不预留 GPU：调度器把它当作 `gpus: []` 的作业，受

@@ -12,7 +12,7 @@ Other language: [[docs/recovery.zh-CN]]
 On start the daemon takes `daemon.lock`, removes `incoming/` entries it can lock that are
 older than 1 hour, then under the state lock checks every job. The same check runs every
 `control_poll_seconds` for running/stopping jobs whose shim is dead (assumption: the spec
-only requires it at startup), and `task resolve` runs it for unknown jobs. The periodic
+only requires it at startup), and `task resolve job` runs it for unknown jobs. The periodic
 check lists the jobs under the state lock and checks each one without it: each state
 change takes the lock, and the task's `result.json` is read before the lock is taken.
 
@@ -45,14 +45,14 @@ change takes the lock, and the task's `result.json` is read before the lock is t
    for its timeout (`stop_reason = "timeout"`) → `timed_out`; run record marked stopped by
    an operator (`interrupted_reason = "operator_marked_stopped"`, left by a
    `resolve --as stopped` that failed half-way) → `failed` / `operator_marked_stopped`;
-   `task resolve` of an `unknown` job → `failed` / `interrupted` without a re-run (run
-   `task retry` to re-run it);
+   `task resolve job` of an `unknown` job → `failed` / `interrupted` without a re-run (run
+   `task retry job` to re-run it);
    `auto_restarts` at `max_auto_restarts` → `failed` / `too_many_interruptions`; else the
    job ends `failed` with `error.kind = "interrupted"` and a new job is created from its
    package (hard links to the same files; an automatic retry): it keeps the original `enqueue_seq`, has
    `auto_restarts` + 1 and `retry_of` = the interrupted job, whose `retried_as` gets the new
    jobid. A crash in the middle of this step reuses the re-run job already created instead
-   of creating a second one. `task status --wait` follows the re-run.
+   of creating a second one. `task wait job` follows the re-run.
 
 Two errors end a job without these rules:
 
@@ -71,7 +71,7 @@ Two errors end a job without these rules:
 `unknown` jobs never re-run and keep their GPUs (also after a GPU-busy exit: resolving
 such a job ends it `failed` with exit code 75).
 
-1. `task resolve <jobid> --host H` re-runs the check. If the group is gone the job ends by
+1. `task resolve job <jobid> --host H` re-runs the check. If the group is gone the job ends by
    the rules above (cancelled if cancel was requested); a reboot or an entry that never
    started ends it `failed` / `interrupted` (`timed_out` if it was stopping for its
    timeout) and creates no re-run job. If processes are still alive, or
@@ -82,9 +82,9 @@ such a job ends it `failed` with exit code 75).
    `cat /proc/sys/kernel/random/boot_id`, `nvidia-smi` (processes on the job's GPUs).
 3. Kill what is left: `kill -TERM -<pgid>`, then `kill -KILL -<pgid>`. Processes in `D`
    state may need the underlying device/driver issue fixed or a reboot.
-4. Run `task resolve <jobid> --host H` again, or, once you have confirmed everything is
-   gone, `task resolve <jobid> --host H --as stopped --confirm <jobid>` → `failed`
+4. Run `task resolve job <jobid> --host H` again, or, once you have confirmed everything is
+   gone, `task resolve job <jobid> --host H --as stopped --confirm <jobid>` → `failed`
    (`operator_marked_stopped`) or `cancelled`; GPUs are released; nothing re-runs.
    `runner.json` is written after `result.json` and `job.json`: if the command fails, the
    job stays `unknown` with its run record unchanged.
-5. Re-run with `task retry <jobid> --host H` if wanted (this creates a new job).
+5. Re-run with `task retry job <jobid> --host H` if wanted (this creates a new job).
