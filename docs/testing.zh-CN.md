@@ -58,7 +58,7 @@ sleep：它提交空操作的探测任务并等每个都成功；调度出探测
 | `TASKMGR_TEST_FEATURES` | 远程端报告这些功能（逗号分隔；`-` 表示没有） |
 | `TASKMGR_TEST_SKIP_DAEMON_LOCK=1` | 守护进程跳过 `daemon.lock`（多守护进程测试） |
 | `TASKMGR_SHIM_EXECUTABLE` | 用于 exec shim 的解释器（模拟 shim 启动失败） |
-| `TASKMGR_TEST_SHIM_CRASH=<point>` | shim 在 `before_identity`、`before_exec`、`after_exit_recorded`、`before_finalize` 处退出 |
+| `TASKMGR_TEST_SHIM_CRASH=<point>` | shim 在 `before_identity`、`before_exec`、`after_exit_recorded`、`before_finalize` 处退出（`test_recovery.py` 对每个点检查之后的恢复） |
 | `TASKMGR_TEST_IGNORE_KILL=1` | 停止流程不发送任何信号（模拟停止无法确认） |
 | `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` 在持有上传锁时休眠 |
 | 机器条目 `"local": {"home": "/dir"}` | `transport: local` 以 `HOME=/dir` 运行所有命令（包括 `task host add` 的脚本） |
