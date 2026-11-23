@@ -63,11 +63,13 @@ def parse_gpus(text: str) -> JsonValue:
     t = text.strip()
     if t in ("", "none", "[]"):
         return []
+
     if t[0] in "[{":
         try:
             return cast(JsonValue, json.loads(t))
         except ValueError as e:
             raise TaskmgrError("bad_args", "--gpus is not valid JSON: %s" % e) from e
+
     out: list[JsonValue] = []
     for part in (p.strip() for p in t.split(",")):
         out.append(int(part) if part.isdigit() else part)
@@ -90,8 +92,10 @@ def split_source(arg: str) -> tuple[str, str]:
         src, dest = arg, ""
     else:
         src, dest = arg.split("=", 1)
+
     if not os.path.exists(src):
         raise TaskmgrError("not_found", "source does not exist: %s" % src)
+
     dest = dest.strip("/")
     if dest and not package.is_inside(dest):
         raise TaskmgrError("bad_args", "destination %r is outside the package" % dest)
@@ -170,16 +174,19 @@ def build_task(base: JsonDict, a: PackArgs) -> JsonDict:
     """task.json: the sources' task.json (if any) changed by the options."""
     task: JsonDict = dict(base)
     task["schema_version"] = 1
+
     if a.task_id:
         task["task_id"] = a.task_id
     if not isinstance(task.get("task_id"), str):
         raise TaskmgrError("bad_args", "--task-id is required (no task.json among the sources)")
     if not TASK_ID_RE.match(str(task["task_id"])):
         raise TaskmgrError("bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$")
+
     if a.entry is not None:
         task["entry"] = {"argv": cast(list[JsonValue], shlex.split(a.entry))}
     if "entry" not in task:
         raise TaskmgrError("bad_args", "--entry is required (no task.json among the sources)")
+
     if a.precompile is not None:
         pre: JsonDict = {"argv": cast(list[JsonValue], shlex.split(a.precompile))}
         if a.precompile_timeout is not None:
@@ -187,9 +194,11 @@ def build_task(base: JsonDict, a: PackArgs) -> JsonDict:
         task["precompile"] = pre
     elif a.precompile_timeout is not None:
         raise TaskmgrError("bad_args", "--precompile-timeout needs --precompile")
+
     if a.gpus is not None:
         task["gpus"] = parse_gpus(a.gpus)
     _ = task.setdefault("gpus", [])
+
     environment = task.get("environment")
     envi: JsonDict = dict(environment) if isinstance(environment, dict) else {}
     if a.venv is not None:
@@ -201,13 +210,16 @@ def build_task(base: JsonDict, a: PackArgs) -> JsonDict:
         envi["required_paths"] = paths
     if envi:
         task["environment"] = envi
+
     if a.env:
         env_old = task.get("env")
         env: JsonDict = dict(env_old) if isinstance(env_old, dict) else {}
         env.update(parse_env(a.env))
         task["env"] = env
+
     if a.timeout is not None:
         task["timeout_seconds"] = int(a.timeout)
+
     if a.output_key:
         res_old = task.get("result")
         res: JsonDict = dict(res_old) if isinstance(res_old, dict) else {}
@@ -216,6 +228,7 @@ def build_task(base: JsonDict, a: PackArgs) -> JsonDict:
         keys += [k for k in a.output_key if k not in keys]
         res["required_outputs"] = keys
         task["result"] = res
+
     return task
 
 
@@ -223,6 +236,7 @@ def task_md_stub(task: JsonDict, sources: Sequence[str]) -> str:
     argv = task.get("entry")
     cmd = argv.get("argv") if isinstance(argv, dict) else None
     shown = shlex.join(str(a) for a in cmd) if isinstance(cmd, list) else "?"
+
     lines = [
         "# %s" % task.get("task_id"),
         "",
@@ -247,6 +261,7 @@ def add_helpers(root: str, cute: bool) -> list[str]:
     template; returns warnings about source files they replaced."""
     warnings: list[str] = []
     names = (HELPER,) + (CUTE_HELPERS if cute else ())
+
     with tempfile.TemporaryDirectory(prefix="taskmgr-pack-tpl-") as tmp:
         tpl = os.path.join(tmp, "t")
         _ = copy_package_tree("template", tpl, ("__pycache__", "*.pyc"))
@@ -306,6 +321,7 @@ def check_replaceable(target: str, sources: Sequence[str]) -> None:
 
     if link:
         return
+
     if os.path.isdir(target):
         task_json = os.path.join(target, "task.json")
         if os.path.isfile(task_json) and not os.path.islink(task_json):
@@ -327,15 +343,19 @@ def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
     with tempfile.TemporaryDirectory(prefix="taskmgr-pack-") as tmp:
         root = os.path.join(tmp, "pkg")
         os.makedirs(root)
+
         written = copy_sources(a.sources, root, a.exclude or [])
+
         task = build_task(_load_task(root), a)
         write_json(os.path.join(root, "task.json"), task)
+
         md = os.path.join(root, "TASK.md")
         if a.task_md is not None:
             copy_task_md(a.task_md, md)
         elif not os.path.isfile(md):
             with open(md, "w") as f:
                 _ = f.write(task_md_stub(task, a.sources))
+
         prog = os.path.join(root, "progress.json")
         if not os.path.isfile(prog):
             write_json(
@@ -343,7 +363,9 @@ def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
                 # a fixed time: the same inputs give the same package (and content hash)
                 {"schema_version": 1, "stage": "not_started", "updated_at": PACKED_AT},
             )
+
         warnings = add_helpers(root, a.with_cute_helpers)
+
         errors, _ = package.validate_dir(root)
         if errors:  # on stderr: stdout stays empty, so "$(task build package ...)" is no path
             for e in errors:
@@ -351,6 +373,7 @@ def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
                     "%s%s (%s)" % (e["path"] + ": " if "path" in e else "", e["message"], e["code"])
                 )
             return {"valid": False, "errors": errors, "path": None}, 1
+
         target = out_path or os.path.abspath(str(task["task_id"]))
         archive = target.endswith((".tar.gz", ".tgz"))
         if os.path.lexists(target):
@@ -364,17 +387,21 @@ def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
                 shutil.rmtree(target)
             else:
                 os.unlink(target)
+
         chash = package.content_hash(root)
         features = package.task_features(task)
         files = len(written)
+
         if archive:
             os.makedirs(os.path.dirname(target), exist_ok=True)
             package.pack_dir(root, target)
         else:
             os.makedirs(os.path.dirname(target), exist_ok=True)
             _ = shutil.copytree(root, target, symlinks=True)
+
     for w in warnings:
         warn(w)
+
     return {
         "valid": True,
         "path": target,

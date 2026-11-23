@@ -88,12 +88,14 @@ def text_validate(_args: Args, out: Mapping[str, object], color: bool) -> str:
             "%s, content_hash %s" % (out.get("task_id"), out.get("content_hash")),
             color,
         )
+
     errors = rows(out, "errors")
     lines = [
         message(
             "invalid", RED, "%d error%s" % (len(errors), "" if len(errors) == 1 else "s"), color
         ).rstrip("\n")
     ]
+
     for e in errors:
         where = " %s:" % e["path"] if e.get("path") else ""
         lines.append("  %s%s %s" % (paint(_s(e.get("code")), BOLD, color), where, e.get("message")))
@@ -150,17 +152,21 @@ def _holder_fields(out: Mapping[str, object]) -> Fields:
     """`gpu_holder` lines: who holds the GPUs a waiting job needs (status of the server)."""
     if out.get("gpu_holders_error"):
         return [("gpu_holders", "unknown: %s" % _s(out.get("gpu_holders_error")), YELLOW)]
+
     holders = rows(out, "gpu_holders")
     if not holders:
         return [("gpu_holders", "none", None)] if isinstance(out.get("gpu_holders"), list) else []
+
     fields: Fields = []
     for h in holders:
         cmd = _s(h.get("command"), "?")
         if len(cmd) > HOLDER_TEXT_COMMAND:
             cmd = cmd[: HOLDER_TEXT_COMMAND - 3] + "..."
+
         mib = h.get("used_memory_mib")
         mem = "%.1f GiB" % (mib / 1024) if isinstance(mib, int) else "? GiB"
         job = " (taskmgr job %s)" % h["taskmgr_jobid"] if h.get("taskmgr_jobid") else ""
+
         text = "GPU %s: pid %s user %s %s%s: %s" % (
             _s(h.get("gpu"), "?"),
             _s(h.get("pid")),
@@ -186,6 +192,7 @@ def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
             ("started_at", _s(meta.get("started_at")), None),
             ("ended_at", _s(meta.get("ended_at")), None),
         ] + _error_field(meta.get("error"))
+
         for k in ("validation_errors", "warnings"):
             if meta.get(k):
                 fields.append((k, _s(meta.get(k)), YELLOW))
@@ -202,6 +209,7 @@ def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
             ("submitted_at", _s(out.get("submitted_at")), None),
             ("gpus", _gpus_text(out.get("gpus")), None),
         ]
+
         req = as_dict(out.get("gpu_request"))
         if req:
             fields.append(("gpu_request", _request_text(req), None))
@@ -209,20 +217,25 @@ def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
             fields.append(("pending_reason", _s(out.get("pending_reason")), YELLOW))
         if out.get("cancel_requested"):
             fields.append(("cancel_requested", "yes", YELLOW))
+
         fields += _holder_fields(out)
+
         prog = as_dict(out.get("progress"))
         if prog:
             pct = prog.get("percent")
             parts = (_s(prog.get("stage"), ""), "" if pct is None else "%s%%" % pct)
             msg = " ".join(x for x in parts + (_s(prog.get("message"), ""),) if x)
             fields.append(("progress", msg or "-", None))
+
         fields += _error_field(out.get("error"))
+
     req = as_dict(out.get("cancel_request"))
     if req:
         how = "" if req.get("via") != "remote" else " (on the server)"
         fields.append(
             ("cancelled_by", "%s at %s%s" % (_s(req.get("by")), _s(req.get("at")), how), YELLOW)
         )
+
     if out.get("retry_of"):
         fields.append(("retry_of", _s(out.get("retry_of")), None))
     retried = out.get("retried_as")
@@ -241,6 +254,7 @@ def text_cancel(_args: Args, out: Mapping[str, object], color: bool) -> str:
         label, sgr = "cancel already requested", YELLOW
     else:
         label, sgr = "nothing to cancel", YELLOW
+
     job = "job %s on %s is %s" % (
         out.get("jobid"),
         out.get("host"),
@@ -304,6 +318,7 @@ def text_version(_args: Args, out: Mapping[str, object], color: bool) -> str:
         ],
         color,
     )
+
     hosts = rows(out, "hosts")
     if hosts:
         table = [

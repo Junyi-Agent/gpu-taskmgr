@@ -139,6 +139,7 @@ def json_text(obj: object, indent: int | None = 2) -> str:
         pad = " " * (indent * (depth + 1)) if indent is not None else ""
         end = " " * (indent * depth) if indent is not None else ""
         comma = "," if indent is not None else ", "
+
         if isinstance(v, Mapping):
             m = cast(Mapping[str, object], v)
             if not m:

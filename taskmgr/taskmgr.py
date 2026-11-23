@@ -90,6 +90,7 @@ def pick_round_robin(home: str, servers: list[Server]) -> Server:
     enabled = [s for s in servers if s.get("enabled", True)]
     if not enabled:
         raise TaskmgrError("no_enabled_hosts", "no enabled server in the machine list")
+
     with flocked(os.path.join(home, "rr.lock")):
         # A missing, unreadable or invalid cursor file starts over at 0.
         state, _ = try_read_json(os.path.join(home, "rr.json"))
@@ -98,6 +99,7 @@ def pick_round_robin(home: str, servers: list[Server]) -> Server:
             cursor = int(raw_cursor) if isinstance(raw_cursor, (int, float, str)) else 0
         except (ValueError, OverflowError):
             cursor = 0
+
         chosen = enabled[cursor % len(enabled)]
         atomic_write_json(
             os.path.join(home, "rr.json"),
@@ -113,9 +115,11 @@ def pick_round_robin(home: str, servers: list[Server]) -> Server:
 def cmd_init(args: Args) -> CmdResult:
     if not TASK_ID_RE.match(args.task_id):
         raise TaskmgrError("bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$")
+
     target = os.path.abspath(args.dest or args.task_id)
     if os.path.lexists(target):
         raise TaskmgrError("exists", "target %s already exists; nothing was written" % target)
+
     _ = copy_package_tree("template", target, ("__pycache__", "*.pyc"))
     for name in ("task.json", "TASK.md"):
         p = os.path.join(target, name)
@@ -123,6 +127,7 @@ def cmd_init(args: Args) -> CmdResult:
             text = f.read().replace("{{TASK_ID}}", args.task_id)
         with open(p, "w") as f:
             _ = f.write(text)
+
     prog = os.path.join(target, "progress.json")
     with open(prog, "w") as f:
         json.dump(
@@ -137,6 +142,7 @@ def cmd_init(args: Args) -> CmdResult:
             indent=2,
         )
         _ = f.write("\n")
+
     return {"path": target, "task_id": args.task_id}, 0
 
 
@@ -147,6 +153,7 @@ def _package_warnings(root: str) -> list[Problem]:
         {"code": "excluded", "message": "left out of the package", "path": rel}
         for rel in package.excluded_entries(root)
     ]
+
     limit = package.DEFAULT_MAX_PACKAGE_BYTES
     size = package.packed_size(root)
     if limit is not None and size > limit:
@@ -163,17 +170,20 @@ def validate_path(
     hashes and checks the size) content_hash is None and warnings are [] (not computed)."""
     if not os.path.exists(path):
         raise TaskmgrError("not_found", "path does not exist: %s" % path)
+
     if os.path.isdir(path):
         errors, task = package.validate_dir(path)
         if not report:
             return errors, task, None, []
         warnings = _package_warnings(path)
         return errors, task, (None if errors else package.content_hash(path)), warnings
+
     with tempfile.TemporaryDirectory(prefix="taskmgr-validate-") as tmp:
         try:
             skipped = package.safe_extract(path, tmp, skip_unsafe=True)
         except TaskmgrError as e:
             return [{"code": e.code, "message": e.message}], None, None, []
+
         unsafe: list[Problem] = [
             {
                 "code": "unsafe_package",
@@ -182,9 +192,11 @@ def validate_path(
             }
             for s in skipped
         ]
+
         root = package.package_root(tmp)
         warnings = _package_warnings(root) if report else []
         _ = package.remove_excluded(root)  # as the server does before validating
+
         errors, task = package.validate_dir(root)
         errors = unsafe + errors  # report every error, not only the first unsafe entry
         chash = package.content_hash(root) if report and not errors else None
@@ -195,6 +207,7 @@ def cmd_validate(args: Args) -> CmdResult:
     errors, task, chash, warnings = validate_path(args.path)
     for w in warnings:
         warn("%s%s" % (w["path"] + ": " if "path" in w else "", w["message"]))
+
     if errors:
         return {"valid": False, "errors": errors, "warnings": warnings}, 1
     assert task is not None  # validate_dir returns the task when there are no errors
@@ -223,26 +236,31 @@ def cmd_submit(args: Args) -> CmdResult:
         )
     if args.submission_key and not SUBMISSION_KEY_RE.match(args.submission_key):
         raise TaskmgrError("bad_args", "--submission-key must match ^[A-Za-z0-9._-]{1,128}$")
+
     path = os.path.abspath(args.path)
     errors, task, _, _ = validate_path(path, report=False)
     if errors:
         raise TaskmgrError(
             "invalid_package", "package validation failed (%d errors)" % len(errors), details=errors
         )
+
     home = home_dir(args)
     servers = load_machines(home)
     server = find_server(servers, args.host) if args.host else pick_round_robin(home, servers)
     key = args.submission_key or ("cli-" + secrets.token_hex(16))
+
     remote = Remote(server)
     needed = package.task_features(task)
     if needed:  # before the upload: a server without the feature must not get the package
         require_features(remote.call(["version"]), needed, server["name"], "this package")
+
     with tempfile.TemporaryDirectory(prefix="taskmgr-submit-") as tmp:
         if os.path.isdir(path):
             upload = os.path.join(tmp, "package.tar.gz")
             package.pack_dir(path, upload)
         else:
             upload = path
+
         try:
             ack = remote.call(["receive", "--submission-key", key], stdin_path=upload)
         except (ConnError, KeyboardInterrupt) as e:
@@ -264,6 +282,7 @@ def cmd_submit(args: Args) -> CmdResult:
             raise TaskmgrError(
                 "submission_uncertain", msg, 2, server["name"], {"submission_key": key}
             ) from e
+
     return {
         "host": server["name"],
         "jobid": ack["jobid"],
@@ -324,6 +343,7 @@ def query_hosts(
         for s in servers
         if s["name"] in results
     ]
+
     out: dict[str, object] = {"errors": errors, "skipped": skipped, "complete": not errors}
     if servers and not results:
         out["error"] = {"code": "all_hosts_failed", "message": "no server could be queried"}
@@ -337,6 +357,7 @@ def report_partial(out: Mapping[str, object], what: str) -> None:
     names = [str(n) for n in cast(list[object], skipped)] if isinstance(skipped, list) else []
     if names:
         note("skipped", YELLOW, "disabled, not queried: %s" % ", ".join(names))
+
     for e in rows(out, "errors"):
         warn("%s unreachable, %s: %s" % (e.get("host"), what, e.get("error")))
 
@@ -395,6 +416,7 @@ def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, o
         out["cancel_request"] = j.get("cancel_request")
         out["gpu_request"] = j.get("gpu_request")
         return out
+
     out = {
         "host": host,
         "jobid": j["jobid"],
@@ -448,9 +470,11 @@ def locate(
                 "not_found", "job %s not found on %s" % (args.jobid, args.host), 2, args.host
             )
         return server, st, True
+
     servers, skipped = query_targets(servers, None)
     results, errors = query_all(servers, ["status", args.jobid], timeout)
     matches = [(s, results[s["name"]]) for s in servers if results.get(s["name"], {}).get("found")]
+
     if len(matches) > 1:
         hosts = [s["name"] for s, _ in matches]
         raise TaskmgrError(
@@ -466,6 +490,7 @@ def locate(
                 % (", ".join(e["host"] for e in errors), args.jobid)
             )
         return matches[0][0], matches[0][1], not errors
+
     if errors:
         raise TaskmgrError(
             "incomplete",
@@ -499,10 +524,12 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
     st: JsonDict | None = None
     server: Server | None = None
     complete = True
+
     while True:
         limit = query_timeout()
         if deadline is not None:
             limit = max(0.0, min(limit, deadline - time.monotonic()))
+
         try:
             if server is None:
                 server, st, complete = locate(args, servers, limit)
@@ -521,6 +548,7 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
             # the lookup on every server fails as "incomplete" while a server is down.
             if e.code not in ("connection_error", "incomplete"):
                 raise
+
             now = time.monotonic()
             fail_since = fail_since or now
             if now - fail_since >= args.retry_timeout:
@@ -531,6 +559,7 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
                     2,
                     e.host,
                 ) from e
+
             if deadline is not None and now >= deadline:
                 host = server["name"] if server else args.host
                 out: dict[str, object] = render_status(host, st, complete) if st else {}
@@ -541,6 +570,7 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
                     "host": host,
                 }
                 return out, 2
+
             note("retrying", YELLOW, "connection failed (%s)" % e.message)
             time.sleep(
                 args.poll_interval
@@ -548,8 +578,10 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
                 else max(0.0, min(args.poll_interval, deadline - now))
             )
             continue
+
         job = _obj(st["job"])
         state = job["state"]
+
         if st["terminal"]:
             rerun = automatic_rerun(job)
             if rerun is not None:
@@ -563,6 +595,7 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
                 continue
             out = render_status(server["name"], st, complete)
             return out, (0 if state == "succeeded" else 1)
+
         if state == "unknown":
             out = render_status(server["name"], st, complete)
             note(
@@ -571,6 +604,7 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
                 "job %s is in the unknown state; see `task resolve job %s`" % (jobid, jobid),
             )
             return out, 3
+
         if deadline is not None and time.monotonic() >= deadline:
             out = render_status(server["name"], st, complete)
             out["error"] = {
@@ -579,6 +613,7 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
                 "host": server["name"],
             }
             return out, 2
+
         time.sleep(
             args.poll_interval
             if deadline is None
@@ -657,13 +692,16 @@ def _fetch_manifest(extracted: str) -> list[SkippedEntry]:
     path = os.path.join(extracted, package.FETCH_MANIFEST)
     if not os.path.lexists(path):
         return []
+
     obj, _ = (
         try_read_json(path) if os.path.isfile(path) and not os.path.islink(path) else (None, None)
     )
+
     if os.path.isdir(path) and not os.path.islink(path):
         shutil.rmtree(path)
     else:
         os.unlink(path)
+
     rows = obj.get("skipped") if isinstance(obj, dict) else None
     out: list[SkippedEntry] = []
     for r in cast(list[object], rows) if isinstance(rows, list) else []:
@@ -679,19 +717,23 @@ def cmd_fetch(args: Args) -> CmdResult:
     host: str = server["name"]
     jobid: str = args.jobid
     state = _obj(st["job"])["state"]
+
     if not st.get("has_run"):
         raise TaskmgrError(
             "no_run", "job %s has not run (%s); nothing to fetch" % (jobid, state), 2, host
         )
+
     dest = args.dest
     assert dest is not None  # --dest is required for fetch
     parent = os.path.join(os.path.abspath(dest), host)
     target = os.path.join(parent, jobid)
     if os.path.lexists(target):
         raise TaskmgrError("exists", "target directory already exists: %s" % target)
+
     partial = not st["terminal"]
     if partial:
         warn("job %s is %s; fetched results may be incomplete" % (jobid, state))
+
     created: list[str] = []  # the directories of DIR/<host> this fetch creates, deepest first
     d = parent
     while not os.path.isdir(d):
@@ -703,6 +745,7 @@ def cmd_fetch(args: Args) -> CmdResult:
         tar_path = os.path.join(staging, "stream.tar.gz")
         with open(tar_path, "wb") as f:
             _ = remote.stream(["fetch", jobid], f)
+
         extracted = os.path.join(staging, "x")
         unsafe = package.safe_extract(tar_path, extracted, skip_unsafe=True)
         skipped = sorted(_fetch_manifest(extracted) + unsafe, key=lambda s: s["path"])
@@ -719,6 +762,7 @@ def cmd_fetch(args: Args) -> CmdResult:
             except OSError:
                 break
         raise
+
     shutil.rmtree(staging, ignore_errors=True)
     return {
         "host": host,
@@ -829,9 +873,11 @@ def local_version() -> dict[str, object]:
     if pyproject is not None:
         m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M)
         version = m.group(1) if m else None
+
     commit = pyz.commit()
     dirty = _git_out("status", "--porcelain", "--untracked-files=no")
     code_version = local_code_version()
+
     return {
         "version": version,
         "commit": commit,
@@ -858,17 +904,20 @@ def cmd_update(_args: Args) -> CmdResult:
             "not_a_checkout",
             "%s is a zipapp; build a new one from a checkout (`task build pyz`)" % CODE_ROOT,
         )
+
     before = _git_out("rev-parse", "--short=12", "HEAD")
     if before is None:
         raise TaskmgrError(
             "not_a_checkout", "%s is not a git checkout (or git is missing)" % CODE_ROOT
         )
+
     p = _git("pull", "--ff-only")
     assert p is not None  # git ran just above
     if p.returncode != 0:
         raise TaskmgrError(
             "update_failed", "git pull --ff-only failed in %s:\n%s" % (CODE_ROOT, p.stderr.strip())
         )
+
     after = _git_out("rev-parse", "--short=12", "HEAD")
     return {"path": CODE_ROOT, "before": before, "after": after, "changed": before != after}, 0
 
@@ -1141,6 +1190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _ = set_color("--plain" in argv)
     as_json = json_requested(argv)
     parser = build_parser(COMMANDS, VERBS)
+
     try:
         args = parser.parse_args(argv, namespace=Args())
     except SystemExit as e:  # argparse errors are parameter errors: exit 2
@@ -1185,6 +1235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _ = sys.stdout.write(json_text(out) + "\n")
         return code
     _ = sys.stdout.write(cmd.text(args, clean_result(out), color_on()))
+
     # An error that comes with a result (get jobs: every server failed; wait: timeout).
     err = as_dict(out.get("error"))
     if code and "code" in err:

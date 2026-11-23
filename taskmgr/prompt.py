@@ -56,7 +56,9 @@ class Ui:
         if self.plan:
             self.info("would change: " + change, YELLOW)
             raise Planned(change)
+
         self.info("change: " + change, YELLOW)
+
         if destructive and self.allow_destructive:
             self.say("      %s y (allowed by flag)" % paint("proceed? [y/N]", BOLD))
             return
@@ -72,6 +74,7 @@ class Ui:
                 "a change is needed but stdin is not a terminal; run it in a terminal or "
                 + "pass --yes (nothing was changed by this step)"
             )
+
         _ = sys.stderr.write("      %s " % paint("proceed? [y/N]", BOLD))
         _ = sys.stderr.flush()
         answer = sys.stdin.readline()
