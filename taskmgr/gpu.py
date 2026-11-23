@@ -216,7 +216,7 @@ def request_from_task(spec: GpuSelect) -> GpuRequest:
 
 
 def describe_request(req: GpuRequest) -> str:
-    """E.g. "1 GPU with >= 40 GiB free" / "2 idle GPUs from 0, 1, 2"."""
+    """E.g. "1 GPU with >= 40 GiB free" / "2 idle GPUs among 3 listed"."""
     n = req["count"]
     if "min_free_gb" in req:
         text = "%d GPU%s with >= %g GiB free" % (n, "" if n == 1 else "s", req["min_free_gb"])
