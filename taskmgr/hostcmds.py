@@ -1,10 +1,16 @@
-"""`task host add|update|list|remove|enable|disable|ping`: manage the machine list ($TASKMGR_HOME/machines.json).
+"""The host commands of `task`: set up servers and manage the machine list
+($TASKMGR_HOME/machines.json).
 
-Interface used by taskmgr.py:
-    HELP            [(subcommand, one-line help)], also shown in `task -h`
-    add_parsers()   adds the subcommands (dest "host_cmd") under the `host` parser
-    run()           runs one subcommand: (JSON object, exit code)
-    render()        the colored text printed instead of the JSON (without --detail)
+    task create host NAME           set up a server (hostsetup) and add it to the list
+    task update host NAME           update a listed server's code (hostsetup)
+    task get hosts [NAME]           the configured servers
+    task delete host NAME           remove a server from the list
+    task enable|disable host NAME   use a server for submits and queries, or not
+    task ping host [NAME]           check that servers answer
+
+Interface used by taskmgr.py's command table: args_*() add a command's arguments and return
+its description; the command functions return (JSON object, exit code); text_*() render that
+object as the colored text printed with `-o text` (the default).
 """
 
 import argparse
@@ -12,7 +18,7 @@ import concurrent.futures
 import os
 import time
 from collections.abc import Mapping, Sequence
-from typing import Protocol, cast
+from typing import cast
 
 from .common import TaskmgrError
 from .hostsetup import STEP_COLORS, AddHostArgs, add_host, destination, update_host
@@ -22,51 +28,50 @@ from .textout import BOLD, GREEN, RED, YELLOW, CmdResult, cell, hint, message, r
 from .textout import rows as _rows
 from .transport import Remote, edit_machines, load_machines
 
-HELP = [
-    ("add", "set up or update a server and add it to the machine list"),
-    ("update", "update a server's taskmgr-remote to this task's code version"),
-    ("list", "list the configured servers"),
-    ("remove", "remove a server from the machine list"),
-    ("enable", "use a server again for submits and queries"),
-    ("disable", "leave a server out of submits and queries for now"),
-    ("ping", "check that servers answer"),
-]
 PING_TIMEOUT = 60.0
 
 
-class HostArgs(AddHostArgs, Protocol):
-    host_cmd: str
+# ---------------------------------------------------------------------------
+# Arguments (each returns the command's description)
+
+PYZ_HELP = (
+    "taskmgr-remote.pyz to upload, built by `python3 -m taskmgr.pyz` (default: "
+    + "dist/taskmgr-remote.pyz in the checkout, or next to task.pyz); its code version "
+    + "must equal this task's"
+)
+NAME_HELP = "name in the machine list"
 
 
-def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
-    sub = host.add_subparsers(dest="host_cmd", required=True, metavar="<subcommand>")
-    helps = dict(HELP)
-    h = sub.add_parser(
-        "add",
-        parents=[common],
-        help=helps["add"],
-        description="Check the server step by step and change only what differs from the "
-        + "wanted state (code, remote_root, systemd user service, linger, machine list). "
-        + "Every change is confirmed with [y/N]; a second run changes nothing. --yes answers "
-        + "yes to every change except deleting code of older versions outside remote_root "
-        + "(step old_code): that needs --prune-old-code or a y typed in a terminal, otherwise "
-        + "it is kept. --plan runs every check and prints what would change, changing nothing "
-        + "(exit 0: nothing to change, 1: changes planned, 2: a check failed). "
-        + "The server's storage root is $TASKMGR_REMOTE_ROOT (default: the existing entry's, "
-        + "else ~/.taskmgr-remote on the server); it holds config.json, the job data and "
-        + "the code.",
+def _setup_options(p: argparse.ArgumentParser, prune_help: str) -> None:
+    """The options `create host` and `update host` share."""
+    _ = p.add_argument("--pyz", metavar="FILE", help=PYZ_HELP)
+    _ = p.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="answer yes to every prompt, except deletions (see --prune-old-code)",
     )
-    _ = h.add_argument("name", help="name in the machine list")
-    _ = h.add_argument("--ssh", metavar="USER@HOST", help="ssh destination (required when new)")
-    _ = h.add_argument("--port", type=int, help="ssh port (default 22)")
-    _ = h.add_argument("--identity-file", metavar="FILE", help="ssh private key file")
-    _ = h.add_argument(
+    _ = p.add_argument(
+        "--plan",
+        "--dry-run",
+        action="store_true",
+        help="check everything and print every change it would make; change nothing",
+    )
+    _ = p.add_argument("--prune-old-code", action="store_true", help=prune_help)
+
+
+def args_create(p: argparse.ArgumentParser) -> str:
+    _ = p.add_argument("name", help=NAME_HELP)
+    _ = p.add_argument("--ssh", metavar="USER@HOST", help="ssh destination (required when new)")
+    _ = p.add_argument("--port", type=int, help="ssh port (default 22)")
+    _ = p.add_argument("--identity-file", metavar="FILE", help="ssh private key file")
+    _ = p.add_argument(
         "--ssh-option",
         action="append",
         metavar="KEY=VALUE",
         help="extra `ssh -o` option (repeatable); replaces an option with the same key",
     )
-    g = h.add_mutually_exclusive_group()
+    g = p.add_mutually_exclusive_group()
     _ = g.add_argument(
         "--disabled",
         dest="enabled",
@@ -81,133 +86,106 @@ def add_parsers(host: argparse.ArgumentParser, common: argparse.ArgumentParser) 
         default=None,
         help="put the server back into round-robin submits",
     )
-    _ = h.add_argument(
-        "--pyz",
-        metavar="FILE",
-        help="taskmgr-remote.pyz to upload, built by `python3 -m taskmgr.pyz` (default: "
-        + "dist/taskmgr-remote.pyz in the checkout, or next to task.pyz); its code version "
-        + "must equal this task's",
-    )
-    _ = h.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="answer yes to every prompt, except deletions (see --prune-old-code)",
-    )
-    _ = h.add_argument(
-        "--plan",
-        "--dry-run",
-        action="store_true",
-        help="check everything and print every change it would make; change nothing",
-    )
-    _ = h.add_argument(
-        "--prune-old-code",
-        action="store_true",
-        help="delete the code older versions installed outside remote_root (~/taskmgr, "
+    _setup_options(
+        p,
+        "delete the code older versions installed outside remote_root (~/taskmgr, "
         + "~/taskmgr.old-*, ~/taskmgr-remote.pyz); never done by --yes alone",
     )
-    h = sub.add_parser(
-        "update",
-        parents=[common],
-        help=helps["update"],
-        description="Update the taskmgr-remote code of a server already in the machine list to "
-        + "the code version of this task: upload the matching taskmgr-remote.pyz, check the job "
-        + "directories, restart the service on the new code and check that it answers. "
-        + "The same steps as `task host add NAME`, with the machine entry as it is (to change "
-        + "its ssh settings, use `task host add`). Running jobs keep running (KillMode=process). "
-        + "Every change is confirmed with [y/N] (--yes answers them); on an up-to-date server "
-        + "nothing changes and nothing is asked. A disabled server can be updated. "
-        + "--plan prints what would change (exit 0: nothing, 1: changes planned, 2: a check "
-        + "failed). Build the archive first with `python3 -m taskmgr.pyz -o dist`.",
+    return (
+        "Set up a server, or bring a listed one to the wanted state: check the server step by "
+        + "step and change only what differs (code, remote_root, systemd user service, "
+        + "linger, machine list). Every change is confirmed with [y/N]; a second run changes "
+        + "nothing. --yes answers yes to every change except deleting code of older versions "
+        + "outside remote_root (step old_code): that needs --prune-old-code or a y typed in a "
+        + "terminal, otherwise it is kept. --plan runs every check and prints what would "
+        + "change, changing nothing (exit 0: nothing to change, 1: changes planned, 2: a check "
+        + "failed). The server's storage root is $TASKMGR_REMOTE_ROOT (default: the existing "
+        + "entry's, else ~/.taskmgr-remote on the server); it holds config.json, the job data "
+        + "and the code."
     )
-    _ = h.add_argument("name", help="name in the machine list")
-    _ = h.add_argument(
-        "--pyz",
-        metavar="FILE",
-        help="taskmgr-remote.pyz to upload (default: dist/taskmgr-remote.pyz in the checkout, "
-        + "or next to task.pyz); its code version must equal this task's",
-    )
-    _ = h.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="answer yes to every prompt, except deletions (see --prune-old-code)",
-    )
-    _ = h.add_argument(
-        "--plan",
-        "--dry-run",
-        action="store_true",
-        help="check everything and print every change it would make; change nothing",
-    )
-    _ = h.add_argument(
-        "--prune-old-code",
-        action="store_true",
-        help="also delete the code older versions installed outside remote_root",
-    )
-    h.set_defaults(ssh=None, port=None, identity_file=None, ssh_option=None, enabled=None)
-    _ = sub.add_parser("list", parents=[common], help=helps["list"], description=helps["list"])
-    h = sub.add_parser(
-        "remove",
-        parents=[common],
-        help=helps["remove"],
-        description="Remove a server from the local machine list. The server itself (code, "
-        + "service, remote_root and its jobs) is not touched; `task host add` adds it again.",
-    )
-    _ = h.add_argument("name", help="name in the machine list")
-    _ = h.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
-    h = sub.add_parser(
-        "enable",
-        parents=[common],
-        help=helps["enable"],
-        description="Mark a server enabled in the machine list: round-robin submits and the "
-        + "queries over every server (jobs, the jobid lookup, whoami, version) use it again.",
-    )
-    _ = h.add_argument("name", help="name in the machine list")
-    h = sub.add_parser(
-        "disable",
-        parents=[common],
-        help=helps["disable"],
-        description="Mark a server disabled in the machine list, e.g. while it is down: "
-        + "round-robin submits skip it and the queries over every server (jobs, the jobid "
-        + "lookup, whoami, version, host ping) do not wait for it. `--host NAME` and "
-        + "`task host ping NAME` still reach it. Nothing changes on the server; its jobs keep "
-        + "running.",
-    )
-    _ = h.add_argument("name", help="name in the machine list")
-    h = sub.add_parser(
-        "ping",
-        parents=[common],
-        help=helps["ping"],
-        description="Run `taskmgr-remote version` on each enabled server (in parallel), or on "
-        + "the named one even if it is disabled, and report "
-        + "whether it answers, the round-trip time and the installed code version. "
-        + "Exit 0 when every pinged server answered, 2 otherwise.",
-    )
-    _ = h.add_argument("name", nargs="?", default="", help="one server (default: all)")
 
 
-def run(args: HostArgs, home: str) -> CmdResult:
-    if args.host_cmd == "add":
-        return add_host(args, home)
-    if args.host_cmd == "update":
-        return update_host(args, home)
-    if args.host_cmd == "list":
-        return host_list(home)
-    if args.host_cmd == "remove":
-        return host_remove(args.name, args.yes, home)
-    if args.host_cmd in ("enable", "disable"):
-        return host_set_enabled(args.name, args.host_cmd == "enable", home)
-    if args.host_cmd == "ping":
-        return host_ping(args.name or None, home)
-    raise TaskmgrError("bad_args", "unknown host subcommand %r" % args.host_cmd)
+def args_update(p: argparse.ArgumentParser) -> str:
+    _ = p.add_argument("name", help=NAME_HELP)
+    _setup_options(p, "also delete the code older versions installed outside remote_root")
+    p.set_defaults(ssh=None, port=None, identity_file=None, ssh_option=None, enabled=None)
+    return (
+        "Update the taskmgr-remote code of a server already in the machine list to the code "
+        + "version of this task: upload the matching taskmgr-remote.pyz, check the job "
+        + "directories, restart the service on the new code and check that it answers. The "
+        + "same steps as `task create host NAME`, with the machine entry as it is (to change "
+        + "its ssh settings, use `task create host`). Running jobs keep running "
+        + "(KillMode=process). Every change is confirmed with [y/N] (--yes answers them); on "
+        + "an up-to-date server nothing changes and nothing is asked. A disabled server can be "
+        + "updated. --plan prints what would change (exit 0: nothing, 1: changes planned, "
+        + "2: a check failed). Build the archive first with `python3 -m taskmgr.pyz -o dist`."
+    )
+
+
+def args_get(p: argparse.ArgumentParser) -> str:
+    _ = p.add_argument("name", nargs="?", default="", help="one server (default: all)")
+    return "List the servers of the machine list (or one): name, enabled, destination, root."
+
+
+def args_delete(p: argparse.ArgumentParser) -> str:
+    _ = p.add_argument("name", help=NAME_HELP)
+    _ = p.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
+    return (
+        "Remove a server from the local machine list. The server itself (code, service, "
+        + "remote_root and its jobs) is not touched; `task create host` adds it again."
+    )
+
+
+def args_enable(p: argparse.ArgumentParser) -> str:
+    _ = p.add_argument("name", help=NAME_HELP)
+    return (
+        "Mark a server enabled in the machine list: round-robin submits and the queries over "
+        + "every server (get jobs, the jobid lookup, whoami, version) use it again."
+    )
+
+
+def args_disable(p: argparse.ArgumentParser) -> str:
+    _ = p.add_argument("name", help=NAME_HELP)
+    return (
+        "Mark a server disabled in the machine list, e.g. while it is down: round-robin "
+        + "submits skip it and the queries over every server (get jobs, the jobid lookup, "
+        + "whoami, version, ping host) do not wait for it. `--host NAME` and "
+        + "`task ping host NAME` still reach it. Nothing changes on the server; its jobs keep "
+        + "running."
+    )
+
+
+def args_ping(p: argparse.ArgumentParser) -> str:
+    _ = p.add_argument("name", nargs="?", default="", help="one server (default: all enabled)")
+    return (
+        "Run `taskmgr-remote version` on each enabled server (in parallel), or on the named "
+        + "one even if it is disabled, and report whether it answers, the round-trip time and "
+        + "the installed code version. Exit 0 when every pinged server answered, 2 otherwise."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Commands
+
+
+def create(args: AddHostArgs, home: str) -> CmdResult:
+    return add_host(args, home)
+
+
+def update(args: AddHostArgs, home: str) -> CmdResult:
+    return update_host(args, home)
 
 
 # ---------------------------------------------------------------------------
 # list
 
 
-def host_list(home: str) -> CmdResult:
+def host_list(name: str | None, home: str) -> CmdResult:
+    """The machine list, or the entry of one server."""
     servers = load_machines(home)
+    if name is not None:
+        servers = [_find(servers, name)]
+
     return {
         "machines": os.path.join(home, "machines.json"),
         "servers": [
@@ -245,7 +223,7 @@ def _must_have(servers: list[JsonValue], name: str) -> None:
 
 
 def host_set_enabled(name: str, enabled: bool, home: str) -> CmdResult:
-    """`task host enable|disable NAME`: set `enabled` in the machine entry (local only)."""
+    """`task enable|disable host NAME`: set `enabled` in the machine entry (local only)."""
     path = os.path.join(home, "machines.json")
     changed = _find(load_machines(home), name).get("enabled", True) != enabled
 
@@ -265,7 +243,7 @@ def host_remove(name: str, yes: bool, home: str) -> CmdResult:
     entry = _find(load_machines(home), name)
     ui = Ui(yes)
     ui.say(
-        "task host remove %s: %s, remote_root %s"
+        "task delete host %s: %s, remote_root %s"
         % (name, destination(entry), entry["remote_root"]),
         BOLD,
     )
@@ -339,19 +317,15 @@ def _s(v: object, default: str = "") -> str:
     return cell(v, default)
 
 
-def render(args: HostArgs, out: Mapping[str, object], color: bool) -> str:
-    if args.host_cmd in ("add", "update"):
-        return text_add(out, color, args.host_cmd)
-    if args.host_cmd == "list":
-        return text_list(out, color)
-    if args.host_cmd == "remove":
-        return text_remove(out, color)
-    if args.host_cmd in ("enable", "disable"):
-        return text_enabled(out, color)
-    return text_ping(out, color)
+def text_create(_args: object, out: Mapping[str, object], color: bool) -> str:
+    return text_setup(out, color, "create")
 
 
-def text_enabled(out: Mapping[str, object], color: bool) -> str:
+def text_update(_args: object, out: Mapping[str, object], color: bool) -> str:
+    return text_setup(out, color, "update")
+
+
+def text_enabled(_args: object, out: Mapping[str, object], color: bool) -> str:
     host, on = out.get("host"), bool(out.get("enabled"))
     state = "enabled" if on else "disabled"
     if not out.get("changed"):
@@ -364,14 +338,15 @@ def text_enabled(out: Mapping[str, object], color: bool) -> str:
         "%s is left out of round-robin submits and of queries over every server" % host,
         color,
     ) + hint(
-        "`--host %s` still reaches it; `task host ping %s` tells when it answers again; "
+        "`--host %s` still reaches it; `task ping host %s` tells when it answers again; "
         % (host, host)
-        + "`task host enable %s` turns it back on" % host,
+        + "`task enable host %s` turns it back on" % host,
         color,
     )
 
 
-def text_add(out: Mapping[str, object], color: bool, command: str = "add") -> str:
+def text_setup(out: Mapping[str, object], color: bool, command: str) -> str:
+    """The step table of `task create host` or `task update host` (command: the verb)."""
     steps = _rows(out, "steps")
     rows: Sequence[Sequence[str]] = [
         [_s(s.get("name")), _s(s.get("status")), _s(s.get("detail"))] for s in steps
@@ -397,7 +372,7 @@ def text_add(out: Mapping[str, object], color: bool, command: str = "add") -> st
         )
     if any(s.get("status") == "kept" for s in steps):
         text += hint(
-            "old code was kept; `task host %s %s --prune-old-code` deletes it" % (command, host),
+            "old code was kept; `task %s host %s --prune-old-code` deletes it" % (command, host),
             color,
         )
     if out.get("complete"):
@@ -410,11 +385,11 @@ def text_add(out: Mapping[str, object], color: bool, command: str = "add") -> st
     )
 
 
-def text_list(out: Mapping[str, object], color: bool) -> str:
+def text_list(_args: object, out: Mapping[str, object], color: bool) -> str:
     servers = _rows(out, "servers")
     if not servers:
         return message("empty", YELLOW, "no servers in %s" % out.get("machines"), color) + hint(
-            "`task host add NAME --ssh USER@HOST` adds one", color
+            "`task create host NAME --ssh USER@HOST` adds one", color
         )
     rows = [
         [
@@ -433,24 +408,24 @@ def text_list(out: Mapping[str, object], color: bool) -> str:
     )
 
 
-def text_remove(out: Mapping[str, object], color: bool) -> str:
+def text_delete(_args: object, out: Mapping[str, object], color: bool) -> str:
     host, machines = out.get("host"), out.get("machines")
     if not out.get("removed"):
         return message("declined", YELLOW, "%s stays in %s" % (host, machines), color)
     return message("removed", GREEN, "%s from %s" % (host, machines), color) + hint(
         "the server itself (code, service, remote_root and its jobs) is untouched; "
-        + "`task host add %s` adds it again" % host,
+        + "`task create host %s` adds it again" % host,
         color,
     )
 
 
-def text_ping(out: Mapping[str, object], color: bool) -> str:
+def text_ping(_args: object, out: Mapping[str, object], color: bool) -> str:
     hosts = _rows(out, "hosts")
     raw = out.get("skipped")
     skipped = [str(n) for n in cast(list[object], raw)] if isinstance(raw, list) else []
     note = (
         message("skipped", YELLOW, "disabled, not pinged: %s" % ", ".join(skipped), color)
-        + hint("`task host ping NAME` pings a disabled server", color)
+        + hint("`task ping host NAME` pings a disabled server", color)
         if skipped
         else ""
     )

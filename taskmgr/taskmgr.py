@@ -20,8 +20,8 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from . import hostcmds, package, packcmd, render
-from .cliparse import Args, Command, build_parser
+from . import cliparse, hostcmds, package, packcmd, render
+from .cliparse import DEFAULT_JOBS_LIMIT, Args, Command, build_parser
 from .common import (
     CODE_ROOT,
     PROTOCOL_VERSION,
@@ -111,13 +111,13 @@ def pick_round_robin(home: str, servers: list[Server]) -> Server:
 
 
 # ---------------------------------------------------------------------------
-# init / validate
+# create package / validate package / build package
 
 
 def cmd_init(args: Args) -> CmdResult:
     if not TASK_ID_RE.match(args.task_id):
         raise TaskmgrError("bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$")
-    target = os.path.abspath(args.output or args.task_id)
+    target = os.path.abspath(args.dest or args.task_id)
     if os.path.lexists(target):
         raise TaskmgrError("exists", "target %s already exists; nothing was written" % target)
     _ = copy_package_tree("template", target, ("__pycache__", "*.pyc"))
@@ -145,7 +145,7 @@ def cmd_init(args: Args) -> CmdResult:
 
 
 def _package_warnings(root: str) -> list[Problem]:
-    """What `task validate` warns about: entries left out of the package, and a size over
+    """What `task validate package` warns about: entries left out of the package, and a size over
     the server default max_package_bytes (each server enforces its own limit)."""
     warnings: list[Problem] = [
         {"code": "excluded", "message": "left out of the package", "path": rel}
@@ -212,7 +212,7 @@ def cmd_pack(args: Args) -> CmdResult:
 
 
 # ---------------------------------------------------------------------------
-# submit
+# create job
 
 
 def cmd_submit(args: Args) -> CmdResult:
@@ -256,9 +256,10 @@ def cmd_submit(args: Args) -> CmdResult:
             note(
                 "hint",
                 CYAN,
-                "do NOT resubmit elsewhere; retry safely with `task submit --host %s "
-                % shlex.quote(server["name"])
-                + "--submission-key %s %s`" % (shlex.quote(key), shlex.quote(args.path)),
+                "do NOT resubmit elsewhere; retry safely with `task create job %s "
+                % shlex.quote(args.path)
+                + "--host %s --submission-key %s`"
+                % (shlex.quote(server["name"]), shlex.quote(key)),
             )
             raise TaskmgrError(
                 "submission_uncertain", msg, 2, server["name"], {"submission_key": key}
@@ -275,7 +276,7 @@ def cmd_submit(args: Args) -> CmdResult:
 
 
 # ---------------------------------------------------------------------------
-# jobs / status
+# get job(s) / wait job
 
 
 def query_targets(servers: list[Server], host: str | None) -> tuple[list[Server], list[str]]:
@@ -288,7 +289,7 @@ def query_targets(servers: list[Server], host: str | None) -> tuple[list[Server]
     if servers and not enabled:
         raise TaskmgrError(
             "no_enabled_hosts",
-            "every server is disabled (%s); use --host NAME or `task host enable NAME`"
+            "every server is disabled (%s); use --host NAME or `task enable host NAME`"
             % ", ".join(skipped),
         )
     return enabled, skipped
@@ -339,12 +340,27 @@ def report_partial(out: Mapping[str, object], what: str) -> None:
         warn("%s unreachable, %s: %s" % (e.get("host"), what, e.get("error")))
 
 
+def cmd_get_job(args: Args) -> CmdResult:
+    """`task get jobs` (the list) or `task get job ID` (one job)."""
+    if not args.jobid:
+        return cmd_jobs(args)
+    if args.state or args.limit:
+        raise TaskmgrError(
+            "bad_args", "--state and -n apply to the list of jobs, not to job %s" % args.jobid
+        )
+
+    server, st, complete = locate(args, load_machines(home_dir(args)))
+    return render_status(server["name"], st, complete), 0
+
+
 def cmd_jobs(args: Args) -> CmdResult:
+    limit = args.limit or DEFAULT_JOBS_LIMIT
     rargs = ["jobs"] + (["--state", args.state] if args.state else [])
     replies, out, code = query_hosts(load_machines(home_dir(args)), args.host, rargs)
+
     jobs = [{"host": h, **_obj(j)} for h, r in replies for j in _arr(r.get("jobs", []))]
     jobs.sort(key=lambda j: (str(j.get("submitted_at")), str(j["host"]), str(j.get("jobid"))))
-    out["jobs"] = jobs[-args.limit :]
+    out["jobs"] = jobs[-limit:]
     report_partial(out, "its jobs are not listed")
     return out, code
 
@@ -449,16 +465,12 @@ def locate(
     raise TaskmgrError("not_found", "job %s not found on any server" % args.jobid)
 
 
-def cmd_status(args: Args) -> CmdResult:
-    servers = load_machines(home_dir(args))
-    if not args.wait:
-        server, st, complete = locate(args, servers)
-        return render_status(server["name"], st, complete), 0
-    return wait_status(args, servers)
+def cmd_wait_job(args: Args) -> CmdResult:
+    return wait_status(args, load_machines(home_dir(args)))
 
 
 def wait_status(args: Args, servers: list[Server]) -> CmdResult:
-    """--timeout is the total wait: each query gets at most the time left, so a server that
+    """`task wait job ID`. --timeout is the total wait: each query gets at most the time left, so a server that
     does not answer cannot extend it. A query that returns a terminal state (or unknown)
     wins over an expired --timeout."""
     jobid: str = args.jobid  # changes when the wait follows an automatic re-run
@@ -537,7 +549,7 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
             note(
                 "unknown",
                 STATE_COLORS["unknown"],
-                "job %s is in the unknown state; see `task resolve`" % jobid,
+                "job %s is in the unknown state; see `task resolve job %s`" % (jobid, jobid),
             )
             return out, 3
         if deadline is not None and time.monotonic() >= deadline:
@@ -556,7 +568,7 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
 
 
 # ---------------------------------------------------------------------------
-# cancel / retry / resolve
+# cancel / retry / resolve job
 
 
 def job_server(args: Args) -> tuple[Server, JsonDict]:
@@ -607,7 +619,7 @@ def cmd_resolve(args: Args) -> CmdResult:
 
 
 # ---------------------------------------------------------------------------
-# logs / fetch
+# logs / fetch job
 
 
 def cmd_logs(args: Args) -> CmdResult:
@@ -652,9 +664,9 @@ def cmd_fetch(args: Args) -> CmdResult:
         raise TaskmgrError(
             "no_run", "job %s has not run (%s); nothing to fetch" % (jobid, state), 2, host
         )
-    output = args.output
-    assert output is not None  # --output is required for fetch
-    parent = os.path.join(os.path.abspath(output), host)
+    dest = args.dest
+    assert dest is not None  # --dest is required for fetch
+    parent = os.path.join(os.path.abspath(dest), host)
     target = os.path.join(parent, jobid)
     if os.path.lexists(target):
         raise TaskmgrError("exists", "target directory already exists: %s" % target)
@@ -700,11 +712,39 @@ def cmd_fetch(args: Args) -> CmdResult:
 
 
 # ---------------------------------------------------------------------------
-# host / whoami / update / version
+# hosts
 
 
-def cmd_host(args: Args) -> CmdResult:
-    return hostcmds.run(args, home_dir(args))
+def cmd_create_host(args: Args) -> CmdResult:
+    return hostcmds.create(args, home_dir(args))
+
+
+def cmd_update_host(args: Args) -> CmdResult:
+    return hostcmds.update(args, home_dir(args))
+
+
+def cmd_get_host(args: Args) -> CmdResult:
+    return hostcmds.host_list(args.name or None, home_dir(args))
+
+
+def cmd_delete_host(args: Args) -> CmdResult:
+    return hostcmds.host_remove(args.name, args.yes, home_dir(args))
+
+
+def cmd_enable_host(args: Args) -> CmdResult:
+    return hostcmds.host_set_enabled(args.name, True, home_dir(args))
+
+
+def cmd_disable_host(args: Args) -> CmdResult:
+    return hostcmds.host_set_enabled(args.name, False, home_dir(args))
+
+
+def cmd_ping_host(args: Args) -> CmdResult:
+    return hostcmds.host_ping(args.name or None, home_dir(args))
+
+
+# ---------------------------------------------------------------------------
+# whoami / update / version
 
 
 def _host_versions(args: Args) -> tuple[dict[str, object], int]:
@@ -742,7 +782,7 @@ def _git_out(*argv: str) -> str | None:
 
 def local_version() -> dict[str, object]:
     """Version of this checkout: pyproject version, git commit, and the code version
-    `task host add` installs (comparable with a server's code_version)."""
+    `task create host` installs (comparable with a server's code_version)."""
     version = None
     pyproject = read_code_file("pyproject.toml")  # a .pyz carries a copy
     if pyproject is not None:
@@ -773,7 +813,7 @@ def cmd_version(args: Args) -> CmdResult:
 
 
 def cmd_update(_args: Args) -> CmdResult:
-    """Update this checkout with `git pull --ff-only`; servers are updated by `task host add`."""
+    """Update this checkout with `git pull --ff-only`; servers: `task update host NAME`."""
     if code_is_zipapp():
         raise TaskmgrError(
             "not_a_checkout",
@@ -798,84 +838,278 @@ def cmd_update(_args: Args) -> CmdResult:
 # Command line
 
 
+VERBS = {
+    "create": "create a job (submit a package), a package (from the template) or a host",
+    "get": "list jobs or hosts, or show one",
+    "wait": "wait for a job to end",
+    "logs": "print a job's log",
+    "fetch": "download a job's results",
+    "cancel": "cancel a job",
+    "retry": "run a finished job again as a new job",
+    "resolve": "resolve a job in the unknown state",
+    "build": "build a task package from files and options",
+    "validate": "check a task package",
+    "update": "update this local CLI, or a server's taskmgr-remote",
+    "delete": "remove a server from the machine list",
+    "enable": "use a server again for submits and queries",
+    "disable": "leave a server out of submits and queries for now",
+    "ping": "check that servers answer",
+    "whoami": "the user and hostname each server runs as",
+    "version": "local version and the code version on each server",
+}
+C = cliparse
+H = hostcmds
 COMMANDS = [
-    Command("init", "tasks", "create a task package template", cmd_init, render.text_init),
+    # verb, resource, shown in `task -h`, group, help, arguments, run, text renderer
     Command(
-        "pack",
-        "tasks",
+        "create",
+        "job",
+        "job PKG",
+        "jobs",
+        "submit a task package to a server",
+        C.args_create_job,
+        cmd_submit,
+        render.text_submit,
+    ),
+    Command(
+        "get",
+        "job",
+        "jobs [ID]",
+        "jobs",
+        "list the jobs on every server, or show one job",
+        C.args_get_job,
+        cmd_get_job,
+        render.text_get_job,
+    ),
+    Command(
+        "wait",
+        "job",
+        "job ID",
+        "jobs",
+        "wait for a job to end; the exit code tells how",
+        C.args_wait_job,
+        cmd_wait_job,
+        render.text_status,
+    ),
+    Command(
+        "logs",
+        "job",
+        "job ID",
+        "jobs",
+        "print a job's stdout, stderr or shim log",
+        C.args_logs_job,
+        cmd_logs,
+        None,
+    ),
+    Command(
+        "fetch",
+        "job",
+        "job ID --dest DIR",
+        "jobs",
+        "download a job's results",
+        C.args_fetch_job,
+        cmd_fetch,
+        render.text_fetch,
+    ),
+    Command(
+        "cancel",
+        "job",
+        "job ID",
+        "jobs",
+        "cancel a job",
+        C.args_cancel_job,
+        cmd_cancel,
+        render.text_cancel,
+    ),
+    Command(
+        "retry",
+        "job",
+        "job ID",
+        "jobs",
+        "run a finished job again as a new job",
+        C.args_retry_job,
+        cmd_retry,
+        render.text_retry,
+    ),
+    Command(
+        "resolve",
+        "job",
+        "job ID",
+        "jobs",
+        "resolve a job in the unknown state",
+        C.args_resolve_job,
+        cmd_resolve,
+        render.text_resolve,
+    ),
+    Command(
+        "create",
+        "package",
+        "package TASK_ID",
+        "packages",
+        "create a task package from the template",
+        C.args_create_package,
+        cmd_init,
+        render.text_init,
+    ),
+    Command(
+        "build",
+        "package",
+        "package [SRC...]",
+        "packages",
         "build a task package from files and options; print its path",
+        C.args_build_package,
         cmd_pack,
         render.text_pack,
     ),
     Command(
         "validate",
-        "tasks",
-        "check a task package directory or tar.gz",
+        "package",
+        "package PATH",
+        "packages",
+        "check a task package directory or archive",
+        C.args_validate_package,
         cmd_validate,
         render.text_validate,
     ),
-    Command("submit", "tasks", "submit a task package to a server", cmd_submit, render.text_submit),
-    Command("jobs", "tasks", "list the jobs on every server", cmd_jobs, render.text_jobs),
     Command(
-        "status", "tasks", "show one job, or wait for it to end", cmd_status, render.text_status
+        "create",
+        "host",
+        "host NAME",
+        "hosts",
+        "set up a server (or bring it up to date) and add it to the machine list",
+        H.args_create,
+        cmd_create_host,
+        H.text_create,
     ),
-    Command("logs", "tasks", "print a job's stdout, stderr or shim log", cmd_logs, None),
-    Command("fetch", "tasks", "download a job's results", cmd_fetch, render.text_fetch),
-    Command("cancel", "tasks", "cancel a job", cmd_cancel, render.text_cancel),
     Command(
-        "retry", "tasks", "run a finished job again as a new job", cmd_retry, render.text_retry
+        "get",
+        "host",
+        "hosts [NAME]",
+        "hosts",
+        "list the configured servers",
+        H.args_get,
+        cmd_get_host,
+        H.text_list,
     ),
     Command(
-        "resolve", "tasks", "resolve a job in the unknown state", cmd_resolve, render.text_resolve
+        "update",
+        "host",
+        "host NAME",
+        "hosts",
+        "update a server's taskmgr-remote to this task's code version",
+        H.args_update,
+        cmd_update_host,
+        H.text_update,
     ),
-    Command("host", "hosts", "manage the machine list", cmd_host, render.text_host),
+    Command(
+        "delete",
+        "host",
+        "host NAME",
+        "hosts",
+        "remove a server from the machine list",
+        H.args_delete,
+        cmd_delete_host,
+        H.text_delete,
+    ),
+    Command(
+        "enable",
+        "host",
+        "host NAME",
+        "hosts",
+        "use a server again for submits and queries",
+        H.args_enable,
+        cmd_enable_host,
+        H.text_enabled,
+    ),
+    Command(
+        "disable",
+        "host",
+        "host NAME",
+        "hosts",
+        "leave a server out of submits and queries for now",
+        H.args_disable,
+        cmd_disable_host,
+        H.text_enabled,
+    ),
+    Command(
+        "ping",
+        "host",
+        "host [NAME]",
+        "hosts",
+        "check that servers answer (default: every enabled server)",
+        H.args_ping,
+        cmd_ping_host,
+        H.text_ping,
+    ),
     Command(
         "whoami",
+        None,
+        "",
         "others",
         "the user and hostname each server runs as",
+        C.args_all_hosts,
         cmd_whoami,
         render.text_whoami,
     ),
     Command(
         "update",
+        None,
+        "",
         "others",
         "update this local CLI (git pull --ff-only)",
+        C.args_none,
         cmd_update,
         render.text_update,
     ),
     Command(
         "version",
+        None,
+        "",
         "others",
         "local version and the code version on each server",
+        C.args_all_hosts,
         cmd_version,
         render.text_version,
     ),
 ]
-BY_NAME = {c.name: c for c in COMMANDS}
+BY_KEY = {(c.verb, c.resource): c for c in COMMANDS}
+
+
+def json_requested(argv: Sequence[str]) -> bool:
+    """Whether argv asks for -o json; read before parsing, so that a usage error is a JSON
+    object too (no option abbreviations: only these spellings)."""
+    for i, a in enumerate(argv):
+        if a in ("-o", "--output") and argv[i + 1 : i + 2] == ["json"]:
+            return True
+        if a in ("-ojson", "--output=json"):
+            return True
+    return False
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # Before parsing, so help and usage errors follow --plain too (no option abbreviations:
-    # the exact spelling is the only one).
+    # Before parsing, so help and usage errors follow --plain and -o json too.
     _ = set_color("--plain" in argv)
-    parser = build_parser(COMMANDS)
+    as_json = json_requested(argv)
+    parser = build_parser(COMMANDS, VERBS)
     try:
         args = parser.parse_args(argv, namespace=Args())
     except SystemExit as e:  # argparse errors are parameter errors: exit 2
         if e.code == 0:
             return 0
-        if "--detail" in argv:
+        if as_json:
             err = {"error": {"code": "bad_args", "message": "invalid arguments (see stderr)"}}
             _ = sys.stdout.write(json_text(err, indent=None) + "\n")
         return 2
+
     _ = set_color(args.plain)
-    cmd = BY_NAME[args.cmd]
-    detail = args.detail and cmd.text is not None
+    cmd = BY_KEY[(args.verb, args.resource)]
+    as_json = args.output == "json"
 
     def fail(err: Mapping[str, object], code: int) -> int:
-        """An error: JSON on stdout with --detail (and a line on stderr), else text on stderr."""
-        if detail:
+        """An error: with -o json a JSON object on stdout (and a line on stderr), else text
+        on stderr."""
+        if as_json:
             _ = sys.stdout.write(json_text({"error": err}, indent=None) + "\n")
         _ = sys.stderr.write(error_text(err, color_on()))
         return code
@@ -886,7 +1120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return fail(as_dict(e.to_json()["error"]), e.exit_code)
     except KeyboardInterrupt:
         note("interrupted", YELLOW, "remote jobs are not affected")
-        if detail:
+        if as_json:
             err = {"error": {"code": "interrupted", "message": "interrupted locally"}}
             _ = sys.stdout.write(json_text(err, indent=None) + "\n")
         return 2
@@ -895,13 +1129,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         say(traceback.format_exc().rstrip(), GRAY)
         return fail({"code": "internal_error", "message": "%s: %s" % (type(e).__name__, e)}, 2)
-    if out is None:
+
+    if out is None:  # logs: the command printed its output
         return code
-    if detail or cmd.text is None:
+    if as_json or cmd.text is None:
         _ = sys.stdout.write(json_text(out) + "\n")
         return code
     _ = sys.stdout.write(cmd.text(args, out, color_on()))
-    # An error that comes with a result (jobs: every server failed; status --wait: timeout).
+    # An error that comes with a result (get jobs: every server failed; wait: timeout).
     err = as_dict(out.get("error"))
     if code and "code" in err:
         _ = sys.stderr.write(error_text(err, color_on()))

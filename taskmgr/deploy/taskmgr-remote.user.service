@@ -1,6 +1,6 @@
 # systemd *user* unit for the taskmgr scheduler daemon (no root needed).
 #
-# `task host add` writes this unit for you. By hand:
+# `task create host` writes this unit for you. By hand:
 #   python3 -m taskmgr.pyz -o dist                                   # on your machine
 #   ssh SERVER mkdir -p .taskmgr-remote/versions
 #   scp dist/taskmgr-remote.pyz SERVER:.taskmgr-remote/versions/<version>.pyz
@@ -11,7 +11,7 @@
 #   systemctl --user enable --now taskmgr-remote
 #   loginctl enable-linger "$USER"   # keep the user manager (and tasks) alive without a login
 #
-# ExecStart names python3 by its absolute path, like the unit `task host add` writes: use
+# ExecStart names python3 by its absolute path, like the unit `task create host` writes: use
 # the output of `command -v python3` in an ssh session (Python 3.10 or newer), so the
 # service runs the Python you checked, whatever PATH the user manager has.
 #

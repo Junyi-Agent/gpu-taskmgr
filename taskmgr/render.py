@@ -1,6 +1,6 @@
 """Text renderers of the `task` commands: (args, JSON result, color) -> text for stdout.
 
-The default output; `--detail` prints the JSON object instead. Renderers only build text:
+The default output (`-o text`); `-o json` prints the JSON object instead. Renderers only build text:
 warnings that go with a result (skipped or unreachable servers) are printed by the
 command layer (taskmgr.py), in both modes.
 """
@@ -9,7 +9,6 @@ import shlex
 from collections.abc import Mapping
 from typing import cast
 
-from . import hostcmds
 from .cliparse import Args
 from .common import PHASE_GPU, PHASE_PRECOMPILE
 from .records import JsonDict
@@ -53,7 +52,7 @@ def display_state(job: JsonDict) -> str:
 
 
 def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
-    """`task jobs` table: one row per job, in the given order."""
+    """`task get jobs` table: one row per job, in the given order."""
     table = [
         (
             _str(j.get("jobid"), "-"),
@@ -69,15 +68,15 @@ def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
 
 def text_init(_args: Args, out: Mapping[str, object], color: bool) -> str:
     return message("created", GREEN, "%s in %s" % (out["task_id"], out["path"]), color) + hint(
-        "fill every <REQUIRED...> marker, then run `task validate %s`"
+        "fill every <REQUIRED...> marker, then run `task validate package %s`"
         % shlex.quote(str(out["path"])),
         color,
     )
 
 
 def text_pack(_args: Args, out: Mapping[str, object], _color: bool) -> str:
-    """Only the path on stdout, so that `task submit "$(task pack ...)"` works; the errors
-    of an invalid package went to stderr."""
+    """Only the path on stdout, so that `task create job "$(task build package ...)"` works;
+    the errors of an invalid package went to stderr."""
     return "%s\n" % out.get("path") if out.get("valid") else ""
 
 
@@ -114,7 +113,10 @@ def text_submit(_args: Args, out: Mapping[str, object], color: bool) -> str:
     return text
 
 
-def text_jobs(_args: Args, out: Mapping[str, object], color: bool) -> str:
+def text_get_job(args: Args, out: Mapping[str, object], color: bool) -> str:
+    """`task get job ID` (one job) or `task get jobs` (the table)."""
+    if args.jobid:
+        return text_status(args, out, color)
     if out.get("error"):
         return ""
     return render_jobs_table(cast(list[JsonDict], rows(out, "jobs")), color)
@@ -283,7 +285,7 @@ def text_whoami(_args: Args, out: Mapping[str, object], color: bool) -> str:
     text = render_table(("HOST", "USER", "HOSTNAME"), table, color, {}) if table else ""
     if any("user" not in h for h in hosts):
         text += hint(
-            "- means the server runs older code; `task host update NAME` updates it", color
+            "- means the server runs older code; `task update host NAME` updates it", color
         )
     return text
 
@@ -319,7 +321,7 @@ def text_version(_args: Args, out: Mapping[str, object], color: bool) -> str:
             {2: {"up to date": GREEN, "differs": YELLOW}},
         )
         if any(not h.get("up_to_date") for h in hosts):
-            text += hint("`task host update NAME` installs the local version on a server", color)
+            text += hint("`task update host NAME` installs the local version on a server", color)
     return text
 
 
@@ -328,8 +330,4 @@ def text_update(_args: Args, out: Mapping[str, object], color: bool) -> str:
         return message("up to date", GREEN, "%s at %s" % (out["path"], out["after"]), color)
     return message(
         "updated", GREEN, "%s from %s to %s" % (out["path"], out["before"], out["after"]), color
-    ) + hint("servers keep their code until `task host update NAME` (see `task version`)", color)
-
-
-def text_host(args: Args, out: Mapping[str, object], color: bool) -> str:
-    return hostcmds.render(args, out, color)
+    ) + hint("servers keep their code until `task update host NAME` (see `task version`)", color)

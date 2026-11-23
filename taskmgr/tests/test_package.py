@@ -64,8 +64,8 @@ class PackageTest(Env):
         _ = package.safe_extract(a, ext)
         self.assertEqual(package.content_hash(ext), h_dir)
         # The CLI reports the same hash for the directory and an archive of it.
-        rc1, v1, _ = self.task("validate", pkg)
-        rc2, v2, _ = self.task("validate", a)
+        rc1, v1, _ = self.task("validate", "package", pkg)
+        rc2, v2, _ = self.task("validate", "package", a)
         self.assertEqual((rc1, rc2), (0, 0))
         self.assertEqual(self.get(v1, "content_hash"), self.get(v2, "content_hash"))
 
@@ -95,21 +95,21 @@ class PackageTest(Env):
 
     def test_init_and_validate_exit_codes(self) -> None:
         target = os.path.join(self.tmp, "AA-01")
-        out = self.ok("init", "AA-01", "--output", target)
+        out = self.ok("create", "package", "AA-01", "--dest", target)
         self.assertEqual(self.get(out, "path"), target)
         for f in ("task.json", "TASK.md", "progress.json", "taskmgr_task.py", "run.py"):
             self.assertTrue(os.path.isfile(os.path.join(target, f)), f)
-        rc, out, _ = self.task("init", "AA-01", "--output", target)
+        rc, out, _ = self.task("create", "package", "AA-01", "--dest", target)
         self.assertEqual(rc, 2)
         self.assertIn("error", self.obj(out))
         # Fresh template still has placeholders: validation fails with exit 1.
-        rc, out, _ = self.task("validate", target)
+        rc, out, _ = self.task("validate", "package", target)
         self.assertEqual(rc, 1)
         self.assertFalse(self.get(out, "valid"))
         self.assertTrue(any(e["code"] == "placeholder" for e in self.objs(out, "errors")))
-        rc, out, _ = self.task("validate", os.path.join(self.tmp, "nope"))
+        rc, out, _ = self.task("validate", "package", os.path.join(self.tmp, "nope"))
         self.assertEqual(rc, 2)
-        rc, out, _ = self.task("init", "bad-id")
+        rc, out, _ = self.task("create", "package", "bad-id")
         self.assertEqual(rc, 2)
         # Filling in the template makes it valid.
         with open(os.path.join(target, "task.json")) as f:
@@ -126,7 +126,7 @@ class PackageTest(Env):
 
         with open(os.path.join(target, "TASK.md"), "w") as f:
             _ = f.write(re.sub(r"<REQUIRED[^>]*>", "filled", md))
-        rc, out, _ = self.task("validate", target)
+        rc, out, _ = self.task("validate", "package", target)
         self.assertEqual(
             (rc, out),
             (
@@ -144,7 +144,7 @@ class PackageTest(Env):
     def test_examples_are_valid(self) -> None:
         ex = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples")
         for name in os.listdir(ex):
-            rc, out, err = self.task("validate", os.path.join(ex, name))
+            rc, out, err = self.task("validate", "package", os.path.join(ex, name))
             self.assertEqual(rc, 0, (name, out, err))
 
     def test_invalid_packages_rejected(self) -> None:
@@ -164,47 +164,47 @@ class PackageTest(Env):
         ]
         for kw, code in cases:
             pkg = self.make_pkg(**kw)
-            rc, out, _ = self.task("validate", pkg)
+            rc, out, _ = self.task("validate", "package", pkg)
             self.assertEqual(rc, 1, kw)
             self.assertIn(code, [e["code"] for e in self.objs(out, "errors")], (kw, out))
         pkg = self.make_pkg()
         os.unlink(os.path.join(pkg, "TASK.md"))
-        rc, out, _ = self.task("validate", pkg)
+        rc, out, _ = self.task("validate", "package", pkg)
         self.assertEqual(rc, 1)
         self.assertIn("missing_file", [e["code"] for e in self.objs(out, "errors")])
         pkg = self.make_pkg()
         with open(os.path.join(pkg, "progress.json"), "w") as f:
             _ = f.write('{"schema_version": 1, "stage": "x"}')
-        self.assertEqual(self.task("validate", pkg)[0], 1)
+        self.assertEqual(self.task("validate", "package", pkg)[0], 1)
         pkg = self.make_pkg()
         with open(os.path.join(pkg, "TASK.md"), "a") as f:
             _ = f.write("\n<REQUIRED: fill me>\n")
-        self.assertEqual(self.task("validate", pkg)[0], 1)
+        self.assertEqual(self.task("validate", "package", pkg)[0], 1)
 
     def test_symlinks_and_special_files(self) -> None:
         pkg = self.make_pkg()
         os.symlink("/etc/passwd", os.path.join(pkg, "abs"))
-        rc, out, _ = self.task("validate", pkg)
+        rc, out, _ = self.task("validate", "package", pkg)
         self.assertEqual(rc, 1)
         self.assertIn("symlink", [e["code"] for e in self.objs(out, "errors")])
         pkg = self.make_pkg()
         os.makedirs(os.path.join(pkg, "d"))
         os.symlink("../../x", os.path.join(pkg, "d", "up"))
-        self.assertEqual(self.task("validate", pkg)[0], 1)
+        self.assertEqual(self.task("validate", "package", pkg)[0], 1)
         pkg = self.make_pkg()
         os.mkfifo(os.path.join(pkg, "fifo"))
-        rc, out, _ = self.task("validate", pkg)
+        rc, out, _ = self.task("validate", "package", pkg)
         self.assertEqual(rc, 1)
         self.assertIn("special_file", [e["code"] for e in self.objs(out, "errors")])
         pkg = self.make_pkg(files={"d/f": "x"})
         os.symlink("d/f", os.path.join(pkg, "ok"))  # internal relative link is fine
-        self.assertEqual(self.task("validate", pkg)[0], 0)
+        self.assertEqual(self.task("validate", "package", pkg)[0], 0)
 
     def test_command_name_entry_passes_validation(self) -> None:
         pkg = self.make_pkg(argv=["bash", "-c", "exit 0"])
-        self.assertEqual(self.task("validate", pkg)[0], 0)
+        self.assertEqual(self.task("validate", "package", pkg)[0], 0)
         pkg = self.make_pkg(argv=["definitely-not-a-command-xyz"])
-        self.assertEqual(self.task("validate", pkg)[0], 0)  # checked remotely
+        self.assertEqual(self.task("validate", "package", pkg)[0], 0)  # checked remotely
 
     def _tar_with(self, extra_entries: list[TarEntry]) -> str:
         good = self.make_pkg()
@@ -227,10 +227,10 @@ class PackageTest(Env):
             [({"name": "fifo", "type": tarfile.FIFOTYPE}, None)],
         ]
         self.assertTrue(os.path.exists(self._tar_with([])))
-        self.assertEqual(self.task("validate", self._tar_with([]))[0], 0)
+        self.assertEqual(self.task("validate", "package", self._tar_with([]))[0], 0)
         for extra in bad:
             path = self._tar_with(extra)
-            rc, out, _ = self.task("validate", path)
+            rc, out, _ = self.task("validate", "package", path)
             self.assertEqual(rc, 1, (extra, out))
             self.assertFalse(self.get(out, "valid"))
             # The remote side refuses it independently of the local check.
@@ -244,20 +244,20 @@ class PackageTest(Env):
     def test_remote_rejects_oversized_package(self) -> None:
         self.set_config(max_package_bytes=1000)
         pkg = self.make_pkg(files={"big.bin": "x" * 5000})
-        rc, out, _ = self.task("submit", "--host", "s1", pkg)
+        rc, out, _ = self.task("create", "job", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "package_too_large")
 
     def test_remote_rejects_unknown_gpu(self) -> None:
         pkg = self.make_pkg(gpus=[7])
-        rc, out, _ = self.task("submit", "--host", "s1", pkg)
+        rc, out, _ = self.task("create", "job", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "invalid_gpus")
         pkg = self.make_pkg(gpus=["GPU-doesnotexist"])
-        self.assertEqual(self.task("submit", "--host", "s1", pkg)[0], 2)
+        self.assertEqual(self.task("create", "job", "--host", "s1", pkg)[0], 2)
         # Index and UUID naming the same device are duplicates.
         pkg = self.make_pkg(gpus=[0, "GPU-00000000-0000-0000-0000-000000000000"])
-        rc, out, _ = self.task("submit", "--host", "s1", pkg)
+        rc, out, _ = self.task("create", "job", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
         self.assertIn("duplicate", self.text(out, "error", "message"))
 
@@ -266,7 +266,7 @@ class PackageTest(Env):
         path = os.path.join(self.tmp, "wrapped.tar.gz")
         with tarfile.open(path, "w:gz") as tar:
             tar.add(pkg, arcname="AA-01")
-        out = self.ok("submit", "--host", "s1", path)
+        out = self.ok("create", "job", "--host", "s1", path)
         self.assertEqual(self.get(out, "task_id"), "AA-01")
         self.assertEqual(self.get(out, "content_hash"), package.content_hash(pkg))
 
@@ -274,7 +274,7 @@ class PackageTest(Env):
         pkg = self.make_pkg()
         os.symlink(".", os.path.join(pkg, "x"))
         os.symlink("x/..", os.path.join(pkg, "y"))  # lexically ".", physically the parent
-        rc, out, _ = self.task("validate", pkg)
+        rc, out, _ = self.task("validate", "package", pkg)
         self.assertEqual(rc, 1)
         self.assertEqual(
             [e["path"] for e in self.objs(out, "errors") if e["code"] == "symlink"], ["y"]
@@ -285,7 +285,7 @@ class PackageTest(Env):
                 ({"name": "y", "type": tarfile.SYMTYPE, "linkname": "x/.."}, None),
             ]
         )
-        self.assertEqual(self.task("validate", path)[0], 1)
+        self.assertEqual(self.task("validate", "package", path)[0], 1)
         with open(path, "rb") as f:
             rc, out, _ = self.remote("receive", stdin=f)
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "unsafe_package"))
@@ -294,7 +294,7 @@ class PackageTest(Env):
         path = self._tar_with(
             [({"name": "../a", "mode": 0o644}, b"x"), ({"name": "/b", "mode": 0o644}, b"x")]
         )
-        rc, out, _ = self.task("validate", path)
+        rc, out, _ = self.task("validate", "package", path)
         self.assertEqual(rc, 1)
         self.assertEqual(
             len([e for e in self.objs(out, "errors") if e["code"] == "unsafe_package"]), 2
@@ -302,9 +302,9 @@ class PackageTest(Env):
         junk = os.path.join(self.tmp, "junk.tar.gz")
         with open(junk, "w") as f:
             _ = f.write("not an archive")
-        rc, out, _ = self.task("validate", junk)
+        rc, out, _ = self.task("validate", "package", junk)
         self.assertEqual((rc, self.get(out, "errors", 0, "code")), (1, "bad_archive"))
-        rc, out, _ = self.task("validate", "--", "\n")
+        rc, out, _ = self.task("validate", "package", "--", "\n")
         self.assertEqual(rc, 2)
 
     def test_extract_never_writes_through_links(self) -> None:
@@ -392,20 +392,20 @@ class PackageTest(Env):
         with tarfile.open(archive) as t:
             names = {m.name for m in t.getmembers() if m.isfile()}
         self.assertEqual(names, set(kept) | {"task.json", "TASK.md", "progress.json"})
-        self.assertEqual(self.task("validate", pkg)[0], 0)
-        self.assertEqual(self.task("validate", archive)[0], 0)
+        self.assertEqual(self.task("validate", "package", pkg)[0], 0)
+        self.assertEqual(self.task("validate", "package", archive)[0], 0)
 
     def test_validate_checks_size_and_entry_exec_bit(self) -> None:
         pkg = self.make_pkg(argv=["./bin/run.sh"], files={"bin/run.sh": "#!/bin/sh\n"})
-        rc, out, _ = self.task("validate", pkg)
+        rc, out, _ = self.task("validate", "package", pkg)
         self.assertEqual(rc, 1)
         self.assertIn("not executable", self.text(out, "errors", 0, "message"))
         os.chmod(os.path.join(pkg, "bin", "run.sh"), 0o755)
-        self.assertEqual(self.task("validate", pkg)[0], 0)
+        self.assertEqual(self.task("validate", "package", pkg)[0], 0)
         # An entry under an excluded path would not be packed.
         pkg = self.make_pkg(argv=["./.git/run.sh"], files={".git/run.sh": "#!/bin/sh\n"})
         os.chmod(os.path.join(pkg, ".git", "run.sh"), 0o755)
-        rc, out, _ = self.task("validate", pkg)
+        rc, out, _ = self.task("validate", "package", pkg)
         self.assertIn("not a file in the package", self.text(out, "errors", 0, "message"))
         pkg = self.make_pkg(files={"big.bin": "x" * 5000, "__pycache__/c.pyc": "y" * 5000})
         self.assertEqual(package.validate_dir(pkg, max_bytes=None)[0], [])
@@ -445,12 +445,12 @@ class ExcludedEntriesAndSizeTest(Env):
         stale = json.dumps({"schema_version": 1, "outputs": {"best": "stale"}})
         extra = {"result.json": stale, "result.json.lock": "", ".git/HEAD": "ref"}
         archive = self._archive(pkg, extra)
-        rc, out, err = self.task("validate", archive)
+        rc, out, err = self.task("validate", "package", archive)
         self.assertEqual(rc, 0, (out, err))
         warned = {self.text(w, "path") for w in self.objs(out, "warnings")}
         self.assertEqual(warned, {"result.json", "result.json.lock", ".git"})
         self.assertIn("result.json", err)  # also printed on stderr
-        sub = self.ok("submit", "--host", "s1", archive)
+        sub = self.ok("create", "job", "--host", "s1", archive)
         self.assertEqual(self.get(sub, "content_hash"), package.content_hash(pkg))
         jobid = self.text(sub, "jobid")
         pkg_copy = os.path.join(self.job_dir(jobid), "package")
@@ -476,7 +476,7 @@ class ExcludedEntriesAndSizeTest(Env):
             script="cat result.jsonl result.json.bak result.json.d/x > out.txt",
             files={k: k for k in kept + dropped},
         )
-        rc, out, err = self.task("validate", pkg)
+        rc, out, err = self.task("validate", "package", pkg)
         self.assertEqual(rc, 0, (out, err))
         warned = {self.text(w, "path") for w in self.objs(out, "warnings")}
         self.assertEqual(warned, set(dropped))
@@ -505,7 +505,7 @@ class ExcludedEntriesAndSizeTest(Env):
             contextlib.redirect_stdout(out),
             contextlib.redirect_stderr(err),
         ):
-            rc = taskmgr.main([argv[0], "--plain", "--detail", *argv[1:]])
+            rc = taskmgr.main([*argv[:2], "--plain", "-o", "json", *argv[2:]])
         text = out.getvalue()
         return rc, cast(JsonValue, json.loads(text)) if text.strip() else None, err.getvalue()
 
@@ -517,9 +517,9 @@ class ExcludedEntriesAndSizeTest(Env):
         # refuse a submission; the server's max_package_bytes decides.
         with mock.patch.object(package, "DEFAULT_MAX_PACKAGE_BYTES", 1000):
             self.set_config(max_package_bytes=None)
-            rc, out, err = self._main("submit", "--host", "s1", pkg)
+            rc, out, err = self._main("create", "job", "--host", "s1", pkg)
             self.assertEqual(rc, 0, (out, err))
-            rc, out, err = self._main("validate", pkg)
+            rc, out, err = self._main("validate", "package", pkg)
             self.assertEqual(rc, 0, (out, err))
             self.assertEqual(
                 [self.text(w, "code") for w in self.objs(out, "warnings")], ["package_too_large"]
@@ -528,7 +528,7 @@ class ExcludedEntriesAndSizeTest(Env):
                 "exceeds max_package_bytes (1000)", self.text(out, "warnings", 0, "message")
             )
         self.set_config(max_package_bytes=1000)
-        rc, out, _ = self.task("submit", "--host", "s1", pkg)
+        rc, out, _ = self.task("create", "job", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "package_too_large")
         self.assertIn("exceeds max_package_bytes (1000)", self.text(out, "error", "message"))

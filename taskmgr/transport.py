@@ -350,7 +350,7 @@ def require_features(reply: JsonDict, needed: Sequence[str], host: str, what: st
     runs = "code %s" % code[:12] if isinstance(code, str) and code else "older code"
     raise TaskmgrError(
         "unsupported_feature",
-        "server %s runs %s without %s support, needed by %s; run `task host update %s` to update it"
+        "server %s runs %s without %s support, needed by %s; run `task update host %s` to update it"
         % (host, runs, ", ".join(missing), what, host),
         2,
         host,

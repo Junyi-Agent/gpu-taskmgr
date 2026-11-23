@@ -307,8 +307,8 @@ class Env(unittest.TestCase):
         text: bool = False,
         color: bool = False,
     ) -> tuple[int, JsonValue, str]:
-        """Run `task`. Without text=True, --detail is added so stdout is the JSON object
-        (except for `logs`, which has no --detail); without color=True, --plain."""
+        """Run `task`. Without text=True, -o json is added so stdout is the JSON object
+        (`logs` prints the raw log either way); without color=True, --plain."""
         e = dict(self.env)
         e.update(env or {})
         p = subprocess.run(
@@ -323,9 +323,9 @@ class Env(unittest.TestCase):
 
     def _task_argv(self, args: tuple[object, ...], text: bool, color: bool) -> list[str]:
         argv = [str(a) for a in args]
-        at = min(2 if argv[:1] == ["host"] else 1, len(argv))  # after the (sub)command name
-        if not text and argv and argv[0] != "logs" and "--detail" not in argv:
-            argv.insert(at, "--detail")
+        at = command_words(argv)  # after the verb and the resource
+        if not text and argv and argv[0] != "logs" and "-o" not in argv:
+            argv[at:at] = ["-o", "json"]
         if not color:
             argv.insert(at, "--plain")
         return [sys.executable, TASK] + argv
@@ -418,7 +418,7 @@ class Env(unittest.TestCase):
 
     def submit(self, pkg: str, host: str | None = "s1", key: str | None = None) -> str:
         args: list[str] = (
-            ["submit", pkg]
+            ["create", "job", pkg]
             + (["--host", host] if host else [])
             + (["--submission-key", key] if key else [])
         )
@@ -635,6 +635,20 @@ class Env(unittest.TestCase):
         if not isinstance(v, int):
             self.fail("expected an integer at %r, got %r" % (path, v))
         return v
+
+
+def command_words(argv: list[str]) -> int:
+    """How many words of a `task` command line name the command: the verb, and the resource
+    unless the verb stands alone (`version`, `whoami`, `update` without `host`)."""
+    words = 2
+    if argv[:1] in (["version"], ["whoami"]):
+        words = 1
+    if argv[:1] == ["update"] and argv[1:2] not in (["host"], ["hosts"]):
+        words = 1
+    n = 0
+    while n < min(words, len(argv)) and not argv[n].startswith("-"):
+        n += 1
+    return n
 
 
 def pid_alive(pid: int) -> bool:

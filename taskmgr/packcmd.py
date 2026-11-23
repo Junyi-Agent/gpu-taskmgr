@@ -1,5 +1,6 @@
-"""`task pack`: build a task package from project files and options, validate it, and print
-its path (a directory or a .tar.gz), so that `task submit "$(task pack ...)"` composes.
+"""`task build package`: build a task package from project files and options, validate it,
+and print its path (a directory, .tar.gz or .tgz), so that
+`task create job "$(task build package ...)"` composes.
 
 Sources are copied into the package: a directory's contents go to the package root, a file
 to the root under its name, and SRC=DEST puts a file or directory at DEST inside the
@@ -33,12 +34,12 @@ PACKED_AT = "1970-01-01T00:00:00Z"  # updated_at of a generated progress.json
 
 
 class PackArgs(Protocol):
-    """The `task pack` options (cliparse.Args has them)."""
+    """The `task build package` options (cliparse.Args has them)."""
 
     sources: list[str]
 
     @property
-    def task_id(self) -> str | None: ...  # read-only: `task init` declares it as str
+    def task_id(self) -> str | None: ...  # read-only: `create package` declares it as str
 
     entry: str | None
     precompile: str | None
@@ -52,7 +53,7 @@ class PackArgs(Protocol):
     task_md: str | None
     with_cute_helpers: bool
     exclude: list[str] | None
-    output: str | None
+    dest: str | None
     force: bool
 
 
@@ -225,7 +226,7 @@ def task_md_stub(task: JsonDict, sources: Sequence[str]) -> str:
     lines = [
         "# %s" % task.get("task_id"),
         "",
-        "Packed by `task pack` from: %s." % (", ".join(sources) or "options only"),
+        "Packed by `task build package` from: %s." % (", ".join(sources) or "options only"),
         "",
         "Entry: `%s`" % shown,
         "",
@@ -265,7 +266,7 @@ def add_helpers(root: str, cute: bool) -> list[str]:
 
 
 def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
-    out_path = os.path.abspath(a.output) if a.output else None
+    out_path = os.path.abspath(a.dest) if a.dest else None
     with tempfile.TemporaryDirectory(prefix="taskmgr-pack-") as tmp:
         root = os.path.join(tmp, "pkg")
         os.makedirs(root)
@@ -287,7 +288,7 @@ def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
             )
         warnings = add_helpers(root, a.with_cute_helpers)
         errors, _ = package.validate_dir(root)
-        if errors:  # on stderr: stdout stays empty, so "$(task pack ...)" is no path
+        if errors:  # on stderr: stdout stays empty, so "$(task build package ...)" is no path
             for e in errors:
                 warn(
                     "%s%s (%s)" % (e["path"] + ": " if "path" in e else "", e["message"], e["code"])

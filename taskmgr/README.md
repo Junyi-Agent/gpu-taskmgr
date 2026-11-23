@@ -23,7 +23,7 @@ single-file zipapps).
 # build (skip if dist/task.pyz and dist/taskmgr-remote.pyz exist)
 python3 -m taskmgr.pyz -o dist
 
-# install (a symlink, so that task host add finds taskmgr-remote.pyz in dist/)
+# install (a symlink, so that task create host finds taskmgr-remote.pyz in dist/)
 ln -s "$PWD/dist/task.pyz" ~/.local/bin/task
 task --help
 ```
@@ -31,7 +31,7 @@ task --help
 **2. Your machine: set up the server**
 
 ```sh
-task host add gpu1 --ssh tuner@10.0.0.12
+task create host gpu1 --ssh tuner@10.0.0.12
 # main steps, in order (all ten: docs/install.md); every change asks [y/N] first (--yes answers
 # yes, but never deletes: old code outside remote_root needs --prune-old-code; --plan
 # prints what would change and changes nothing):
@@ -46,20 +46,23 @@ task host add gpu1 --ssh tuner@10.0.0.12
 ```
 
 To update the server (after `git pull` or a code change): run `python3 -m taskmgr.pyz -o dist`
-again, then `task host update gpu1`. `task host add` and `task host update` are idempotent: on an up-to-date server it
-changes nothing and asks nothing. Every step, the data check and the manual fallback:
-[[docs/install]] ("Remote server: `task host add`").
+again, then `task update host gpu1`. `task create host` and `task update host` are idempotent:
+on an up-to-date server they change nothing and ask nothing. Every step, the data check and
+the manual fallback: [[docs/install]] (section "Remote server").
 
 **3. Use it**
 
 ```sh
-task host list                       # check the machine list
-task host ping                       # check that every server answers
-task init AA-01                      # template; fill every <REQUIRED...> marker
-task validate AA-01/
-task submit AA-01/                   # prints JOBID TASK_ID HOST STATE
-task status <jobid> --wait
-task fetch <jobid> --output ./results/
-# or build the package from project files instead of a template (docs/usage.md, task pack):
-task submit "$(task pack src/ --task-id AA-02 --entry 'python3 run.py' --gpus 0)"
+task get hosts                       # check the machine list
+task ping host                       # check that every server answers
+task create package AA-01            # template; fill every <REQUIRED...> marker
+task validate package AA-01/
+task create job AA-01/               # prints JOBID TASK_ID HOST STATE
+task wait job <jobid>
+task fetch job <jobid> --dest ./results/
+# or build the package from project files instead of a template (docs/usage.md):
+task create job "$(task build package src/ --task-id AA-02 --entry 'python3 run.py' --gpus 0)"
 ```
+
+Commands are `task <verb> <resource>`, as in kubectl; `task -h` lists them, every resource
+also has a plural name (`task get jobs`), and `-o json` prints the full JSON object.

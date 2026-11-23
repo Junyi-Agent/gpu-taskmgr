@@ -65,7 +65,7 @@ class PyzTest(Env):
             self.assertEqual(version, self.local_code_version())
 
     def test_exit_codes_pass_through(self) -> None:
-        p = self.run_pyz(self.task_pyz, "init", "bad", "--plain")
+        p = self.run_pyz(self.task_pyz, "create", "package", "bad", "--plain")
         self.assertEqual(p.returncode, 2, p.stderr)
         self.assertIn("bad_task_id", p.stderr)
 
@@ -85,9 +85,9 @@ class PyzTest(Env):
         self.assertIn('"code_dir": "%s"' % os.path.realpath(self.remote_pyz), p.stdout)
 
     def test_local_version_matches_the_checkout(self) -> None:
-        """task.pyz reports the version a checkout has, the version `task.pyz host add`
+        """task.pyz reports the version a checkout has, the version `task.pyz create host`
         requires of the taskmgr-remote.pyz it uploads."""
-        p = self.run_pyz(self.task_pyz, "version", "--detail", "--plain")
+        p = self.run_pyz(self.task_pyz, "version", "-o", "json", "--plain")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn('"code_version": "%s"' % self.local_code_version(), p.stdout)
         self.assertIn('"up_to_date": true', p.stdout)
@@ -96,7 +96,7 @@ class PyzTest(Env):
         self.assertIn("not_a_checkout", p.stderr)
 
     def test_host_add_looks_next_to_task_pyz(self) -> None:
-        """From task.pyz (also through a symlink), `host add` uploads the taskmgr-remote.pyz
+        """From task.pyz (also through a symlink), `create host` uploads the taskmgr-remote.pyz
         in the same directory unless --pyz is given."""
         link = os.path.join(self.tmp, "task")
         os.symlink(self.task_pyz, link)
@@ -116,11 +116,11 @@ class PyzTest(Env):
 
     def test_init_gives_the_same_package_as_the_checkout(self) -> None:
         a, b = os.path.join(self.tmp, "a"), os.path.join(self.tmp, "b")
-        p = self.run_pyz(self.task_pyz, "init", "AB-01", "--output", a, "--plain")
+        p = self.run_pyz(self.task_pyz, "create", "package", "AB-01", "--dest", a, "--plain")
         self.assertEqual(p.returncode, 0, p.stderr)
         e = dict(self.env, PYTHONPATH=REPO)
         q = subprocess.run(
-            [sys.executable, TASK, "init", "AB-01", "--output", b, "--plain"],
+            [sys.executable, TASK, "create", "package", "AB-01", "--dest", b, "--plain"],
             env=e,
             capture_output=True,
         )
@@ -146,7 +146,9 @@ class PyzTest(Env):
         )
         log.close()
         self.daemons.setdefault("s1", []).append(d)
-        p = self.run_pyz(self.task_pyz, "submit", pkg, "--host", "s1", "--detail", "--plain")
+        p = self.run_pyz(
+            self.task_pyz, "create", "job", pkg, "--host", "s1", "-o", "json", "--plain"
+        )
         self.assertEqual(p.returncode, 0, p.stderr)
         jobid = p.stdout.split('"jobid": "')[1].split('"')[0]
         job = self.wait_state(jobid, "succeeded")
@@ -156,7 +158,7 @@ class PyzTest(Env):
 class CodeVersionTest(unittest.TestCase):
     def test_docs_do_not_change_the_code_version(self) -> None:
         """README*, deploy/ and examples/ are outside the code version; code and template/
-        (copied by `task init`) are in it."""
+        (copied by `task create package`) are in it."""
         with tempfile.TemporaryDirectory() as tmp:
             pkg = os.path.join(tmp, "taskmgr")
             _ = copy_package_tree("", pkg, pyz.EXCLUDE)

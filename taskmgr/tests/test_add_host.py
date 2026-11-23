@@ -1,6 +1,6 @@
-"""`task host add|list|remove|ping` (desc-2 D18).
+"""`task create|update host` and `task get|delete|enable|disable|ping host` (desc-2 D18).
 
-`host add` sets up and updates a server, step by step and idempotent. The "server" is a
+`create host` sets up and updates a server, step by step and idempotent. The "server" is a
 local-transport machine entry whose HOME is a directory of the test (test-only
 `"local": {"home": ...}`, created through TASKMGR_TEST_LOCAL_HOME). Fake
 `systemctl` and `loginctl` scripts on PATH stand in for systemd: they keep their state under
@@ -162,7 +162,7 @@ ALL_STEPS = (
 
 class AddHostTest(Env):
     rhome: str = ""
-    dist: str = ""  # taskmgr-remote.pyz built once for the class, uploaded by `host add`
+    dist: str = ""  # taskmgr-remote.pyz built once for the class, uploaded by `create host`
     remote_pyz: str = ""
 
     @classmethod
@@ -209,16 +209,16 @@ class AddHostTest(Env):
         name: str = "h1",
         new: bool = True,
         archive: str | None = None,
-        cmd: str = "add",
+        cmd: str = "create",
     ) -> tuple[int, JsonDict, str]:
-        """Run `task host <cmd> --detail` (add, or update); answers != None makes stdin an
+        """Run `task <cmd> host -o json` (create, or update); answers != None makes stdin an
         "interactive" pipe.
 
         Uploads the class's prebuilt taskmgr-remote.pyz unless `archive` names another file.
         """
         args = (
-            ["host", cmd, name, "--detail", "--plain"]
-            + (["--ssh", "tuner@gpu.example"] if new and cmd == "add" else [])
+            [cmd, "host", name, "-o", "json", "--plain"]
+            + (["--ssh", "tuner@gpu.example"] if new and cmd == "create" else [])
             + ["--pyz", archive or self.remote_pyz]
             + list(extra)
         )
@@ -266,7 +266,7 @@ class AddHostTest(Env):
         return sorted(os.listdir(os.path.join(self.rroot(), hostsetup.CODE_STORE)))
 
     def set_installed_version(self, version: str) -> None:
-        """Install, like `host add` does, a copy of the archive that reports another version."""
+        """Install, like `create host` does, a copy of the archive that reports another version."""
         with zipfile.ZipFile(self.rcode()) as z:
             members = [(i, z.read(i)) for i in z.infolist()]
         name = version[:16] + ".pyz"
@@ -351,7 +351,7 @@ class AddHostTest(Env):
 
     def wait_job(self, jobid: str) -> JsonValue:
         return self.ok(
-            "status", jobid, "--host", "h1", "--wait", "--poll-interval", "0.3", "--timeout", "60"
+            "wait", "job", jobid, "--host", "h1", "--poll-interval", "0.3", "--timeout", "60"
         )
 
     # -- tests --------------------------------------------------------------------
@@ -515,7 +515,9 @@ class AddHostTest(Env):
         self.expect(out, err, old_code="kept")
         self.assertIn("--prune-old-code", self.detail(out, "old_code"))
         self.assertTrue(os.path.isdir(legacy))
-        rc, text, _ = self.task("host", "add", "h1", "--yes", "--pyz", self.remote_pyz, text=True)
+        rc, text, _ = self.task(
+            "create", "host", "h1", "--yes", "--pyz", self.remote_pyz, text=True
+        )
         self.assertEqual(rc, 0)
         assert isinstance(text, str)
         self.assertIn("--prune-old-code", text)
@@ -607,7 +609,9 @@ class AddHostTest(Env):
         self.assertEqual(rc, 0, err)
         self.expect(out, err)
         self.assertEqual(self.strs(out, "planned"), [])
-        rc, text, _ = self.task("host", "add", "h1", "--plan", "--pyz", self.remote_pyz, text=True)
+        rc, text, _ = self.task(
+            "create", "host", "h1", "--plan", "--pyz", self.remote_pyz, text=True
+        )
         self.assertEqual(rc, 0)
         assert isinstance(text, str)
         self.assertIn("plan: nothing to change on host h1", text)
@@ -781,7 +785,7 @@ class AddHostTest(Env):
             rc, out, err = self.add("--yes")
             self.assertEqual(rc, 2, err)
             self.expect(out, err, ssh="failed", **{s: "skipped" for s in ALL_STEPS[1:]})
-            self.assertIn("another `task host add`", self.detail(out, "ssh"))
+            self.assertIn("another `task create host`", self.detail(out, "ssh"))
             self.assertIn("pid 4242", self.detail(out, "ssh"))
             self.assertEqual(sorted(os.listdir(self.rhome)), [".fake-systemd"])
         finally:
@@ -845,7 +849,7 @@ class AddHostTest(Env):
         good = self.run_job('echo \'{"outputs": {}}\' > "$TASKMGR_RESULT_FILE"')
         _ = self.wait_job(good)
         # (only in done/: the running daemon of this test would trip over a queued one,
-        # which is why host add stops the service before moving)
+        # which is why create host stops the service before moving)
         old = self.write_old_job("done", "succeeded", key="old-key")
         pid1 = self.main_pid()
         rc, out, err = self.add("--yes")
@@ -916,7 +920,7 @@ class AddHostTest(Env):
         self.expect(out, err)
         self.assertEqual(self.entry()["remote_root"], root)
         # --remote-root is gone
-        rc, _, _ = self.task("host", "add", "h1", "--remote-root", "/x")
+        rc, _, _ = self.task("create", "host", "h1", "--remote-root", "/x")
         self.assertEqual(rc, 2)
 
     def test_missing_archive_fails_and_changes_nothing(self) -> None:
@@ -933,7 +937,7 @@ class AddHostTest(Env):
         self.assertEqual(self.machines_raw(), before)
 
     def test_archive_of_another_version_is_refused(self) -> None:
-        """`host add` never builds: an archive whose version differs from this task's
+        """`create host` never builds: an archive whose version differs from this task's
         must be rebuilt by the user."""
         stale = os.path.join(self.tmp, "stale.pyz")
         with zipfile.ZipFile(self.remote_pyz) as z:
@@ -966,14 +970,14 @@ class AddHostTest(Env):
         self.assertIn("timed out", self.detail(out, "ssh"))
 
     def test_bad_arguments(self) -> None:
-        rc, obj, _ = self.task("host", "add", "new-host")  # a new host needs --ssh
+        rc, obj, _ = self.task("create", "host", "new-host")  # a new host needs --ssh
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "bad_args")
-        rc, obj, _ = self.task("host", "add", "bad/name", "--ssh", "x@y")
+        rc, obj, _ = self.task("create", "host", "bad/name", "--ssh", "x@y")
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "bad_args")
 
-    # -- host update ------------------------------------------------------------------
+    # -- update host ------------------------------------------------------------------
     def test_update_installs_this_version_and_keeps_the_entry(self) -> None:
         rc, _, err = self.add("--yes")
         self.assertEqual(rc, 0, err)
@@ -983,7 +987,7 @@ class AddHostTest(Env):
         rc, out, err = self.add("--yes", cmd="update")
         self.assertEqual(rc, 0, err)
         self.expect(out, err, code="changed", service="changed")
-        self.assertIn("task host update h1:", err)
+        self.assertIn("task update host h1:", err)
         self.assertIn("restarted", self.detail(out, "service"))
         self.assertEqual(self.installed_version(), current)
         pid2 = self.main_pid()
@@ -998,7 +1002,7 @@ class AddHostTest(Env):
         self.assertIn("already up to date", self.detail(out, "code"))
         self.assertEqual(self.snapshot(), snap)
         self.assertEqual([c for c in self.calls()[ncalls:] if CHANGING.match(c)], [])
-        rc, text, _ = self.task("host", "update", "h1", "--pyz", self.remote_pyz, text=True)
+        rc, text, _ = self.task("update", "host", "h1", "--pyz", self.remote_pyz, text=True)
         self.assertEqual(rc, 0)
         assert isinstance(text, str)
         self.assertIn("host h1 is set up", text)
@@ -1024,7 +1028,7 @@ class AddHostTest(Env):
     def test_update_of_a_disabled_host(self) -> None:
         rc, _, err = self.add("--yes")
         self.assertEqual(rc, 0, err)
-        _ = self.ok("host", "disable", "h1")
+        _ = self.ok("disable", "host", "h1")
         self.set_installed_version("1" * 64)
         rc, out, err = self.add("--yes", cmd="update")
         self.assertEqual(rc, 0, err)
@@ -1033,11 +1037,11 @@ class AddHostTest(Env):
 
     def test_update_needs_a_known_host_and_takes_no_ssh_options(self) -> None:
         before = self.machines_raw()
-        rc, obj, _ = self.task("host", "update", "nope", "--pyz", self.remote_pyz)
+        rc, obj, _ = self.task("update", "host", "nope", "--pyz", self.remote_pyz)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "unknown_host")
-        self.assertIn("task host add nope --ssh", self.text(self.get(obj, "error"), "message"))
-        rc, obj, _ = self.task("host", "update", "h1", "--ssh", "x@y")
+        self.assertIn("task create host nope --ssh", self.text(self.get(obj, "error"), "message"))
+        rc, obj, _ = self.task("update", "host", "h1", "--ssh", "x@y")
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "bad_args")
         self.assertEqual(self.machines_raw(), before)
@@ -1045,7 +1049,7 @@ class AddHostTest(Env):
 
 
 class HostCmdsTest(Env):
-    """`task host list|remove|ping` against plain local-transport servers."""
+    """`task get|delete|enable|disable|ping host` against plain local-transport servers."""
 
     servers: tuple[str, ...] = ("s1", "s2")
 
@@ -1056,13 +1060,13 @@ class HostCmdsTest(Env):
     def test_list(self) -> None:
         self.server("s2")["enabled"] = False
         self.write_machines()
-        obj = self.ok("host", "list")
+        obj = self.ok("get", "hosts")
         rows = self.objs(obj, "servers")
         self.assertEqual([self.text(r, "name") for r in rows], ["s1", "s2"])
         self.assertEqual([r["enabled"] for r in rows], [True, False])
         self.assertEqual(rows[0]["destination"], "local")
         self.assertEqual(rows[0]["remote_root"], self.root("s1"))
-        rc, out, err = self.task("host", "list", text=True)
+        rc, out, err = self.task("get", "hosts", text=True)
         self.assertEqual(rc, 0, err)
         lines = self.text(out).splitlines()
         self.assertEqual(lines[0].split(), ["NAME", "ENABLED", "DESTINATION", "REMOTE_ROOT"])
@@ -1070,12 +1074,12 @@ class HostCmdsTest(Env):
         self.assertEqual(lines[2].split(), ["s2", "no", "local", self.root("s2")])
         self.assertNotIn("\033", self.text(out))  # --plain: no color
         self.assertFalse([ln for ln in lines if ln != ln.rstrip()])
-        rc, out, _ = self.task("host", "list", text=True, color=True)
+        rc, out, _ = self.task("get", "hosts", text=True, color=True)
         self.assertIn("\033[1mNAME", self.text(out))
 
     def test_enable_disable(self) -> None:
         before = self.machines_json()
-        out = self.obj(self.ok("host", "disable", "s2"))
+        out = self.obj(self.ok("disable", "host", "s2"))
         self.assertEqual((out["host"], out["enabled"], out["changed"]), ("s2", False, True))
         after = self.machines_json()
         self.assertEqual(self.objs(after, "servers")[1]["enabled"], False)
@@ -1084,50 +1088,50 @@ class HostCmdsTest(Env):
             [dict(s, enabled=True) for s in self.objs(after, "servers")],
             [dict(s, enabled=True) for s in self.objs(before, "servers")],
         )
-        self.assertEqual(self.get(self.ok("host", "disable", "s2"), "changed"), False)
-        rc, out, _ = self.task("host", "disable", "s2", text=True)
+        self.assertEqual(self.get(self.ok("disable", "host", "s2"), "changed"), False)
+        rc, out, _ = self.task("disable", "host", "s2", text=True)
         self.assertEqual((rc, out), (0, "unchanged: s2 is already disabled\n"))
-        rc, out, _ = self.task("host", "list", text=True)
+        rc, out, _ = self.task("get", "hosts", text=True)
         self.assertEqual(self.text(out).splitlines()[2].split()[:2], ["s2", "no"])
-        rc, out, _ = self.task("host", "enable", "s2", text=True)
+        rc, out, _ = self.task("enable", "host", "s2", text=True)
         self.assertEqual(rc, 0)
         self.assertEqual(self.text(out), "enabled: s2 is used for submits and queries again\n")
         self.assertEqual(self.objs(self.machines_json(), "servers")[1]["enabled"], True)
-        rc, obj, _ = self.task("host", "enable", "nope")
+        rc, obj, _ = self.task("enable", "host", "nope")
         self.assertEqual((rc, self.get(obj, "error", "code")), (2, "unknown_host"))
 
     def test_remove(self) -> None:
         before = self.machines_json()
         s2 = self.objs(before, "servers")[1]
         # without --yes and without a terminal: refused, nothing changed
-        rc, obj, _ = self.task("host", "remove", "s1")
+        rc, obj, _ = self.task("delete", "host", "s1")
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "not_interactive")
         self.assertEqual(self.machines_json(), before)
         # declined at the prompt
         env = {"TASKMGR_TEST_INTERACTIVE": "1"}
-        rc, obj, err = self.task("host", "remove", "s1", env=env)
+        rc, obj, err = self.task("delete", "host", "s1", env=env)
         self.assertEqual(rc, 2, err)
         self.assertFalse(self.get(obj, "removed"))
         self.assertIn("proceed? [y/N]", err)
         self.assertEqual(self.machines_json(), before)
         # unknown name
-        rc, obj, _ = self.task("host", "remove", "nope", "--yes")
+        rc, obj, _ = self.task("delete", "host", "nope", "--yes")
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "unknown_host")
         self.assertEqual(self.machines_json(), before)
         # --yes: only s1 goes; the server's files stay
-        rc, out, err = self.task("host", "remove", "s1", "--yes", text=True)
+        rc, out, err = self.task("delete", "host", "s1", "--yes", text=True)
         self.assertEqual(rc, 0, err)
         self.assertIn("removed: s1", self.text(out))
         self.assertIn("untouched", self.text(out))
         self.assertEqual(self.machines_json(), {"servers": [s2]})
         self.assertTrue(os.path.isfile(os.path.join(self.root("s1"), "config.json")))
-        rc, obj, _ = self.task("host", "remove", "s1", "--yes")
+        rc, obj, _ = self.task("delete", "host", "s1", "--yes")
         self.assertEqual(self.get(obj, "error", "code"), "unknown_host")
 
     def test_ping(self) -> None:
-        obj = self.ok("host", "ping")
+        obj = self.ok("ping", "host")
         rows = self.objs(obj, "hosts")
         self.assertEqual([self.text(r, "host") for r in rows], ["s1", "s2"])
         for r in rows:
@@ -1136,7 +1140,7 @@ class HostCmdsTest(Env):
             self.assertIsInstance(r["ms"], int)
             self.assertTrue(r["user"] and r["hostname"])
         self.assertTrue(self.get(obj, "complete"))
-        rc, out, err = self.task("host", "ping", "s1", text=True)
+        rc, out, err = self.task("ping", "host", "s1", text=True)
         self.assertEqual(rc, 0, err)
         lines = self.text(out).splitlines()
         self.assertEqual(len(lines), 2)
@@ -1145,35 +1149,35 @@ class HostCmdsTest(Env):
         # s2 does not answer: exit 2, s1 is still reported
         self.server("s2")["local"] = {"fail": "ssh: connect to host s2: Connection refused"}
         self.write_machines()
-        rc, obj, _ = self.task("host", "ping")
+        rc, obj, _ = self.task("ping", "host")
         self.assertEqual(rc, 2)
         rows = self.objs(obj, "hosts")
         self.assertEqual([r["reachable"] for r in rows], [True, False])
         self.assertEqual(rows[1]["code"], "connection_error")
         self.assertIn("Connection refused", self.text(rows[1], "error"))
         self.assertFalse(self.get(obj, "complete"))
-        rc, out, _ = self.task("host", "ping", text=True)
+        rc, out, _ = self.task("ping", "host", text=True)
         self.assertEqual(rc, 2)
         self.assertRegex(self.text(out), r"\ns2 +unreachable")
         self.assertIn("s2: ssh: connect to host s2: Connection refused", self.text(out))
-        rc, _, _ = self.task("host", "ping", "s1")
+        rc, _, _ = self.task("ping", "host", "s1")
         self.assertEqual(rc, 0)
-        rc, obj, _ = self.task("host", "ping", "nope")
+        rc, obj, _ = self.task("ping", "host", "nope")
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(obj, "error", "code"), "unknown_host")
         # A disabled server is skipped (so its timeout is not waited for), unless named.
-        _ = self.ok("host", "disable", "s2")
-        obj = self.ok("host", "ping")
+        _ = self.ok("disable", "host", "s2")
+        obj = self.ok("ping", "host")
         self.assertEqual([self.text(r, "host") for r in self.objs(obj, "hosts")], ["s1"])
         self.assertEqual(self.get(obj, "skipped"), ["s2"])
-        rc, out, _ = self.task("host", "ping", text=True)
+        rc, out, _ = self.task("ping", "host", text=True)
         self.assertEqual(rc, 0)
         self.assertIn("skipped: disabled, not pinged: s2", self.text(out))
-        rc, obj, _ = self.task("host", "ping", "s2")
+        rc, obj, _ = self.task("ping", "host", "s2")
         self.assertEqual(rc, 2)
         self.assertEqual([r["reachable"] for r in self.objs(obj, "hosts")], [False])
-        _ = self.ok("host", "disable", "s1")
-        rc, out, _ = self.task("host", "ping", text=True)
+        _ = self.ok("disable", "host", "s1")
+        rc, out, _ = self.task("ping", "host", text=True)
         self.assertEqual(rc, 0)
         self.assertTrue(self.text(out).startswith("skipped: disabled, not pinged: s1, s2"))
 

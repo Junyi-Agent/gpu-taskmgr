@@ -3,7 +3,7 @@
 Invoked by the local CLI as
     ssh <host> taskmgr-remote --root <remote_root> --protocol-version N <subcommand> ...
 Every subcommand except `logs`, `fetch`, `serve` and `shim` prints one JSON object.
-`inspect` is read-only and creates nothing, so `task host add` can run it on any root.
+`inspect` is read-only and creates nothing, so `task create host` can run it on any root.
 """
 
 import argparse
@@ -399,7 +399,8 @@ def cmd_retry(store: Store, args: Args) -> int:
             jd, job = store.load_job(args.jobid)
             if job["state"] == "unknown":
                 raise TaskmgrError(
-                    "resolve_required", "job %s is unknown; run `task resolve` first" % args.jobid
+                    "resolve_required",
+                    "job %s is unknown; run `task resolve job %s` first" % (args.jobid, args.jobid),
                 )
             if job["state"] not in TERMINAL_STATES:
                 raise TaskmgrError(
@@ -547,7 +548,7 @@ def cmd_fetch(store: Store, args: Args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# inspect (read-only; used by `task host add`, desc-2 D18)
+# inspect (read-only; used by `task create host`, desc-2 D18)
 
 # Keys every job.json of the current layout has (protocol 2, desc-2 D16).
 JOB_REQUIRED_KEYS: tuple[str, ...] = tuple(sorted(Job.__required_keys__))
@@ -629,8 +630,8 @@ def inspect_root(root: str) -> dict[str, object]:
 
 
 def version_info() -> dict[str, object]:
-    """`version`: the installed code version (written by `task host add`) and who we run as."""
-    # Written by `task host add` and by the .pyz build; missing in a plain checkout (tests).
+    """`version`: the installed code version (written by `task create host`) and who we run as."""
+    # Written by `task create host` and by the .pyz build; missing in a plain checkout (tests).
     code_version = (read_code_file(".taskmgr-code-version") or "").strip() or None
     return {
         "ok": True,

@@ -112,7 +112,7 @@ class ExecTest(Env):
         self.assertTrue(self.get(runner, "final"))
         self.assertEqual(job["gpus"][0]["uuid"], GPUS[1][1])
         # Plain status of a finished job prints its result.json.
-        st = self.ok("status", j, "--host", "s1")
+        st = self.ok("get", "job", j, "--host", "s1")
         self.assertEqual(self.get(st, "_taskmgr", "status"), "succeeded")
         self.assertEqual(self.get(st, "outputs"), {"speedup": 1.5})
 
@@ -200,11 +200,11 @@ class ExecTest(Env):
         )
 
         def progress_half() -> bool:
-            progress = self.obj(self.ok("status", j, "--host", "s1")).get("progress") or {}
+            progress = self.obj(self.ok("get", "job", j, "--host", "s1")).get("progress") or {}
             return self.obj(progress).get("stage") == "half"
 
         _ = self.wait_for(progress_half, 15, "progress")
-        st = self.ok("status", j, "--host", "s1")
+        st = self.ok("get", "job", j, "--host", "s1")
         self.assertEqual(self.get(st, "state"), "running")
         self.assertEqual(self.get(st, "run", "status"), "running")
         self.assertNotIn("attempt", self.obj(st, "run"))
@@ -330,30 +330,30 @@ class ExecTest(Env):
     def test_cancel_queued_running_and_terminal(self) -> None:
         self.stop_daemon()
         q = self.submit(self.make_pkg())
-        out = self.obj(self.ok("cancel", q, "--host", "s1"))
+        out = self.obj(self.ok("cancel", "job", q, "--host", "s1"))
         self.assertEqual((out["state"], out["changed"]), ("cancelled", True))
         _ = self.start_daemon()
         r = self.submit(self.make_pkg(script="sleep 60"))
         _ = self.wait_runner(r, "pgid")
-        out = self.obj(self.ok("cancel", r, "--host", "s1"))
+        out = self.obj(self.ok("cancel", "job", r, "--host", "s1"))
         self.assertTrue(out["changed"])
         self.assertTrue(self.job(r)["cancel_requested"])
         _ = self.wait_state(r, "cancelled", timeout=20)
         self.assertFalse(pid_alive(self.num(self.runner(r), "leader_pid")))
-        out = self.obj(self.ok("cancel", r, "--host", "s1"))
+        out = self.obj(self.ok("cancel", "job", r, "--host", "s1"))
         self.assertEqual((out["state"], out["changed"]), ("cancelled", False))
         time.sleep(1)
         self.assertEqual(self.job(q)["state"], "cancelled")
         self.assertIsNone(self.job(q)["dispatched_at"])  # never ran
         self.assertFalse(os.path.exists(os.path.join(self.job_dir(q), "runner.json")))
-        st = self.ok("status", q, "--host", "s1")
+        st = self.ok("get", "job", q, "--host", "s1")
         self.assertEqual(self.get(st, "_taskmgr", "status"), "cancelled")
 
     def test_cancel_kills_without_the_grace_period(self) -> None:
         self.set_config(stop_grace_seconds=60)
         j = self.submit(self.make_pkg(script="trap '' TERM; while true; do sleep 0.1; done"))
         _ = self.wait_runner(j, "pgid")
-        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.ok("cancel", "job", j, "--host", "s1")
         _ = self.wait_state(j, "cancelled", timeout=10)
         self.assertEqual(self.runner(j).get("signal"), 9)
 
@@ -363,7 +363,7 @@ class ExecTest(Env):
             self.make_pkg(script="trap '' TERM; while true; do sleep 0.1; done", timeout=1)
         )
         _ = self.wait_state(j, "stopping", timeout=10)
-        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.ok("cancel", "job", j, "--host", "s1")
         job = self.wait_state(j, "timed_out", timeout=10)
         self.assertEqual(job["stop_reason"], "timeout")
 
@@ -395,7 +395,7 @@ class ExecTest(Env):
         j = self.submit(pkg, key="k-retry")
         first = self.wait_state(j, "failed")
         first_result = self.result(j)
-        out = self.obj(self.ok("retry", j, "--host", "s1"))
+        out = self.obj(self.ok("retry", "job", j, "--host", "s1"))
         new = self.text(out, "jobid")
         self.assertNotEqual(new, j)
         self.assertRegex(new, "^[0-9a-f]{16}$")
@@ -423,21 +423,21 @@ class ExecTest(Env):
         self.assertEqual(self.result(j), first_result)
         self.assertEqual(os.path.basename(os.path.dirname(self.job_dir(j))), "done")
         # Statuses show the links in both directions.
-        st = self.obj(self.ok("status", j, "--host", "s1"))
+        st = self.obj(self.ok("get", "job", j, "--host", "s1"))
         self.assertEqual((st["retry_of"], st["retried_as"]), (None, [new]))
-        st = self.obj(self.ok("status", new, "--host", "s1"))
+        st = self.obj(self.ok("get", "job", new, "--host", "s1"))
         self.assertEqual((st["retry_of"], st["retried_as"]), (j, []))
         # Retrying again (either job) adds another link; the key still maps to the original.
-        out2 = self.obj(self.ok("retry", j, "--host", "s1"))
+        out2 = self.obj(self.ok("retry", "job", j, "--host", "s1"))
         self.assertEqual(self.job(j)["retried_as"], [new, out2["jobid"]])
         _ = self.wait_state(self.text(out2, "jobid"), "failed")
-        dup = self.obj(self.ok("submit", "--host", "s1", "--submission-key", "k-retry", pkg))
+        dup = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "k-retry", pkg))
         self.assertEqual((dup["jobid"], dup["deduplicated"]), (j, True))
         # Retry of a non-terminal job is an error and creates nothing.
         r = self.submit(self.make_pkg(script="sleep 30"))
         _ = self.wait_state(r, "running")
         before = self.jobids()
-        rc, out, _ = self.task("retry", r, "--host", "s1")
+        rc, out, _ = self.task("retry", "job", r, "--host", "s1")
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "not_terminal"))
         self.assertEqual(self.jobids(), before)
         self.assertEqual(self.job(r)["retried_as"], [])
@@ -445,7 +445,7 @@ class ExecTest(Env):
     def test_retry_prints_a_table(self) -> None:
         j = self.submit(self.make_pkg(script="exit 1"))
         _ = self.wait_state(j, "failed")
-        rc, out, err = self.task("retry", j, text=True)  # no --host: found by jobid
+        rc, out, err = self.task("retry", "job", j, text=True)  # no --host: found by jobid
         self.assertEqual((rc, err), (0, ""))
         assert isinstance(out, str)  # a table, not JSON
         header, row = out.splitlines()
@@ -454,12 +454,12 @@ class ExecTest(Env):
         self.assertEqual(row.split(), [new, j, "s1", "queued"])
         self.assertEqual(self.job(new)["retry_of"], j)
         self.assertEqual(header.index("RETRY_OF"), row.index(j))  # columns line up
-        rc, colored, _ = self.task("retry", j, text=True, color=True)
+        rc, colored, _ = self.task("retry", "job", j, text=True, color=True)
         assert isinstance(colored, str)
         self.assertEqual(rc, 0)
         self.assertIn("\x1b[1mJOBID", colored)  # bold header
         self.assertIn("\x1b[33mqueued\x1b[0m", colored)  # yellow state
-        # Without --detail an error is one line on stderr; stdout stays empty.
-        rc, out, err = self.task("retry", "0123456789abcdef", text=True)
+        # Without -o json an error is one line on stderr; stdout stays empty.
+        rc, out, err = self.task("retry", "job", "0123456789abcdef", text=True)
         self.assertEqual((rc, out), (2, None))
         self.assertEqual(err, "error: job 0123456789abcdef not found on any server (not_found)\n")

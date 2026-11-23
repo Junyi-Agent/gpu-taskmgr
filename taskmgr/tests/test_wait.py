@@ -1,4 +1,4 @@
-"""`task status --wait` without --host: the jobid lookup retries unreachable servers."""
+"""`task wait job` without --host: the jobid lookup retries unreachable servers."""
 
 import os
 import time
@@ -22,9 +22,9 @@ class WaitLookupTest(Env):
         rc, out, err = self.task_when(
             "retrying",
             lambda: os.unlink(flag),
-            "status",
+            "wait",
+            "job",
             j,
-            "--wait",
             "--poll-interval",
             "0.2",
             "--retry-timeout",
@@ -35,12 +35,10 @@ class WaitLookupTest(Env):
         self.assertEqual(self.get(out, "_taskmgr", "status"), "succeeded")
         # Beyond --retry-timeout it gives up with a connection error.
         open(flag, "w").close()
-        rc, out, _ = self.task(
-            "status", j, "--wait", "--poll-interval", "0.2", "--retry-timeout", "1"
-        )
+        rc, out, _ = self.task("wait", "job", j, "--poll-interval", "0.2", "--retry-timeout", "1")
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "connection_error"))
         # Without --wait the lookup still fails at once.
-        rc, out, _ = self.task("status", j)
+        rc, out, _ = self.task("get", "job", j)
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "incomplete"))
         os.unlink(flag)
 
@@ -58,7 +56,7 @@ class WaitDeadlineTest(Env):
         for host in (["--host", "s2"], []):  # one server, and the lookup on every server
             t0 = time.monotonic()
             rc, out, err = self.task(
-                "status", j, *host, "--wait", "--poll-interval", "0.2", "--timeout", "1"
+                "wait", "job", j, *host, "--poll-interval", "0.2", "--timeout", "1"
             )
             elapsed = time.monotonic() - t0
             self.assertEqual((rc, self.get(out, "error", "code")), (2, "wait_timeout"), err)

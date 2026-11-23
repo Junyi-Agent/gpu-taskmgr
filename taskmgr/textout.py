@@ -1,4 +1,4 @@
-"""Colored output of the local CLI (`task`); `--detail` prints the JSON object instead.
+"""Colored output of the local CLI (`task`); `-o json` prints the JSON object instead.
 
 Every command returns (JSON object, exit code); a renderer turns that object into text.
 Everything is colored (stdout and stderr, text and JSON, on a terminal or not) unless

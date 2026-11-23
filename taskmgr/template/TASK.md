@@ -3,7 +3,7 @@
 <!--
 Filling instructions (for humans and AI agents):
 - Replace every REQUIRED marker (angle-bracket placeholder) here and in task.json. The package is
-  rejected by `task validate` / `task submit` while any marker remains.
+  rejected by `task validate package` / `task create job` while any marker remains.
 - Compile before you take a GPU. A job holds its GPUs only while entry.argv runs, and
   other jobs wait for them, so never spend that time compiling. Put every compile step
   (CuTe kernels, torch extensions, binaries) in task.json `precompile`: taskmgr runs it

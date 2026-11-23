@@ -15,7 +15,7 @@ def u(i: int) -> str:
 
 class GpuSelectValidationTest(Env):
     def check(self, gpus: JsonValue) -> tuple[int, JsonDict]:
-        rc, out, _ = self.task("validate", self.make_pkg(extra={"gpus": gpus}))
+        rc, out, _ = self.task("validate", "package", self.make_pkg(extra={"gpus": gpus}))
         return rc, self.obj(out)
 
     def test_validate(self) -> None:
@@ -57,7 +57,7 @@ class GpuSelectValidationTest(Env):
         for gpus in impossible:
             with self.subTest(gpus=gpus):
                 rc, out, _ = self.task(
-                    "submit", self.make_pkg(extra={"gpus": gpus}), "--host", "s1"
+                    "create", "job", self.make_pkg(extra={"gpus": gpus}), "--host", "s1"
                 )
                 self.assertEqual(rc, 2)
                 self.assertEqual(self.get(out, "error", "code"), "invalid_gpus")
@@ -131,21 +131,21 @@ class GpuSelectRunTest(Env):
         job = self.job(two)
         self.assertEqual((job["state"], job["gpus"]), ("queued", []))
         self.assertIn("2 GPUs with >= 40 GiB free (1 qualify now)", str(job.get("pending_reason")))
-        st = self.ok("status", two, "--host", "s1")
+        st = self.ok("get", "job", two, "--host", "s1")
         self.assertEqual(self.get(st, "gpu_request"), {"count": 2, "min_free_gb": 40})
         holders = self.objs(st, "gpu_holders")
         self.assertIn(999999, [h["pid"] for h in holders])
-        rc, text, _ = self.task("jobs", text=True)
+        rc, text, _ = self.task("get", "jobs", text=True)
         assert isinstance(text, str)
         self.assertEqual(rc, 0)
         self.assertIn("pending-gpu", [line.split()[-1] for line in text.splitlines()[1:]])
-        rc, text, _ = self.task("status", two, "--host", "s1", text=True)
+        rc, text, _ = self.task("get", "job", two, "--host", "s1", text=True)
         assert isinstance(text, str)
         self.assertIn("2 GPU(s) with >= 40 GiB free, chosen at launch", text)
         open(gate, "w").close()
         _ = self.wait_state(two, "succeeded")
         self.assertEqual(self.chosen(two), [0, 3])
-        rc, text, _ = self.task("status", two, "--host", "s1", text=True)
+        rc, text, _ = self.task("get", "job", two, "--host", "s1", text=True)
         assert isinstance(text, str)
         self.assertEqual(rc, 0)
 
@@ -187,14 +187,15 @@ class GpuSelectRunTest(Env):
         self.assertTrue(os.path.exists(os.path.join(self.job_dir(j), "runner.prev-1.json")))
         self.assertIn("chose GPUs [0]", self.daemon_log())
         # A retry chooses its GPUs again (GPU 0 is still taken).
-        r = self.text(self.ok("retry", j, "--host", "s1"), "jobid")
+        r = self.text(self.ok("retry", "job", j, "--host", "s1"), "jobid")
         self.assertEqual(self.job(r).get("gpu_request"), {"count": 1})
         _ = self.wait_state(r, "succeeded")
         self.assertEqual(self.chosen(r), [1])
 
     def test_old_server_is_refused_before_upload(self) -> None:
         rc, out, _ = self.task(
-            "submit",
+            "create",
+            "job",
             self.pkg({"count": 1}),
             "--host",
             "s1",

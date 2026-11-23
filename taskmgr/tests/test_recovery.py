@@ -166,7 +166,7 @@ class RecoveryTest(Env):
         rc_ = self.kill_shim(c)
         rt = self.kill_shim(t)
         _ = self.wait_for(lambda: self.runner(c).get("takeovers"), 10, "takeover")
-        _ = self.ok("cancel", c, "--host", "s1")
+        _ = self.ok("cancel", "job", c, "--host", "s1")
         _ = self.wait_state(c, "cancelled", timeout=20)
         _ = self.wait_state(t, "timed_out", timeout=20)
         self.assertFalse(pid_alive(self.num(rc_, "leader_pid")))
@@ -178,7 +178,7 @@ class RecoveryTest(Env):
         j = self.submit(self.make_pkg(script="trap '' TERM; while true; do sleep 0.1; done"))
         r = self.kill_shim(j)
         _ = self.wait_for(lambda: self.runner(j).get("takeovers"), 10, "takeover")
-        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.ok("cancel", "job", j, "--host", "s1")
         _ = self.wait_state(j, "cancelled", timeout=10)
         self.assertFalse(pid_alive(self.num(r, "leader_pid")))
 
@@ -188,7 +188,7 @@ class RecoveryTest(Env):
         _ = self.wait_runner(j, "pgid")
         self.stop_daemon()
         r = self.kill_shim(j)
-        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.ok("cancel", "job", j, "--host", "s1")
         self.assertEqual(self.job(j)["state"], "running")
         _ = self.start_daemon()
         _ = self.wait_state(j, "cancelled", timeout=20)
@@ -237,11 +237,12 @@ class RecoveryTest(Env):
             [
                 sys.executable,
                 TASK,
-                "status",
+                "wait",
+                "job",
                 j,
-                "--detail",
+                "-o",
+                "json",
                 "--plain",
-                "--wait",
                 "--poll-interval",
                 "0.2",
             ],
@@ -294,7 +295,7 @@ class RecoveryTest(Env):
         j = self.submit(self.make_pkg(script="sleep 60"))
         _ = self.wait_runner(j, "pgid")
         self.stop_daemon()
-        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.ok("cancel", "job", j, "--host", "s1")
         r = self.runner(j)
         kill_quiet(self.num(r, "shim_pid"))
         kill_quiet(self.num(r, "pgid"), group=True)
@@ -387,20 +388,20 @@ class RecoveryTest(Env):
         self.assertEqual(self.job(u)["state"], "unknown")
         self.assertEqual(self.job(b)["state"], "queued")  # GPU 0 stays held
         self.assertEqual(self.jobids(), {u, b})  # no re-run job
-        rc, out, _ = self.task("status", u, "--wait", "--poll-interval", "0.2")
+        rc, out, _ = self.task("wait", "job", u, "--poll-interval", "0.2")
         self.assertEqual(rc, 3)
         self.assertEqual(self.get(out, "state"), "unknown")
-        rc, out, _ = self.task("retry", u, "--host", "s1")
+        rc, out, _ = self.task("retry", "job", u, "--host", "s1")
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "resolve_required"))
-        out = self.ok("cancel", u, "--host", "s1")
+        out = self.ok("cancel", "job", u, "--host", "s1")
         self.assertEqual((self.get(out, "state"), self.get(out, "changed")), ("unknown", True))
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual((self.get(out, "state"), self.get(out, "changed")), ("unknown", False))
         self.assertEqual(self.get(out, "identity", "pgid"), proc.pid)
         self.assertEqual(self.get(out, "identity", "boot_id"), "boot-1")
         kill_quiet(proc.pid)
         _ = proc.wait()
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual((self.get(out, "state"), self.get(out, "changed")), ("cancelled", True))
         _ = self.wait_state(b, "succeeded")  # GPU released
 
@@ -408,19 +409,19 @@ class RecoveryTest(Env):
         u, proc = self.make_unknown()
         kill_quiet(proc.pid)
         _ = proc.wait()
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual(self.get(out, "state"), "failed")
         self.assertEqual(self.get(self.job(u), "error", "kind"), "exit_code_lost")
 
     def test_resolve_as_stopped(self) -> None:
         u, _ = self.make_unknown()
-        rc, out, _ = self.task("resolve", u, "--host", "s1", "--as", "stopped")
+        rc, out, _ = self.task("resolve", "job", u, "--host", "s1", "--as", "stopped")
         self.assertEqual(rc, 2)
         rc, out, _ = self.task(
-            "resolve", u, "--host", "s1", "--as", "stopped", "--confirm", "0000000000000000"
+            "resolve", "job", u, "--host", "s1", "--as", "stopped", "--confirm", "0000000000000000"
         )
         self.assertEqual(rc, 2)
-        out = self.ok("resolve", u, "--host", "s1", "--as", "stopped", "--confirm", u)
+        out = self.ok("resolve", "job", u, "--host", "s1", "--as", "stopped", "--confirm", u)
         self.assertEqual((self.get(out, "state"), self.get(out, "changed")), ("failed", True))
         job = self.job(u)
         self.assertEqual(self.get(job, "error", "kind"), "operator_marked_stopped")
@@ -431,8 +432,8 @@ class RecoveryTest(Env):
         self.assertEqual(self.jobids(), {u})
         # With a cancel request the outcome is cancelled.
         u2, _ = self.make_unknown(gpus=(1,))
-        _ = self.ok("cancel", u2, "--host", "s1")
-        out = self.ok("resolve", u2, "--host", "s1", "--as", "stopped", "--confirm", u2)
+        _ = self.ok("cancel", "job", u2, "--host", "s1")
+        out = self.ok("resolve", "job", u2, "--host", "s1", "--as", "stopped", "--confirm", u2)
         self.assertEqual(self.get(out, "state"), "cancelled")
 
     def test_daemon_never_touches_unknown_processes(self) -> None:
@@ -450,7 +451,7 @@ class RecoveryTest(Env):
         j = self.submit(self.make_pkg(script="sleep 3600", gpus=[0]))
         r = self.wait_runner(j, "pgid")
         b = self.submit(self.make_pkg(gpus=[0]))
-        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.ok("cancel", "job", j, "--host", "s1")
         job = self.wait_state(j, "unknown", timeout=60)
         self.assertEqual(self.get(job, "error", "kind"), "stop_unconfirmed")
         self.assertTrue(pid_alive(self.num(r, "leader_pid")))
@@ -463,7 +464,7 @@ class RecoveryTest(Env):
         _ = self.wait_for(
             lambda: not procutil.group_members(pgid, start, j), 30, "the group to be gone"
         )
-        out = self.ok("resolve", j, "--host", "s1")
+        out = self.ok("resolve", "job", j, "--host", "s1")
         # (The daemon log tells whether a health check took over the job after the shim
         # had marked it unknown: resolve then answers shim_alive while that takeover runs.)
         self.assertEqual(self.get(out, "state"), "cancelled", "%s\n%s" % (out, self.daemon_log()))
@@ -472,7 +473,7 @@ class RecoveryTest(Env):
     def test_resolve_hands_decidable_unknown_back_to_takeover(self) -> None:
         u, proc = self.make_unknown(unconfirmed=False)
         _ = self.start_daemon()
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual(
             (self.get(out, "decision"), self.get(out, "state")), ("handed_to_daemon", "running")
         )
@@ -484,10 +485,10 @@ class RecoveryTest(Env):
 
     def test_cancel_on_unknown_wins_even_after_exit(self) -> None:
         u, proc = self.make_unknown(runner_extra={"exited": True, "return_code": 0, "signal": None})
-        _ = self.ok("cancel", u, "--host", "s1")
+        _ = self.ok("cancel", "job", u, "--host", "s1")
         kill_quiet(proc.pid)
         _ = proc.wait()
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual(self.get(out, "state"), "cancelled")
 
     def test_takeover_of_stopping_job_keeps_stop_reason(self) -> None:
@@ -575,7 +576,7 @@ class RecoveryTest(Env):
         os.makedirs(os.path.join(self.job_dir(u), "workdir", "result.json", "x"))
         kill_quiet(proc.pid)
         _ = proc.wait()
-        out = self.ok("resolve", u, "--host", "s1", "--as", "stopped", "--confirm", u)
+        out = self.ok("resolve", "job", u, "--host", "s1", "--as", "stopped", "--confirm", u)
         self.assertEqual(self.get(out, "state"), "failed")
         self.assertEqual(self.get(self.job(u), "error", "kind"), "operator_marked_stopped")
         self.assertEqual(self.get(self.result(u), "_taskmgr", "status"), "failed")
@@ -586,12 +587,14 @@ class RecoveryTest(Env):
         kill_quiet(proc.pid)
         _ = proc.wait()
         restore = self.block_workdir(u)  # result.json cannot be written
-        rc, out, _ = self.task("resolve", u, "--host", "s1", "--as", "stopped", "--confirm", u)
+        rc, out, _ = self.task(
+            "resolve", "job", u, "--host", "s1", "--as", "stopped", "--confirm", u
+        )
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "internal_error"))
         self.assertEqual(self.job(u)["state"], "unknown")
         self.assertFalse(self.runner(u).get("final"))  # the run record is unchanged
         restore()
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual(self.get(out, "state"), "failed")
         self.assert_no_rerun(u)
 
@@ -606,7 +609,7 @@ class RecoveryTest(Env):
         )
         kill_quiet(proc.pid)
         _ = proc.wait()
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual(self.get(out, "state"), "failed")
         self.assertEqual(self.get(self.job(u), "error", "kind"), "operator_marked_stopped")
         self.assert_no_rerun(u)
@@ -621,7 +624,7 @@ class RecoveryTest(Env):
         )
         kill_quiet(proc2.pid)
         _ = proc2.wait()
-        out = self.ok("resolve", u2, "--host", "s1")
+        out = self.ok("resolve", "job", u2, "--host", "s1")
         self.assertEqual(self.get(out, "state"), "cancelled")
         self.assert_no_rerun(u2)
 
@@ -644,7 +647,7 @@ class RecoveryTest(Env):
         kill_quiet(proc.pid)
         _ = proc.wait()
         self.set_boot("boot-2")
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual(self.get(out, "state"), "timed_out")
         self.assert_no_rerun(u)
 
@@ -653,20 +656,20 @@ class RecoveryTest(Env):
         kill_quiet(proc.pid)
         _ = proc.wait()
         self.set_boot("boot-2")
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual(self.get(out, "state"), "failed")
         self.assertEqual(self.get(self.job(u), "error", "kind"), "interrupted")
         self.assertEqual(self.get(self.runner(u), "status"), "interrupted")
         self.assert_no_rerun(u)
         # An explicit retry is still possible.
-        out = self.ok("retry", u, "--host", "s1")
+        out = self.ok("retry", "job", u, "--host", "s1")
         self.assertEqual(self.get(out, "retry_of"), u)
 
     def test_resolve_of_unknown_without_identity_does_not_rerun(self) -> None:
         u, _ = self.make_unknown()
         with open(os.path.join(self.job_dir(u), "runner.json"), "w") as f:
             json.dump({"jobid": u, "status": "dispatched", "final": False, "exited": False}, f)
-        out = self.ok("resolve", u, "--host", "s1")
+        out = self.ok("resolve", "job", u, "--host", "s1")
         self.assertEqual(self.get(out, "state"), "failed")
         self.assertEqual(self.get(self.job(u), "error", "kind"), "interrupted")
         self.assert_no_rerun(u)

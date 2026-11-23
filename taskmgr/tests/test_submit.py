@@ -18,10 +18,10 @@ class SubmitTest(Env):
 
     def test_directory_and_archive_submission(self) -> None:
         pkg = self.make_pkg()
-        a = self.obj(self.ok("submit", "--host", "s1", pkg))
+        a = self.obj(self.ok("create", "job", "--host", "s1", pkg))
         tgz = os.path.join(self.tmp, "p.tar.gz")
         package.pack_dir(pkg, tgz)
-        b = self.obj(self.ok("submit", "--host", "s1", tgz))
+        b = self.obj(self.ok("create", "job", "--host", "s1", tgz))
         for r in (a, b):
             self.assertEqual(
                 set(r) >= {"host", "jobid", "task_id", "submission_key", "deduplicated"}, True
@@ -43,14 +43,14 @@ class SubmitTest(Env):
         self.machines[1]["enabled"] = False
         self.write_machines()
         pkg = self.make_pkg()
-        hosts = [self.get(self.ok("submit", pkg), "host") for _ in range(4)]
+        hosts = [self.get(self.ok("create", "job", pkg), "host") for _ in range(4)]
         self.assertEqual(hosts, ["s1", "s3", "s1", "s3"])
         # --host may target a disabled server.
-        self.assertEqual(self.get(self.ok("submit", "--host", "s2", pkg), "host"), "s2")
+        self.assertEqual(self.get(self.ok("create", "job", "--host", "s2", pkg), "host"), "s2")
         self.assertEqual(
-            self.get(self.ok("submit", pkg), "host"), "s1"
+            self.get(self.ok("create", "job", pkg), "host"), "s1"
         )  # cursor not consumed by --host
-        rc, _, _ = self.task("submit", "--host", "nope", pkg)
+        rc, _, _ = self.task("create", "job", "--host", "nope", pkg)
         self.assertEqual(rc, 2)
 
     def test_round_robin_under_concurrent_clis(self) -> None:
@@ -58,7 +58,7 @@ class SubmitTest(Env):
         n = 12
 
         def submit(_: int) -> tuple[int, JsonValue, str]:
-            return self.task("submit", pkg)
+            return self.task("create", "job", pkg)
 
         with concurrent.futures.ThreadPoolExecutor(n) as ex:
             res = list(ex.map(submit, range(n)))
@@ -70,37 +70,37 @@ class SubmitTest(Env):
 
     def test_submission_key_rules(self) -> None:
         pkg = self.make_pkg()
-        rc, out, _ = self.task("submit", "--submission-key", "k1", pkg)
+        rc, out, _ = self.task("create", "job", "--submission-key", "k1", pkg)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "bad_args")
-        rc, _, _ = self.task("submit", "--host", "s1", "--submission-key", "bad key!", pkg)
+        rc, _, _ = self.task("create", "job", "--host", "s1", "--submission-key", "bad key!", pkg)
         self.assertEqual(rc, 2)
-        a = self.obj(self.ok("submit", "--host", "s1", "--submission-key", "k1", pkg))
+        a = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "k1", pkg))
         self.assertFalse(a["deduplicated"])
         tgz = os.path.join(self.tmp, "p.tgz")
         package.pack_dir(pkg, tgz)
-        b = self.obj(self.ok("submit", "--host", "s1", "--submission-key", "k1", tgz))
+        b = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "k1", tgz))
         self.assertTrue(b["deduplicated"])
         self.assertEqual(a["jobid"], b["jobid"])
         self.assertEqual(len(os.listdir(os.path.join(self.root("s1"), "queue"))), 1)
         # Dedup holds regardless of the job state.
-        _ = self.ok("cancel", self.text(a, "jobid"), "--host", "s1")
-        c = self.obj(self.ok("submit", "--host", "s1", "--submission-key", "k1", pkg))
+        _ = self.ok("cancel", "job", self.text(a, "jobid"), "--host", "s1")
+        c = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "k1", pkg))
         self.assertEqual((c["jobid"], c["deduplicated"]), (a["jobid"], True))
         # Same key, different content: error.
         other = self.make_pkg(script="exit 1")
-        rc, out, _ = self.task("submit", "--host", "s1", "--submission-key", "k1", other)
+        rc, out, _ = self.task("create", "job", "--host", "s1", "--submission-key", "k1", other)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "submission_key_conflict")
         # The same key on a different server is unrelated.
-        d = self.obj(self.ok("submit", "--host", "s2", "--submission-key", "k1", other))
+        d = self.obj(self.ok("create", "job", "--host", "s2", "--submission-key", "k1", other))
         self.assertFalse(d["deduplicated"])
 
     def test_concurrent_submissions(self) -> None:
         pkg = self.make_pkg()
 
         def submit_s1(_: int) -> tuple[int, JsonValue, str]:
-            return self.task("submit", "--host", "s1", pkg)
+            return self.task("create", "job", "--host", "s1", pkg)
 
         with concurrent.futures.ThreadPoolExecutor(8) as ex:
             res = list(ex.map(submit_s1, range(8)))
@@ -111,7 +111,7 @@ class SubmitTest(Env):
         # Concurrent retries with one key enqueue exactly one job.
 
         def submit_s2_same_key(_: int) -> tuple[int, JsonValue, str]:
-            return self.task("submit", "--host", "s2", "--submission-key", "same", pkg)
+            return self.task("create", "job", "--host", "s2", "--submission-key", "same", pkg)
 
         with concurrent.futures.ThreadPoolExecutor(6) as ex:
             res = list(
@@ -129,14 +129,14 @@ class SubmitTest(Env):
         self.machines[0]["local"] = {"fail": "ssh: connect timed out"}
         self.write_machines()
         pkg = self.make_pkg()
-        rc, out, err = self.task("submit", "--host", "s1", pkg)
+        rc, out, err = self.task("create", "job", "--host", "s1", pkg)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "submission_uncertain")
         self.assertEqual(self.get(out, "error", "host"), "s1")
         key = self.text(out, "error", "details", "submission_key")
-        self.assertIn("task submit --host s1 --submission-key %s" % key, err)
+        self.assertIn("task create job %s --host s1 --submission-key %s" % (pkg, key), err)
         # Round-robin failures are not resubmitted elsewhere.
-        rc, out, err = self.task("submit", pkg)
+        rc, out, err = self.task("create", "job", pkg)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "host"), "s1")
         for s in ("s2", "s3"):
@@ -147,9 +147,9 @@ class SubmitTest(Env):
 
     def test_dedup_answers_before_machine_dependent_checks(self) -> None:
         pkg = self.make_pkg(gpus=[1])
-        a = self.obj(self.ok("submit", "--host", "s1", "--submission-key", "gpu-k", pkg))
+        a = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "gpu-k", pkg))
         self.set_gpus([])  # the GPU vanished (or nvidia-smi broke) after the first enqueue
-        b = self.obj(self.ok("submit", "--host", "s1", "--submission-key", "gpu-k", pkg))
+        b = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "gpu-k", pkg))
         self.assertEqual((b["jobid"], b["deduplicated"]), (a["jobid"], True))
 
     def test_retry_after_lost_ack(self) -> None:
@@ -160,7 +160,7 @@ class SubmitTest(Env):
         with open(tgz, "rb") as f:
             rc, ack, _ = self.remote("receive", "--submission-key", "lost-1", stdin=f)
         self.assertEqual(rc, 0)
-        r = self.obj(self.ok("submit", "--host", "s1", "--submission-key", "lost-1", pkg))
+        r = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "lost-1", pkg))
         self.assertEqual((r["jobid"], r["deduplicated"]), (self.get(ack, "jobid"), True))
 
     def test_protocol_version_mismatch(self) -> None:
@@ -168,7 +168,9 @@ class SubmitTest(Env):
         rc, out, _ = self.remote("--protocol-version", "99", "jobs")
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "protocol_mismatch"))
         self.assertEqual(self.get(out, "protocol_version"), 2)
-        rc, out, _ = self.task("jobs", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "99"})
+        rc, out, _ = self.task(
+            "get", "jobs", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "99"}
+        )
         # jobs lists every target; the per-server error carries the reason.
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "all_hosts_failed"))
         self.assertEqual(self.get(out, "errors", 0, "code"), "protocol_mismatch")
@@ -178,12 +180,18 @@ class SubmitTest(Env):
             self.assertEqual(rc, 2, verb)
             self.assertIn("protocol_mismatch", "%s %s" % (out, err))
         rc, out, _ = self.task(
-            "status", "0123456789abcdef", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "1"}
+            "get",
+            "job",
+            "0123456789abcdef",
+            "--host",
+            "s1",
+            env={"TASKMGR_TEST_PROTOCOL_VERSION": "1"},
         )
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "protocol_mismatch")
         rc, out, _ = self.task(
             "retry",
+            "job",
             "0123456789abcdef",
             "--host",
             "s1",
@@ -192,7 +200,7 @@ class SubmitTest(Env):
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "protocol_mismatch"))
         pkg = self.make_pkg()
         rc, out, _ = self.task(
-            "submit", "--host", "s1", pkg, env={"TASKMGR_TEST_PROTOCOL_VERSION": "1"}
+            "create", "job", "--host", "s1", pkg, env={"TASKMGR_TEST_PROTOCOL_VERSION": "1"}
         )
         self.assertEqual(rc, 2)
         self.assertEqual(os.listdir(self.root()), ["config.json"])  # never reached receive
@@ -213,13 +221,13 @@ class SubmitTest(Env):
         os.chmod(fake, 0o755)
         self.server("s1")["remote_command"] = fake
         self.write_machines()
-        rc, out, err = self.task("jobs", "--host", "s1")
+        rc, out, err = self.task("get", "jobs", "--host", "s1")
         self.assertEqual(rc, 2, out)
         self.assertEqual(self.get(out, "error", "code"), "all_hosts_failed", err)
         self.assertEqual(self.get(out, "errors", 0, "code"), "protocol_mismatch")
-        rc, out, err = self.task("status", "0123456789abcdef", "--host", "s1")
+        rc, out, err = self.task("get", "job", "0123456789abcdef", "--host", "s1")
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "protocol_mismatch"), err)
-        rc, _, err = self.task("logs", "0123456789abcdef", "--host", "s1")
+        rc, _, err = self.task("logs", "job", "0123456789abcdef", "--host", "s1")
         self.assertEqual(rc, 2)
         self.assertIn("protocol_mismatch", err)
         self.assertNotIn("not_found", err)
@@ -273,8 +281,8 @@ class SubmitTest(Env):
 
     def test_retry_links_the_read_only_package(self) -> None:
         old = self.submit(self.make_pkg())
-        _ = self.ok("cancel", old, "--host", "s1")  # queued -> cancelled, no daemon needed
-        new = self.text(self.ok("retry", old, "--host", "s1"), "jobid")
+        _ = self.ok("cancel", "job", old, "--host", "s1")  # queued -> cancelled, no daemon needed
+        new = self.text(self.ok("retry", "job", old, "--host", "s1"), "jobid")
         self.assertEqual(self.job(new)["retry_of"], old)
         self.assertEqual(self.job(old)["retried_as"], [new])
         for rel in ("package.tar.gz", os.path.join("package", "task.json")):

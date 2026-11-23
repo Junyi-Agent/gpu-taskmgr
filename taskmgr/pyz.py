@@ -6,7 +6,7 @@ Each archive holds the package (taskmgr/ without tests/ and __pycache__) plus, a
 the code version, pyproject.toml and the commit. The code version is a hash of the files of
 taskmgr/ that change what runs (code_hash), so it is the same for a checkout and for every
 archive built from it, and an edit of the docs does not make servers restart.
-`task host add` uploads a taskmgr-remote.pyz built here to the server (see hostsetup); it
+`task create host` uploads a taskmgr-remote.pyz built here to the server (see hostsetup); it
 never builds one itself.
 """
 
@@ -39,7 +39,7 @@ TARGETS = ((LOCAL_PYZ, "taskmgr.taskmgr"), (REMOTE_PYZ, "taskmgr.remote"))
 # zipapp's own `main=` entry drops main()'s return value (every exit code would be 0).
 # zipimport reads an archive by path, again for every module, with offsets from the first
 # read: if the file at that path is replaced while a process starts, its imports fail. On a
-# server the path is a symlink that `task host add` switches to a new, never modified file;
+# server the path is a symlink that `task create host` switches to a new, never modified file;
 # importing from the resolved path makes each process read one file only.
 MAIN_PY = """import os
 import sys
@@ -152,7 +152,7 @@ def build(out_dir: str, targets: tuple[tuple[str, str], ...] = TARGETS) -> Built
 
 
 def default_remote_pyz() -> str:
-    """Where `task host add` looks for taskmgr-remote.pyz when --pyz is not given.
+    """Where `task create host` looks for taskmgr-remote.pyz when --pyz is not given.
 
     From a checkout: <checkout>/dist/taskmgr-remote.pyz (the default output of this module).
     From task.pyz: taskmgr-remote.pyz next to the archive (symlinks resolved).

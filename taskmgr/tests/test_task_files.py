@@ -72,7 +72,7 @@ class TaskFileTypeTest(Env):
         job = self.wait_state(j, "failed", timeout=20)
         self.assertEqual(self.get(job, "error", "kind"), "exit_code_lost")
         self.assertEqual(self.kept_aside(j), ["result.json.corrupt"])
-        rc, out, _ = self.task("submit", self.make_pkg(), "--host", "s1", timeout=20)
+        rc, out, _ = self.task("create", "job", self.make_pkg(), "--host", "s1", timeout=20)
         self.assertEqual(rc, 0, out)
         _ = self.wait_state(self.text(out, "jobid"), "succeeded", timeout=20)
 
@@ -90,7 +90,7 @@ class TaskFileTypeTest(Env):
             lambda: os.path.lexists(prog) and not os.path.isfile(prog), 10, "progress.json"
         )
         t0 = time.monotonic()
-        rc, out, err = self.task("status", j, timeout=20)
+        rc, out, err = self.task("get", "job", j, timeout=20)
         self.assertLess(time.monotonic() - t0, 15)
         self.assertEqual(rc, 0, err)
         with open(gate, "w"):

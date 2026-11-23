@@ -23,7 +23,7 @@ class PrecompileTest(Env):
         return {"precompile": {"argv": ["sh", "-c", script], **fields}}
 
     def state_cell(self, jobid: str) -> str:
-        rc, out, _ = self.task("jobs", text=True)
+        rc, out, _ = self.task("get", "jobs", text=True)
         self.assertEqual(rc, 0)
         row = next(line for line in self.text(out).splitlines() if line.startswith(jobid))
         return row.split("  ")[-1].strip()
@@ -53,7 +53,7 @@ class PrecompileTest(Env):
         )
         self.shows(a, "precompiling")
         self.assertEqual(self.job(a).get("phase"), "precompile")
-        self.assertEqual(self.get(self.ok("status", a), "phase"), "precompile")
+        self.assertEqual(self.get(self.ok("get", "job", a), "phase"), "precompile")
         self.assertEqual(self.runner(a).get("gpus"), [])
 
         hold = self.submit(self.make_pkg(script=self.gate("hold-go") + OK_RESULT, gpus=[0]))
@@ -63,7 +63,9 @@ class PrecompileTest(Env):
         job = self.job(a)
         self.assertEqual((job["state"], job.get("phase")), ("queued", "gpu"))
         self.assertIn("waiting for its GPUs", self.text(job, "pending_reason"))
-        rc, out, _ = self.task("logs", a, text=True)  # the precompile's output, while it waits
+        rc, out, _ = self.task(
+            "logs", "job", a, text=True
+        )  # the precompile's output, while it waits
         self.assertEqual(rc, 0)
         self.assertIn("compile [] [unset]", self.text(out))
         self.open_gate("hold-go")
@@ -71,7 +73,7 @@ class PrecompileTest(Env):
         job = self.wait_state(a, "succeeded")
         self.assertNotIn("pending_reason", job)
         self.assertEqual(self.runner(a).get("gpus"), job["gpus"])
-        _, out, _ = self.task("logs", a, text=True)
+        _, out, _ = self.task("logs", "job", a, text=True)
         self.assertIn("compile [] [unset]", self.text(out))
         self.assertIn("launch after requeue (precompile done)", self.text(out))
         self.assertIn("entry [%s]\nbuilt\n" % GPUS[0][1], self.text(out))
@@ -110,14 +112,14 @@ class PrecompileTest(Env):
         _ = self.start_daemon()
         j = self.submit(self.make_pkg(extra=self.precompile("sleep 60")))
         self.shows(j, "precompiling")
-        _ = self.ok("cancel", j)
+        _ = self.ok("cancel", "job", j)
         _ = self.wait_state(j, "cancelled")
         # While it waits for its GPU.
         hold = self.submit(self.make_pkg(script=self.gate("go") + OK_RESULT, gpus=[0]))
         _ = self.wait_state(hold, "running")
         j = self.submit(self.make_pkg(gpus=[0], extra=self.precompile("true")))
         self.shows(j, "pending-gpu")
-        _ = self.ok("cancel", j)
+        _ = self.ok("cancel", "job", j)
         _ = self.wait_state(j, "cancelled")
         self.open_gate("go")
         _ = self.wait_state(hold, "succeeded")
@@ -129,7 +131,7 @@ class PrecompileTest(Env):
             self.make_pkg(script="exit 1", extra=self.precompile("echo x >> %s" % count))
         )
         _ = self.wait_state(j, "failed")
-        new = self.text(self.ok("retry", j), "jobid")
+        new = self.text(self.ok("retry", "job", j), "jobid")
         self.assertEqual(self.job(new).get("phase"), "precompile")
         _ = self.wait_state(new, "failed")
         with open(count) as f:
@@ -170,7 +172,7 @@ class PrecompileTest(Env):
             ({"argv": ["./missing.sh"]}, "precompile argv[0]"),
         ]
         for bad, text in cases:
-            rc, out, _ = self.task("validate", self.make_pkg(extra={"precompile": bad}))
+            rc, out, _ = self.task("validate", "package", self.make_pkg(extra={"precompile": bad}))
             self.assertEqual(rc, 1, bad)
             self.assertIn(text, json.dumps(out))
 

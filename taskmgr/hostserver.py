@@ -1,4 +1,4 @@
-"""The parts of `task host add` that run on the server, as `python3 -c TEXT PARAMS`.
+"""The parts of `task create host` that run on the server, as `python3 -c TEXT PARAMS`.
 
 hostsetup reads this file's text (common.read_code_file) and runs it with the server's
 python3; nothing imports it. It must run on any Python 3, so that the probe can report an
@@ -6,7 +6,7 @@ old one: no f-strings, no variable annotations, annotations only as strings. PAR
 JSON object; its "mode" selects:
   probe  read-only; prints one JSON object (hostsetup.Probe) about the paths in PARAMS
   lock   takes the per-user setup lock, prints "locked PATH" (or "busy PATH PID"), and
-         holds the lock until stdin is closed (the end of the `task host add` run)
+         holds the lock until stdin is closed (the end of the `task create host` run)
   prune  removes code archives from a store that neither PARAMS["keep"] names nor a
          running process uses; prints {"removed": [...]}
 """
@@ -225,7 +225,7 @@ def probe(params: "dict[str, object]") -> None:
 
 
 def hold_lock() -> None:
-    """One `task host add` at a time per server user: the lock file is on local storage
+    """One `task create host` at a time per server user: the lock file is on local storage
     ($XDG_RUNTIME_DIR, else /tmp), not in remote_root, which may not exist yet."""
     d = os.environ.get("XDG_RUNTIME_DIR") or ""
     if not os.path.isdir(d):
@@ -245,7 +245,7 @@ def hold_lock() -> None:
     _ = os.pwrite(fd, str(os.getpid()).encode(), 0)
     print("locked %s" % path)
     _ = sys.stdout.flush()
-    _ = sys.stdin.read()  # until `task host add` closes the pipe or its connection ends
+    _ = sys.stdin.read()  # until `task create host` closes the pipe or its connection ends
 
 
 def used_paths() -> "set[str]":

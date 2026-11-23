@@ -22,7 +22,7 @@ CLI 是一个单文件 `task.pyz`，只需要 `python3` >= 3.10（[[docs/install
 # 构建（已有 dist/task.pyz 和 dist/taskmgr-remote.pyz 时可跳过）
 python3 -m taskmgr.pyz -o dist
 
-# 安装（用符号链接，task host add 才能在 dist/ 找到 taskmgr-remote.pyz）
+# 安装（用符号链接，task create host 才能在 dist/ 找到 taskmgr-remote.pyz）
 ln -s "$PWD/dist/task.pyz" ~/.local/bin/task
 task --help
 ```
@@ -30,7 +30,7 @@ task --help
 **2. 本机：配置服务器**
 
 ```sh
-task host add gpu1 --ssh tuner@10.0.0.12
+task create host gpu1 --ssh tuner@10.0.0.12
 # 主要步骤，依次执行（全部十步见 docs/install.zh-CN.md）；每处改动先询问 [y/N]（--yes 回答 yes，但不删除：
 # remote_root 之外的旧代码需要 --prune-old-code；--plan 只输出会改什么，不做任何改动）：
 #  1. 检查 ssh、Linux、python3 >= 3.10、systemctl --user
@@ -43,19 +43,22 @@ task host add gpu1 --ssh tuner@10.0.0.12
 ```
 
 更新服务器（`git pull` 或改代码之后）：重新运行 `python3 -m taskmgr.pyz -o dist`，再运行
-`task host update gpu1`。`task host add` 和 `task host update` 都是幂等的：服务器已是最新时，它不做改动，也不提问。每一步、
-数据检查和手动部署方式见 [[docs/install.zh-CN]]（"远程服务器：`task host add`"）。
+`task update host gpu1`。`task create host` 和 `task update host` 都是幂等的：服务器已是最新时，它们不做改动，也不提问。
+每一步、数据检查和手动部署方式见 [[docs/install.zh-CN]]（"远程服务器"一节）。
 
 **3. 使用**
 
 ```sh
-task host list                       # 确认机器列表
-task host ping                       # 确认每台服务器都有应答
-task init AA-01                      # 生成模板；填写所有 <REQUIRED...> 标记
-task validate AA-01/
-task submit AA-01/                   # 输出 JOBID TASK_ID HOST STATE
-task status <jobid> --wait
-task fetch <jobid> --output ./results/
-# 或者不用模板，直接用项目文件构建任务包（docs/usage.zh-CN.md，task pack）：
-task submit "$(task pack src/ --task-id AA-02 --entry 'python3 run.py' --gpus 0)"
+task get hosts                       # 确认机器列表
+task ping host                       # 确认每台服务器都有应答
+task create package AA-01            # 生成模板；填写所有 <REQUIRED...> 标记
+task validate package AA-01/
+task create job AA-01/               # 输出 JOBID TASK_ID HOST STATE
+task wait job <jobid>
+task fetch job <jobid> --dest ./results/
+# 或者不用模板，直接用项目文件构建任务包（docs/usage.zh-CN.md）：
+task create job "$(task build package src/ --task-id AA-02 --entry 'python3 run.py' --gpus 0)"
 ```
+
+命令的形式是 `task <动词> <资源>`，和 kubectl 一样；`task -h` 列出全部命令，每种资源也可以用复数名
+（`task get jobs`），`-o json` 输出完整的 JSON 对象。

@@ -1,4 +1,4 @@
-"""`task pack`: a task package from project files and options, path on stdout."""
+"""`task build package`: a task package from project files and options, path on stdout."""
 
 import json
 import os
@@ -33,11 +33,11 @@ class PackTest(Env):
         return p
 
     def pack(self, *args: object, env: dict[str, str] | None = None) -> tuple[int, str, str]:
-        """Run `task pack` as a script would: text output, no --detail."""
+        """Run `task build package` as a script would: text output, no -o json."""
         e = dict(self.env)
         e.update(env or {})
         p = subprocess.run(
-            [sys.executable, TASK, "pack", "--plain"] + [str(a) for a in args],
+            [sys.executable, TASK, "build", "package", "--plain"] + [str(a) for a in args],
             env=e,
             cwd=self.tmp,
             stdin=subprocess.DEVNULL,
@@ -80,11 +80,11 @@ class PackTest(Env):
             "/",
             "--exclude",
             "cache",
-            "-o",
+            "--dest",
             out_dir,
         )
         self.assertEqual(rc, 0, err)
-        self.assertEqual(stdout, out_dir + "\n")  # only the path: "$(task pack ...)" works
+        self.assertEqual(stdout, out_dir + "\n")  # only the path: "$(task build package ...)" works
         self.assertEqual(
             sorted(
                 os.path.relpath(os.path.join(d, n), out_dir)
@@ -122,16 +122,18 @@ class PackTest(Env):
         self.assertIn(
             "python3 run.py --cfg spec/a.yaml", self.read(os.path.join(out_dir, "TASK.md")).decode()
         )
-        _ = self.ok("validate", out_dir)
+        _ = self.ok("validate", "package", out_dir)
         # The package runs.
         _ = self.start_daemon()
         j = self.submit(out_dir.strip())
         _ = self.wait_state(j, "succeeded")
         # The same again: the target exists, nothing is written without --force.
-        rc, stdout, err = self.pack(p, "--task-id", "MO-01", "--entry", "true", "-o", out_dir)
+        rc, stdout, err = self.pack(p, "--task-id", "MO-01", "--entry", "true", "--dest", out_dir)
         self.assertEqual((rc, stdout), (2, ""))
         self.assertIn("already exists", err)
-        rc, _, err = self.pack(p, "--task-id", "MO-01", "--entry", "true", "-o", out_dir, "--force")
+        rc, _, err = self.pack(
+            p, "--task-id", "MO-01", "--entry", "true", "--dest", out_dir, "--force"
+        )
         self.assertEqual(rc, 0, err)
         self.assertTrue(os.path.isfile(os.path.join(out_dir, "tools", "gpu_exec.py")))
 
@@ -151,7 +153,7 @@ class PackTest(Env):
             "--precompile-timeout",
             "900",
             "--with-cute-helpers",
-            "-o",
+            "--dest",
             tar,
         ]
         rc, stdout, err = self.pack(*args)
@@ -161,9 +163,9 @@ class PackTest(Env):
         rc, _, err = self.pack(*args, "--force")
         self.assertEqual(rc, 0, err)
         self.assertEqual(self.read(tar), first)
-        v = self.ok("validate", tar)
+        v = self.ok("validate", "package", tar)
         self.assertEqual(self.strs(v, "features"), ["gpu_select", "precompile"])
-        detail = self.ok("pack", *args, "--force")
+        detail = self.ok("build", "package", *args, "--force")
         self.assertEqual(self.get(detail, "content_hash"), self.get(v, "content_hash"))
         self.assertIs(self.get(detail, "archive"), True)
         self.assertEqual(self.strs(detail, "features"), ["gpu_select", "precompile"])
@@ -222,9 +224,9 @@ class PackTest(Env):
         p = self.project()
         out = os.path.join(self.tmp, "X")
         for args, code in (
-            ([p, "--entry", "true", "-o", out], "--task-id is required"),
-            ([p, "--task-id", "AA-01", "-o", out], "--entry is required"),
-            ([p, "--task-id", "bad", "--entry", "true", "-o", out], "task_id must match"),
+            ([p, "--entry", "true", "--dest", out], "--task-id is required"),
+            ([p, "--task-id", "AA-01", "--dest", out], "--entry is required"),
+            ([p, "--task-id", "bad", "--entry", "true", "--dest", out], "task_id must match"),
             ([os.path.join(self.tmp, "nope"), "--task-id", "AA-01"], "does not exist"),
             ([p, p + "/run.py", "--task-id", "AA-01", "--entry", "true"], "written by two sources"),
             ([p + "=../up", "--task-id", "AA-01", "--entry", "true"], "outside the package"),
@@ -237,13 +239,15 @@ class PackTest(Env):
                 self.assertIn(code, err)
         # An invalid package: exit 1, errors on stderr only, nothing written.
         rc, stdout, err = self.pack(
-            p, "--task-id", "AA-01", "--entry", "./run.py", "--gpus", '{"count": 0}', "-o", out
+            p, "--task-id", "AA-01", "--entry", "./run.py", "--gpus", '{"count": 0}', "--dest", out
         )
         self.assertEqual((rc, stdout), (1, ""))
         self.assertIn("not executable", err)
         self.assertIn("gpus.count", err)
         self.assertFalse(os.path.exists(out))
-        detail = self.task("pack", p, "--task-id", "AA-01", "--entry", "./run.py", "-o", out)
+        detail = self.task(
+            "build", "package", p, "--task-id", "AA-01", "--entry", "./run.py", "--dest", out
+        )
         self.assertEqual(detail[0], 1)
         self.assertIs(self.get(detail[1], "valid"), False)
         self.assertEqual(self.get(detail[1], "errors", 0, "code"), "entry")
