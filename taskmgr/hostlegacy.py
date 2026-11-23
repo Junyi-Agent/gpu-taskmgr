@@ -1,7 +1,7 @@
 """`task host add` step old_code: remove what older versions installed outside remote_root.
 
-Everything about the layouts of older versions is here (and in hostprobe.legacy, the probe
-key "legacy"); delete both once no server has them. Older layouts, all under the server's
+Everything about the layouts of older versions is here (and in hostserver.legacy(), the
+probe key "legacy"); delete both once no server has them. Older layouts, all under the server's
 $HOME:
   ~/taskmgr/              the code tree before the zipapp; the old installer wrote
                           LEGACY_MARKER into it. A tree without the marker, or a git
@@ -29,7 +29,7 @@ OLD_REMOTE_ROOT = "taskmgr-root"
 
 
 class LegacyProbe(TypedDict, total=False):
-    """hostprobe.legacy: what of the older layouts the server has."""
+    """The probe key "legacy" (hostserver.legacy()): what of the older layouts the server has."""
 
     tree: bool  # ~/taskmgr is a marked code tree (and no git checkout)
     backups: list[str]  # ~/taskmgr.old-* directories (no git checkouts)
