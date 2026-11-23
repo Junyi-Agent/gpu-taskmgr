@@ -1,0 +1,3 @@
+[submodule ".claude/jy-skills"]
+	path = .claude/jy-skills
+	url = https://github.com/Junyi-Agent/skills.git
