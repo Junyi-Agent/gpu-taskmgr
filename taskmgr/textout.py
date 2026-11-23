@@ -3,10 +3,16 @@
 Every command returns (JSON object, exit code); a renderer turns that object into text.
 Everything is colored (stdout and stderr, text and JSON, on a terminal or not) unless
 `--plain` is given or NO_COLOR is set.
+
+Text output never prints a terminal control character it did not write itself: strings in
+command results, error messages and stderr notes come from servers and other users' process
+command lines, so clean() shows their control characters as \\xNN (`-o json` prints them
+exactly, JSON-escaped).
 """
 
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from typing import cast
@@ -47,6 +53,32 @@ STATE_COLORS = {
 
 _color = True  # set once per run by set_color()
 
+# Terminal control characters: C0 except tab and newline, DEL, and C1 (ESC starts every
+# escape sequence; C1 has single-byte forms of some).
+CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def clean(text: str) -> str:
+    """text with each terminal control character shown as \\xNN, so that a string from a
+    server cannot move the cursor, clear the screen or set the window title."""
+    return CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), text)
+
+
+def clean_value(v: object) -> object:
+    """A JSON value with clean() applied to every string in it (keys too)."""
+    if isinstance(v, str):
+        return clean(v)
+    if isinstance(v, Mapping):
+        return clean_result(cast(Mapping[str, object], v))
+    if isinstance(v, (list, tuple)):
+        return [clean_value(x) for x in cast(Sequence[object], v)]
+    return v
+
+
+def clean_result(out: Mapping[str, object]) -> dict[str, object]:
+    """A command result (or error object) as text renderers get it: every string cleaned."""
+    return {clean(k): clean_value(v) for k, v in out.items()}
+
 
 def set_color(plain: bool) -> bool:
     """Colors on unless --plain or NO_COLOR; returns the setting."""
@@ -83,8 +115,9 @@ def hint(text: str, color: bool | None = None) -> str:
 
 
 def note(label: str, sgr: str | None, text: str) -> None:
-    """A `label: text` line on stderr (progress, warnings, hints while a command runs)."""
-    _ = sys.stderr.write(message(label, sgr, text))
+    """A `label: text` line on stderr (progress, warnings, hints while a command runs); text
+    is cleaned."""
+    _ = sys.stderr.write(message(label, sgr, clean(text)))
     _ = sys.stderr.flush()
 
 
@@ -192,7 +225,9 @@ def render_fields(fields: Sequence[tuple[str, str, str | None]], color: bool) ->
 
 
 def error_text(err: Mapping[str, object], color: bool) -> str:
-    """The stderr text of an {"code", "message", "host"?, "details"?} error object."""
+    """The stderr text of an {"code", "message", "host"?, "details"?} error object, its
+    strings cleaned."""
+    err = clean_result(err)
     msg = str(err.get("message", ""))
     code = " " + paint("(%s)" % err["code"], GRAY, color) if err.get("code") else ""
     out = "%s %s%s\n" % (paint("error:", RED, color), msg, code)

@@ -45,6 +45,7 @@ from .textout import (
     YELLOW,
     CmdResult,
     as_dict,
+    clean_result,
     color_on,
     error_text,
     json_text,
@@ -1187,7 +1188,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if as_json or cmd.text is None:
         _ = sys.stdout.write(json_text(out) + "\n")
         return code
-    _ = sys.stdout.write(cmd.text(args, out, color_on()))
+    _ = sys.stdout.write(cmd.text(args, clean_result(out), color_on()))
     # An error that comes with a result (get jobs: every server failed; wait: timeout).
     err = as_dict(out.get("error"))
     if code and "code" in err:

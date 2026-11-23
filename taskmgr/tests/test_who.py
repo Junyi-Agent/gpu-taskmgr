@@ -5,10 +5,17 @@ import os
 import socket
 import subprocess
 import sys
+import unittest
 
+from taskmgr import render, textout
+from taskmgr.cliparse import Args
 from taskmgr.common import parse_utc_iso
 from taskmgr.records import JsonDict
 from taskmgr.tests.helpers import GPUS, Env, kill_quiet
+
+# A command line that would set the terminal title and clear the screen if printed as is.
+EVIL = "\x1b]0;pwned\x07\x1b[2J"
+SHOWN = "\\x1b]0;pwned\\x07\\x1b[2J"
 
 
 class GpuHoldersTest(Env):
@@ -67,6 +74,22 @@ class GpuHoldersTest(Env):
         c = self.submit(self.make_pkg())
         self.assertIsNone(self.get(self.ok("get", "job", c, "--host", "s1"), "gpu_holders"))
 
+    def test_control_characters_of_a_holder_are_not_printed(self) -> None:
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)", EVIL])
+        self.addCleanup(p.wait)
+        self.addCleanup(kill_quiet, p.pid)
+        self.set_gpu_apps([(GPUS[0][1], p.pid, 100)])
+        j = self.submit(self.make_pkg(gpus=[0]))  # no daemon: stays queued
+
+        h = self.objs(self.ok("get", "job", j, "--host", "s1"), "gpu_holders")
+        self.assertTrue(self.text(h[0], "command").endswith(" " + EVIL))  # -o json: exact
+        rc, text, _ = self.task("get", "job", j, "--host", "s1", text=True, color=True)
+        self.assertEqual(rc, 0)
+        assert isinstance(text, str)
+        self.assertIn(SHOWN, text)
+        for raw in ("\x1b]", "\x07", "\x1b[2J"):
+            self.assertNotIn(raw, text)
+
     def test_broken_nvidia_smi_is_reported_not_fatal(self) -> None:
         j = self.submit(self.make_pkg(gpus=[1]))
         with open(self.smi, "w") as f:
@@ -121,3 +144,29 @@ class CancelRecordTest(Env):
         rc, out, err = self.task("cancel", "job", j, "--host", "s1", env=old)
         self.assertEqual(rc, 0, err)
         self.assertEqual(self.get(out, "cancel_request", "via"), "remote")
+
+
+class CleanTextTest(unittest.TestCase):
+    """Text output shows control characters from servers as \\xNN (runs on any OS)."""
+
+    def test_clean(self) -> None:
+        self.assertEqual(
+            textout.clean("a\tb\nc" + EVIL + "\x00\x7f\x9b"),
+            ("a\tb\nc" + SHOWN + "\\x00\\x7f\\x9b"),
+        )
+        self.assertEqual(textout.clean("ünïcode ok"), "ünïcode ok")
+
+    def test_rendered_status_and_errors(self) -> None:
+        out: dict[str, object] = {
+            "jobid": "j1",
+            "state": "queued",
+            "gpu_holders": [{"gpu": 0, "pid": 7, "user": "eve", "command": "x " + EVIL}],
+            "cancel_request": {"by": "eve" + EVIL, "at": "now", "via": "cli"},
+        }
+        text = render.text_status(Args(), textout.clean_result(out), True)
+        self.assertIn("x " + SHOWN, text)
+        self.assertIn("eve" + SHOWN, text)
+        self.assertNotIn("\x1b]", text)
+        self.assertNotIn("\x07", text)
+        err = textout.error_text({"code": "remote_error", "message": "m" + EVIL}, False)
+        self.assertEqual(err, "error: m%s (remote_error)\n" % SHOWN)

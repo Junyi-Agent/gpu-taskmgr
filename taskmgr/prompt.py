@@ -9,7 +9,7 @@ terminal. In plan mode nothing is asked and nothing is changed: every change is 
 import os
 import sys
 
-from .textout import BOLD, YELLOW, paint
+from .textout import BOLD, YELLOW, clean, paint
 
 
 class Declined(Exception):
@@ -46,8 +46,9 @@ class Ui:
         _ = sys.stderr.flush()
 
     def info(self, text: str, sgr: str | None = None) -> None:
+        """Indented lines of text (which may come from the server: cleaned)."""
         for line in text.splitlines() or [""]:
-            self.say("      " + paint(line, sgr))
+            self.say("      " + paint(clean(line), sgr))
 
     def confirm(self, change: str, destructive: bool = False) -> None:
         """Describe a change and ask; raises Declined or NonInteractive, Planned in plan
