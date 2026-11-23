@@ -9,6 +9,7 @@ terminal. In plan mode nothing is asked and nothing is changed: every change is 
 import os
 import sys
 
+from . import textout
 from .textout import BOLD, YELLOW, clean, paint
 
 
@@ -41,9 +42,8 @@ class Ui:
         )
 
     @staticmethod
-    def say(text: str = "", sgr: str | None = None) -> None:
-        _ = sys.stderr.write(paint(text, sgr) + "\n")
-        _ = sys.stderr.flush()
+    def say(text: str, sgr: str | None = None) -> None:
+        textout.say(text, sgr)
 
     def info(self, text: str, sgr: str | None = None) -> None:
         """Indented lines of text (which may come from the server: cleaned)."""
