@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
 from . import cliparse, hostcmds, package, packcmd, render
@@ -56,6 +56,7 @@ from .textout import (
 )
 from .transport import (
     ConnError,
+    NoReplyError,
     Remote,
     load_machines,
     query_all,
@@ -310,14 +311,15 @@ def query_hosts(
     host: str | None,
     rargs: Sequence[object],
     keep_features: bool = False,
+    call: Callable[[Remote, float], JsonDict] | None = None,
 ) -> tuple[list[tuple[str, JsonDict]], dict[str, object], int]:
-    """Call rargs on the query targets: ([(host, reply)] in machine-list order, the
-    {"errors", "skipped", "complete"} part of the result, exit code).
+    """Call rargs (or `call`, see query_all) on the query targets: ([(host, reply)] in
+    machine-list order, the {"errors", "skipped", "complete"} part of the result, exit code).
 
     The exit code is 2 (and the result has an all_hosts_failed error) when no target answered.
     """
     servers, skipped = query_targets(servers, host)
-    results, errors = query_all(servers, rargs)
+    results, errors = query_all(servers, rargs, call=call)
     replies = [
         (s["name"], _strip(results[s["name"]], keep_features))
         for s in servers
@@ -353,10 +355,28 @@ def cmd_get_job(args: Args) -> CmdResult:
     return render_status(server["name"], st, complete), 0
 
 
+def newest_jobs(remote: Remote, rargs: list[object], limit: int, timeout: float) -> JsonDict:
+    """`jobs` of one server with --limit, so it sends only its `limit` newest jobs. A server
+    without the jobs_limit feature rejects --limit with a usage error (no JSON reply): it is
+    asked again for all its jobs, and cmd_jobs cuts the list."""
+    try:
+        return remote.call(rargs + ["--limit", limit], None, timeout)
+    except NoReplyError as e:
+        if "unrecognized arguments: --limit" not in e.message:
+            raise
+    return remote.call(rargs, None, timeout)
+
+
 def cmd_jobs(args: Args) -> CmdResult:
     limit = args.limit or DEFAULT_JOBS_LIMIT
-    rargs = ["jobs"] + (["--state", args.state] if args.state else [])
-    replies, out, code = query_hosts(load_machines(home_dir(args)), args.host, rargs)
+    rargs: list[object] = ["jobs"]
+    if args.state:
+        rargs += ["--state", args.state]
+
+    def ask(remote: Remote, timeout: float) -> JsonDict:
+        return newest_jobs(remote, rargs, limit, timeout)
+
+    replies, out, code = query_hosts(load_machines(home_dir(args)), args.host, rargs, call=ask)
 
     jobs = [{"host": h, **_obj(j)} for h, r in replies for j in _arr(r.get("jobs", []))]
     jobs.sort(key=lambda j: (str(j.get("submitted_at")), str(j["host"]), str(j.get("jobid"))))

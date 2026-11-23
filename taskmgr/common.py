@@ -36,12 +36,14 @@ PROTOCOL_VERSION = 2
 #   gpu_holders       `status` of a job waiting for GPUs lists who holds them
 #   gpu_select        task.json `gpus` as an object: GPUs chosen at launch by condition
 #   cancel_by         `cancel --by USER@HOST` records who asked (job.json cancel_request)
-# `task submit` refuses a package that uses a feature its server does not report
+#   jobs_limit        `jobs --limit N` returns only the N most recently submitted jobs
+# `task create job` refuses a package that uses a feature its server does not report
 # (package.task_features), before the upload.
 FEATURES: tuple[str, ...] = (
     "cancel_by",
     "gpu_holders",
     "gpu_select",
+    "jobs_limit",
     "precompile",
     "strict_task_json",
 )

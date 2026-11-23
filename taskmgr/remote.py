@@ -72,6 +72,7 @@ class Args(argparse.Namespace):
     cmd: str = ""
     submission_key: str | None = None
     state: str | None = None
+    limit: int | None = None
     jobid: str = ""
     as_: str | None = None
     by: str | None = None
@@ -243,6 +244,11 @@ def _dedup_ack(store: Store, key: str, chash: str) -> dict[str, object] | None:
 
 
 def cmd_jobs(store: Store, args: Args) -> int:
+    """The jobs in this store, oldest first; --limit N: only the N most recently submitted
+    (`task get jobs -n N` needs no more from each server)."""
+    if args.limit is not None and args.limit < 1:
+        raise TaskmgrError("bad_args", "--limit must be at least 1")
+
     # A directory rename during the scan can show a job twice; keep its newest record.
     latest: dict[str, Job] = {}
     for _, j in store.iter_jobs():
@@ -253,6 +259,8 @@ def cmd_jobs(store: Store, args: Args) -> int:
         job_summary(j) for j in latest.values() if not args.state or j.get("state") == args.state
     ]
     jobs.sort(key=lambda j: (j.get("submitted_at") or "", j["jobid"]))
+    if args.limit is not None:
+        jobs = jobs[-args.limit :]
     return emit({"jobs": jobs})
 
 
@@ -660,6 +668,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = r.add_argument("--submission-key")
     j = sub.add_parser("jobs")
     _ = j.add_argument("--state")
+    _ = j.add_argument("--limit", type=int)
     for name in ("status", "cancel", "retry"):
         s = sub.add_parser(name)
         _ = s.add_argument("jobid")
