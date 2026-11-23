@@ -1,9 +1,11 @@
 """GPU discovery via nvidia-smi and resolution of task GPU declarations."""
 
+import contextlib
 import os
 import pwd
 import shutil
 import subprocess
+import time
 from collections.abc import Iterable, Sequence
 from typing import NamedTuple
 
@@ -22,17 +24,29 @@ def nvidia_smi_path() -> str:
     )
 
 
-def _smi(query: str) -> list[list[str]]:
-    """Run `nvidia-smi <query> --format=csv,noheader,nounits`: the rows, split on commas."""
+# How long one nvidia-smi call may take before it is killed and counts as failed.
+SMI_TIMEOUT = 60.0
+
+
+def _smi(query: str, timeout: float = SMI_TIMEOUT) -> list[list[str]]:
+    """Run `nvidia-smi <query> --format=csv,noheader,nounits`: the rows, split on commas.
+
+    After `timeout` seconds nvidia-smi is killed and not waited for: one stuck in the
+    driver (state D) survives SIGKILL, and subprocess.run would wait for it forever."""
     cmd = [nvidia_smi_path(), query, "--format=csv,noheader,nounits"]
     try:
-        out = subprocess.run(
-            cmd,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            timeout=60,
-            check=True,
-        ).stdout
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                _ = proc.wait(1)  # else subprocess reaps it later (its _active list)
+            raise
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
     except (OSError, subprocess.SubprocessError) as e:
         raise TaskmgrError("nvidia_smi_failed", "cannot query GPUs with nvidia-smi: %s" % e) from e
     return [
@@ -95,13 +109,13 @@ def resolve_declarations(decls: Sequence[object]) -> list[GpuDecl]:
     return out
 
 
-def query_compute_apps() -> list[tuple[str, int, int | None]]:
+def query_compute_apps(timeout: float = SMI_TIMEOUT) -> list[tuple[str, int, int | None]]:
     """The processes that hold a CUDA context: [(gpu uuid, pid, used memory MiB or None)].
 
     The pids are those of the server's pid namespace; a process in another namespace (a
     container) has a pid that /proc here may not show."""
     apps: list[tuple[str, int, int | None]] = []
-    for parts in _smi("--query-compute-apps=gpu_uuid,pid,used_memory"):
+    for parts in _smi("--query-compute-apps=gpu_uuid,pid,used_memory", timeout):
         if len(parts) < 2 or not parts[0].startswith("GPU-"):
             continue  # also "No running processes found"
         pid = _int(parts[1])
@@ -174,13 +188,17 @@ class GpuState(NamedTuple):
     apps: int  # processes with a CUDA context on it
 
 
-def query_gpu_state() -> list[GpuState]:
-    """Every GPU with its free memory, compute mode and number of compute processes."""
+def query_gpu_state(timeout: float = SMI_TIMEOUT) -> list[GpuState]:
+    """Every GPU with its free memory, compute mode and number of compute processes; the
+    two nvidia-smi calls share one `timeout`."""
+    deadline = time.monotonic() + timeout
     apps: dict[str, int] = {}
-    for uuid, _, _ in query_compute_apps():
+    for uuid, _, _ in query_compute_apps(timeout):
         apps[uuid] = apps.get(uuid, 0) + 1
+
+    left = max(0.1, deadline - time.monotonic())
     out: list[GpuState] = []
-    for parts in _smi("--query-gpu=index,uuid,memory.free,memory.total,compute_mode"):
+    for parts in _smi("--query-gpu=index,uuid,memory.free,memory.total,compute_mode", left):
         if len(parts) < 5:
             continue
         index = _int(parts[0])

@@ -202,7 +202,10 @@ index. The choice is recorded in `job.json` `gpus` (`{"declared": <index>, "uuid
 When fewer than `count` GPUs qualify, the job stays `queued` (shown `pending-gpu`) with a
 `pending_reason` such as `waiting for 2 GPUs with >= 40 GiB free (1 qualify now)`, and the
 scheduler tries again on every pass (`scheduler_poll_seconds`, default 1 s), like the
-GPU-busy relaunch. A waiting job reserves no GPU: a later job with fixed GPUs that are free
+GPU-busy relaunch. It reads nvidia-smi for this at most every 5 s, and again as soon as a
+taskmgr job with GPUs starts or ends; when nvidia-smi fails or takes more than 10 s, these
+jobs wait (`pending_reason` `cannot choose GPUs: ...`) and the next read is 30 s later,
+while other jobs are scheduled as usual. A waiting job reserves no GPU: a later job with fixed GPUs that are free
 can start before it. If the entry exits 75 on a chosen GPU (another process took it after the
 choice), the job is queued again at its place with its GPUs cleared, and the first pass after
 `gpu_retry_interval_seconds` chooses again (until then `pending_reason` reads

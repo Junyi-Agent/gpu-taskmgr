@@ -138,7 +138,11 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 全部空闲且都不在预留集合中时才启动，否则把它需要的 GPU 加入预留集合；如果作业用到的某块 GPU
 被 `unknown` 作业占用，它既不启动也不预留。`gpus: []` 的作业只受 `max_cpu_jobs` 限制。带 `gpu_request` 且还没有 GPU 的作业（task.json 的 `gpus` 为对象，
 见 [[docs/task-package.zh-CN]] 按条件选择 GPU）轮到它时，在没有被占用或预留的 GPU 中挑选；挑选依据的显存和进程信息由
-本轮调度在拿状态锁之前用 nvidia-smi 读取；选择结果在派发前写入 `job.json` 的 `gpus`。没有合格的 GPU 时，
+本轮调度在拿状态锁之前用 nvidia-smi 读取；选择结果在派发前写入 `job.json` 的 `gpus`。只有这样的作业
+到期（没有因 GPU 忙退出而被推迟）时才读取，读到的结果最多复用 5 秒，除非此后派发了带 GPU 的作业，或者
+占用 GPU 的 taskmgr 作业集合变了。一次读取的两次 nvidia-smi 调用共用 10 秒超时（超时后杀掉进程，不等它
+退出）；失败后（同一条消息只记一次日志）这些作业继续等待，`pending_reason` 为 `cannot choose GPUs: ...`，
+30 秒后再读，所以 nvidia-smi 挂住时其他作业每 30 秒最多被耽误 10 秒。没有合格的 GPU 时，
 `pending_reason` 说明原因（只在文字变化时写入），作业不预留任何 GPU。派发时先
 写 `runner.json`，再写 `job.json`（running）并重命名目录，最后才两次 fork 出 shim（新会话，被 init
 收养），并把已加锁的 `shim.lock` 交给它。shim 运行 `python3 -m taskmgr.remote ... shim`，

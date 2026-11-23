@@ -39,6 +39,13 @@ from .store import (
 INCOMING_MAX_AGE = 3600
 # Consecutive errors while recovering or tracking one job before it is marked unknown.
 MAX_JOB_ERRORS = 3
+# GPU state for choosing GPUs (nvidia-smi): reused for this many seconds while the set of
+# taskmgr jobs holding GPUs stays the same; the two nvidia-smi calls of one read may take
+# this long together; after a failed read the next one waits this long (meanwhile the
+# jobs that choose GPUs wait, and every other job is scheduled as usual).
+GPU_STATE_MAX_AGE = 5.0
+GPU_QUERY_TIMEOUT = 10.0
+GPU_QUERY_RETRY = 30.0
 
 
 _log_file: TextIO | None = None
@@ -61,6 +68,10 @@ class Daemon:
         self._daemon_lock_fd: int | None = None
         self.job_errors: dict[str, int] = {}  # jobid -> consecutive errors
         self.given_up: set[str] = set()  # could not even be marked unknown; skipped
+        # The last GPU state read for choosing GPUs: (monotonic time, holders, state).
+        self.gpu_cache: tuple[float, object, list[GpuState]] | None = None
+        # The last failed read: (monotonic time, error message).
+        self.gpu_failure: tuple[float, str] | None = None
 
     def guarded(self, jobid: str, what: str, fn: Callable[[str], object]) -> None:
         """Run fn(jobid); an error there must not stop the other jobs or scheduling.
@@ -170,18 +181,51 @@ class Daemon:
     def gpu_state(self) -> tuple[list[GpuState] | None, str]:
         """The GPUs' memory and processes for jobs that choose their GPUs, read before the
         state lock is taken (nvidia-smi can be slow); (None, "") when no queued job needs
-        them, (None, why) when nvidia-smi failed."""
+        them, (None, why) when nvidia-smi failed.
+
+        A read is reused for GPU_STATE_MAX_AGE seconds unless a job with GPUs was
+        dispatched, or a taskmgr job started or stopped holding GPUs, since then. After a
+        failure (logged once per message) nvidia-smi is not run again for GPU_QUERY_RETRY
+        seconds."""
         now = time.time()
         interval = float(self.store.config["gpu_retry_interval_seconds"])
+        jobs = [j for _, j in self.store.iter_jobs(True)]
         if not any(
             j["state"] == "queued" and choosing_gpus(j) and not held_back(j, now, interval)
-            for _, j in self.store.iter_jobs(True)
+            for j in jobs
         ):
             return None, ""
+
+        holders = sorted(
+            (j["jobid"], j["state"])
+            for j in jobs
+            if j["state"] in GPU_HOLDING_STATES and run_gpus(j)
+        )
+        mono = time.monotonic()
+        cache = self.gpu_cache
+        if cache is not None and cache[1] == holders and mono - cache[0] < GPU_STATE_MAX_AGE:
+            return cache[2], ""
+        failure = self.gpu_failure
+        if failure is not None and mono - failure[0] < GPU_QUERY_RETRY:
+            return None, failure[1]
+
         try:
-            return query_gpu_state(), ""
+            state = query_gpu_state(GPU_QUERY_TIMEOUT)
         except TaskmgrError as e:
+            if failure is None or failure[1] != e.message:
+                log(
+                    "cannot read the GPU state to choose GPUs (next try in %gs): %s"
+                    % (GPU_QUERY_RETRY, e.message)
+                )
+            self.gpu_failure = (time.monotonic(), e.message)
+            self.gpu_cache = None
             return None, e.message
+
+        if failure is not None:
+            log("GPU state readable again")
+        self.gpu_failure = None
+        self.gpu_cache = (time.monotonic(), holders, state)
+        return state, ""
 
     def choose(
         self, jobdir: str, job: Job, state: list[GpuState] | None, why: str, taken: set[str]
@@ -250,6 +294,9 @@ class Daemon:
                     continue  # do not let an unknown job lock other GPUs via reservation
                 if all(u not in held and u not in reserved for u in uuids):
                     now_state = self.dispatch(jobdir, job)
+                    # A read from before this dispatch does not show the run's processes,
+                    # nor their absence once it ended: the next choice reads again.
+                    self.gpu_cache = None
                     if now_state in ("running", "unknown"):
                         for u in uuids:
                             held[u] = now_state
