@@ -241,7 +241,7 @@ class GpuSelectBusyBackoffTest(Env):
             self.wait_for(busy_reason, 10, "pending_reason"),
             r"^entry exited 75 \(GPU busy, #\d+\); choosing GPUs again from \S+Z$",
         )
-        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.ok("cancel", "job", j, "--host", "s1")
         job = self.wait_state(j, "cancelled")
 
         self.assertGreaterEqual(job.get("gpu_busy_requeues", 0), 3)
@@ -284,4 +284,4 @@ class GpuStateReadTest(Env):
         self.assertLess(time.monotonic() - t0, 25)
         self.assertEqual(self.daemon_log().count("cannot read the GPU state"), 1)
         self.assertIn("timed out", str(self.job(j).get("pending_reason")))
-        _ = self.ok("cancel", j, "--host", "s1")
+        _ = self.ok("cancel", "job", j, "--host", "s1")
