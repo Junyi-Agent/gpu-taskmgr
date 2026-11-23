@@ -69,8 +69,10 @@ def step_old_code(s: Setup) -> tuple[str, str]:
     files = ["%s/%s" % (home, OLD_CODE_LINK)] if p.get("link") else []
     old_store = "%s/%s" % (home, OLD_CODE_STORE)
     files += ["%s/%s" % (old_store, n) for n in p.get("files") or []]
+
     if not trees and not files:
         return "ok", "no code of an older version"
+
     s.ui.info(
         "the service runs %s; this code from older versions is not used any more:" % s.code_path()
     )
@@ -81,6 +83,7 @@ def step_old_code(s: Setup) -> tuple[str, str]:
         + "it stop working; run `task host add %s` there" % s.host_name(),
         destructive=True,  # outside remote_root: --yes does not answer it
     )
+
     # a git checkout is never deleted, even if it appeared since the probe
     script = "".join(
         "if [ -e %s ]; then echo %s is a git checkout, not deleted >&2; exit 1; fi\n"
@@ -90,6 +93,7 @@ def step_old_code(s: Setup) -> tuple[str, str]:
     script += "rm -rf -- %s\n" % " ".join(shlex.quote(t) for t in trees + files)
     if old_store != s.root():
         script += "rmdir %s 2>/dev/null || true\n" % shlex.quote(old_store)
+
     _ = s.sh(script)
     left = s.legacy_probe()
     if left.get("tree") or left.get("backups") or left.get("link") or left.get("files"):

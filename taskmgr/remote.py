@@ -112,11 +112,13 @@ def emit(obj: Mapping[str, object], code: int = 0) -> int:
 
 def cmd_receive(store: Store, args: Args) -> int:
     store.ensure_layout()
+
     key = args.submission_key or ("auto-" + secrets.token_hex(12))
     if not SUBMISSION_KEY_RE.match(key):
         raise TaskmgrError(
             "bad_submission_key", "submission key must match ^[A-Za-z0-9._-]{1,128}$"
         )
+
     # Flocked for the whole upload and reception.
     with staging_dir(store, "up-%s" % time.strftime("%Y%m%d%H%M%S")) as updir:
         tar_path = os.path.join(updir, "package.tar.gz")
@@ -125,6 +127,7 @@ def cmd_receive(store: Store, args: Args) -> int:
             receive_upload(sys.stdin.buffer, f, store.config["max_package_bytes"])
         if os.environ.get("TASKMGR_TEST_RECEIVE_PAUSE"):  # test-only: hold the upload open
             time.sleep(float(os.environ["TASKMGR_TEST_RECEIVE_PAUSE"]))
+
         ext = os.path.join(updir, "extract")
         _ = package.safe_extract(tar_path, ext, store.config["max_package_bytes"])
         root = package.package_root(ext)
@@ -132,12 +135,14 @@ def cmd_receive(store: Store, args: Args) -> int:
         # earlier run would otherwise become this run's result).
         _ = package.remove_excluded(root)
         chash = package.content_hash(root)
+
         # A retry of an already enqueued submission answers from the key mapping before
         # any check that depends on the machine's current state (e.g. GPU visibility).
         with store.state_lock():
             ack = _dedup_ack(store, key, chash)
         if ack:
             return emit(ack)
+
         # Extraction already enforced this server's max_package_bytes.
         errors, task = package.validate_dir(root, max_bytes=None)
         if errors:
@@ -147,15 +152,18 @@ def cmd_receive(store: Store, args: Args) -> int:
                 details=errors,
             )
         assert task is not None  # validate_dir returns the task when there are no errors
+
         spec = task.get("gpus")
         request = request_from_task(spec) if isinstance(spec, dict) else None
         gpus = resolve_declarations(spec) if isinstance(spec, list) else []
+
         pkg = os.path.join(updir, "package")
         os.rename(root, pkg)
         if os.path.exists(ext):
             remove_tree(ext)
         make_read_only(pkg)
         sync_tree(updir)  # package/ is the source of the run: durable before the ACK
+
         with store.state_lock():
             ack = _dedup_ack(store, key, chash)
             if ack:
@@ -171,6 +179,7 @@ def cmd_receive(store: Store, args: Args) -> int:
                 phase=initial_phase(task),
                 gpu_request=request,
             )
+
             # The key mapping is written first; a mapping whose job does not exist is stale.
             atomic_write_json(
                 store.path("submission-keys", key + ".json"),
@@ -182,6 +191,7 @@ def cmd_receive(store: Store, args: Args) -> int:
                 },
             )
             enqueue_staged(store, updir, job)
+
         return emit(
             {
                 "ok": True,
@@ -291,6 +301,7 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
         if e.code == "not_found":
             return {"found": False, "jobid": jobid}
         raise
+
     terminal = job["state"] in TERMINAL_STATES
     ran = has_run(job)
     out: dict[str, object] = {
@@ -299,6 +310,7 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
         "has_run": ran,
         "terminal": terminal,
     }
+
     if terminal:
         res: JsonValue = None
         if ran:
@@ -309,12 +321,14 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
                 return job_status(store, jobid, False)
         out["result"] = res if isinstance(res, dict) else synthesized_result(job)
         return out
+
     if waits_for_gpu(job):
         try:
             out["gpu_holders"] = gpu_holders(waited_gpus(job))
         except TaskmgrError as e:
             out["gpu_holders"] = None
             out["gpu_holders_error"] = e.message
+
     if ran:
         found, _ = store.read_runner(jd)
         runner: Mapping[str, object] = found or {}
@@ -334,6 +348,7 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
         }
         info["identity"] = identity_of(runner)
         out["run"] = info
+
         prog, err = try_read_json(
             os.path.join(jd, "workdir", "progress.json"), follow_symlinks=False
         )
@@ -362,6 +377,7 @@ def cancel_request(by: str | None) -> CancelRequest:
 
 def cmd_cancel(store: Store, args: Args) -> int:
     request = cancel_request(args.by)
+
     with store.state_lock():
         jd, job = store.load_job(args.jobid)
         changed = False
@@ -377,6 +393,7 @@ def cmd_cancel(store: Store, args: Args) -> int:
             job["cancel_request"] = request
             _ = store.save_job(jd, job)
             changed = True
+
     out: dict[str, object] = {
         "jobid": job["jobid"],
         "state": job["state"],
@@ -397,6 +414,7 @@ def cmd_retry(store: Store, args: Args) -> int:
             staged: str | None = updir
         except OSError:  # the job directory moved (the job was still running)
             staged = None
+
         with store.state_lock():
             jd, job = store.load_job(args.jobid)
             if job["state"] == "unknown":
@@ -409,6 +427,7 @@ def cmd_retry(store: Store, args: Args) -> int:
                     "job %s is %s; only terminal jobs can be retried" % (args.jobid, job["state"]),
                 )
             new = clone_job(store, jd, job, automatic=False, staged=staged)
+
     return emit(
         {
             "jobid": new["jobid"],
@@ -426,12 +445,14 @@ def cmd_resolve(store: Store, args: Args) -> int:
             raise TaskmgrError("bad_args", "--as only accepts 'stopped'")
         if args.confirm != args.jobid:
             raise TaskmgrError("bad_args", "--confirm must repeat the jobid %s" % args.jobid)
+
         with store.state_lock():
             jd, job = store.load_job(args.jobid)
             if job["state"] != "unknown":
                 raise TaskmgrError(
                     "not_unknown", "job %s is %s, not unknown" % (args.jobid, job["state"])
                 )
+
             # The run record is made final in memory and written only by and after
             # end_without_result: if that fails, runner.json is unchanged and the job
             # stays unknown. (A run record marked stopped is never re-run, see assess.)
@@ -445,24 +466,28 @@ def cmd_resolve(store: Store, args: Args) -> int:
             if runner is not None:
                 store.write_runner(jd, runner)
         return emit({"jobid": args.jobid, "state": job["state"], "changed": True})
+
     with store.state_lock():
         _, job = store.load_job(args.jobid)
         if job["state"] != "unknown":
             return emit({"jobid": args.jobid, "state": job["state"], "changed": False})
         res = assess(store, args.jobid, resolve=True)
         _, job = store.load_job(args.jobid)
+
     out: dict[str, object] = {
         "jobid": args.jobid,
         "state": job["state"],
         "changed": job["state"] != "unknown",
         "decision": res["decision"],
     }
+
     if "identity" in res:
         out["identity"] = res["identity"]
     if "alive_pids" in res:
         out["alive_pids"] = res["alive_pids"]
     if "reason" in res:
         out["reason"] = res["reason"]
+
     if job["state"] == "unknown":
         jd = store.find_job_dir(args.jobid)
         runner, _ = store.read_runner(jd) if jd else (None, None)
@@ -489,10 +514,12 @@ def cmd_logs(store: Store, args: Args) -> int:
             raise _no_run(args.jobid)
         time.sleep(0.5)  # --follow on a queued job waits until it starts
         jd, job = store.load_job(args.jobid)
+
     name = {"stdout": "stdout.log", "stderr": "stderr.log", "shim": "shim.log"}[args.stream]
     out = sys.stdout.buffer
     f: IO[bytes] | None = None
     runner: Runner | None
+
     while True:
         jd, job = store.load_job(args.jobid)
         if f is None:
@@ -507,6 +534,7 @@ def cmd_logs(store: Store, args: Args) -> int:
                     break
                 _ = out.write(chunk)
             _ = out.flush()
+
         if not args.follow:
             return 0
         runner, _ = store.read_runner(jd)
@@ -515,6 +543,7 @@ def cmd_logs(store: Store, args: Args) -> int:
             or job["state"] in TERMINAL_STATES
             or job["state"] == "unknown"
         )
+
         if ended:
             if f is None:
                 try:
@@ -535,6 +564,7 @@ def cmd_fetch(store: Store, args: Args) -> int:
     jd, job = store.load_job(args.jobid)
     if not has_run(job):
         raise _no_run(args.jobid)
+
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|gz") as tar:
         skipped: list[SkippedEntry] = []
         for name in FETCH_FILES:
@@ -562,16 +592,19 @@ def job_dir_problems(jobdir: str) -> tuple[str | None, list[str]]:
     reasons: list[str] = []
     if os.path.isdir(os.path.join(jobdir, "attempts")):
         reasons.append("has attempts/ (protocol 1 layout)")
+
     obj, err = try_read_json(os.path.join(jobdir, "job.json"))
     if not isinstance(obj, dict):
         reasons.append("job.json is %s" % (err or "not a JSON object"))
         return None, reasons
+
     missing = [k for k in JOB_REQUIRED_KEYS if k not in obj]
     if missing:
         reasons.append("job.json lacks %s" % ", ".join(missing))
     old = [k for k in PROTOCOL1_JOB_KEYS if k in obj]
     if old:
         reasons.append("job.json has protocol 1 keys %s" % ", ".join(old))
+
     state = obj.get("state")
     return (state if isinstance(state, str) else None), reasons
 
@@ -608,6 +641,7 @@ def inspect_root(root: str) -> dict[str, object]:
                     "submission_keys": [],
                 }
             )
+
     by_jobid = {cast(str, e["jobid"]): e for e in incompatible}
     try:
         key_files = sorted(os.listdir(os.path.join(root, "submission-keys")))
@@ -621,6 +655,7 @@ def inspect_root(root: str) -> dict[str, object]:
         entry = by_jobid.get(jobid) if isinstance(jobid, str) else None
         if entry is not None:
             cast(list[str], entry["submission_keys"]).append("submission-keys/" + name)
+
     return {
         "root": root,
         "exists": os.path.isdir(root),
