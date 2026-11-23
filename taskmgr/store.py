@@ -255,8 +255,7 @@ class Store:
     @property
     def gpu_busy_exit_code(self) -> int | None:
         """The exit code meaning "GPU busy, start me again"; None when disabled."""
-        code: object = self.config.get("gpu_busy_exit_code", 75)
-        return code if isinstance(code, int) and not isinstance(code, bool) else None
+        return self.config["gpu_busy_exit_code"]
 
     def ended_gpu_busy(self, runner: Runner) -> bool:
         """Whether a non-final run record shows an entry that exited for "GPU busy" and was
@@ -681,7 +680,7 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
         # leaves the clone behind; reuse it instead of cloning twice. Only this step
         # creates a job with retry_of == jobid while jobid is not terminal.
         rerun_job = next((j for _, j in store.iter_jobs() if j.get("retry_of") == jobid), None)
-        maxr = int(store.config.get("max_auto_restarts", 2))
+        maxr = store.config["max_auto_restarts"]
         restarts = job.get("auto_restarts", 0)
         error: ErrorInfo = {"kind": "interrupted", "message": reason}
         if rerun_job is not None:

@@ -120,11 +120,11 @@ def cmd_receive(store: Store, args: Args) -> int:
     with staging_dir(store, "up-%s" % time.strftime("%Y%m%d%H%M%S")) as updir:
         tar_path = os.path.join(updir, "package.tar.gz")
         with open(tar_path, "wb") as f:
-            receive_upload(sys.stdin.buffer, f, store.config.get("max_package_bytes"))
+            receive_upload(sys.stdin.buffer, f, store.config["max_package_bytes"])
         if os.environ.get("TASKMGR_TEST_RECEIVE_PAUSE"):  # test-only: hold the upload open
             time.sleep(float(os.environ["TASKMGR_TEST_RECEIVE_PAUSE"]))
         ext = os.path.join(updir, "extract")
-        _ = package.safe_extract(tar_path, ext, store.config.get("max_package_bytes"))
+        _ = package.safe_extract(tar_path, ext, store.config["max_package_bytes"])
         root = package.package_root(ext)
         # What a directory upload would not have carried (a stale result.json from an
         # earlier run would otherwise become this run's result).
