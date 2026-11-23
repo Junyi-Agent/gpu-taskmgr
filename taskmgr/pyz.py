@@ -137,14 +137,14 @@ class Built:
     outputs: list[tuple[str, int]]  # (absolute path, size in bytes)
 
 
-def build(out_dir: str, targets: tuple[tuple[str, str], ...] = TARGETS) -> Built:
+def build(out_dir: str) -> Built:
     """Write the archives into out_dir (created if needed; existing files are replaced)."""
     os.makedirs(out_dir, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="taskmgr-pyz-") as tmp:
         staged = os.path.join(tmp, "stage")
         version, files = stage(staged)
         outputs: list[tuple[str, int]] = []
-        for name, module in targets:
+        for name, module in TARGETS:
             target = os.path.join(out_dir, name)
             part = os.path.join(tmp, name)
             write_archive(staged, part, module)

@@ -366,7 +366,8 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
                 )
 
 
-def check_progress_json(p: object, errors: list[Problem], path: str = "progress.json") -> None:
+def check_progress_json(p: object, errors: list[Problem]) -> None:
+    path = "progress.json"
     if not isinstance(p, dict):
         _err(errors, "schema", "progress.json must be a JSON object", path)
         return

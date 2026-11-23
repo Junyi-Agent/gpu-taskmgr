@@ -129,9 +129,9 @@ def warn(text: str) -> None:
 JSON_KEY, JSON_STR, JSON_NUM, JSON_LIT = "34", GREEN, CYAN, MAGENTA
 
 
-def json_text(obj: object, color: bool | None = None, indent: int | None = 2) -> str:
-    """json.dumps(obj, indent=indent, sort_keys=True), highlighted."""
-    if not (_color if color is None else color):
+def json_text(obj: object, indent: int | None = 2) -> str:
+    """json.dumps(obj, indent=indent, sort_keys=True), highlighted unless colors are off."""
+    if not _color:
         return json.dumps(obj, indent=indent, sort_keys=True)
     sep = "\n" if indent is not None else ""
 
