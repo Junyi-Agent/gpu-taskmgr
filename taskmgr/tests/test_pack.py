@@ -304,11 +304,20 @@ class PackTest(Env):
             ([p + "=../up", "--task-id", "AA-01", "--entry", "true"], "outside the package"),
             ([p, "--task-id", "AA-01", "--entry", "true", "--env", "NOEQ"], "NAME=VALUE"),
             ([p, "--task-id", "AA-01", "--entry", "true", "--gpus", "{bad"], "not valid JSON"),
+            (
+                [p, "--task-id", "AA-01", "--entry", "true", "--task-md", p + "/nope.md"],
+                "--task-md file does not exist: %s/nope.md (not_found)" % p,
+            ),
+            (
+                [p, "--task-id", "AA-01", "--entry", "true", "--task-md", p + "/spec"],
+                "--task-md must be a file, not a directory: %s/spec (bad_args)" % p,
+            ),
         ):
             with self.subTest(args=args):
                 rc, stdout, err = self.pack(*args)
                 self.assertEqual((rc, stdout), (2, ""), err)
                 self.assertIn(code, err)
+                self.assertNotIn("Traceback", err)
         # An invalid package: exit 1, errors on stderr only, nothing written.
         rc, stdout, err = self.pack(
             p, "--task-id", "AA-01", "--entry", "./run.py", "--gpus", '{"count": 0}', "--dest", out

@@ -265,6 +265,19 @@ def add_helpers(root: str, cute: bool) -> list[str]:
     return warnings
 
 
+def copy_task_md(src: str, dst: str) -> None:
+    """--task-md FILE: a missing FILE or a directory is a user error, as a missing SRC is."""
+    if not os.path.exists(src):
+        raise TaskmgrError("not_found", "--task-md file does not exist: %s" % src)
+    if os.path.isdir(src):
+        raise TaskmgrError("bad_args", "--task-md must be a file, not a directory: %s" % src)
+
+    try:
+        _ = shutil.copyfile(src, dst)
+    except OSError as e:
+        raise TaskmgrError("copy_failed", "cannot copy --task-md %s: %s" % (src, e)) from e
+
+
 def _within(path: str, root: str) -> bool:
     """Whether path is root or inside it (both absolute and normalized)."""
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
@@ -319,7 +332,7 @@ def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
         write_json(os.path.join(root, "task.json"), task)
         md = os.path.join(root, "TASK.md")
         if a.task_md is not None:
-            _ = shutil.copyfile(a.task_md, md)
+            copy_task_md(a.task_md, md)
         elif not os.path.isfile(md):
             with open(md, "w") as f:
                 _ = f.write(task_md_stub(task, a.sources))
