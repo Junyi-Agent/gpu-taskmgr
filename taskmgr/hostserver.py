@@ -148,6 +148,7 @@ def daemon_lock(root: str) -> "tuple[bool, int | None]":
         fd = os.open(os.path.join(root, "locks", "daemon.lock"), os.O_RDONLY)
     except OSError:
         return False, None
+
     held = False
     try:
         try:
@@ -169,10 +170,12 @@ def probe(params: "dict[str, object]") -> None:
     unit_name = cast(str, params["unit_name"])
     unit_file = os.path.join(home, cast(str, params["unit"]))
     unit = read(unit_file)
+
     # other directories that may hold taskmgr data: switching away from them hides their jobs
     uroot = unit_root(unit, home)
     others = [resolve(home, s) for s in cast("list[str]", params["data_roots"])]
     others += [uroot] if uroot else []
+
     out = cast(
         "dict[str, object]",
         {
@@ -195,6 +198,7 @@ def probe(params: "dict[str, object]") -> None:
             "legacy": legacy(home, code, cast("dict[str, str]", params["legacy"])),
         },
     )
+
     version = zip_text(code, cast(str, params["version_file"]))
     out["code_version"] = version.strip() if version is not None else None
     try:
@@ -202,24 +206,29 @@ def probe(params: "dict[str, object]") -> None:
         out["code_version_mtime"] = os.lstat(code).st_mtime
     except OSError:
         out["code_version_mtime"] = None
+
     existing = root
     while not os.path.exists(existing):
         existing = os.path.dirname(existing)
     rc, fs, _ = run(["stat", "-f", "-c", "%T", existing])
     out["fs_path"] = existing
     out["fs_type"] = fs if rc == 0 else None
+
     rc, _, err = run(["systemctl", "--user", "show-environment"])
     out["systemd_ok"] = rc == 0
     out["systemd_error"] = err
+
     out["active"] = run(["systemctl", "--user", "is-active", unit_name])[1]
     out["enabled"] = run(["systemctl", "--user", "is-enabled", unit_name])[1]
     pid = run(["systemctl", "--user", "show", unit_name, "-p", "MainPID"])[1].split("=", 1)[-1]
     main_pid = int(pid) if pid.isdigit() else 0
     out["main_pid"] = main_pid
     out["main_started"] = started(main_pid) if main_pid else None
+
     rc, linger, err = run(["loginctl", "show-user", user, "-p", "Linger"])
     out["linger"] = linger.split("=", 1)[1] if rc == 0 and linger.startswith("Linger=") else None
     out["linger_error"] = err
+
     out["daemon_running"], out["daemon_pid"] = daemon_lock(root)
     print(json.dumps(out))
 
@@ -230,17 +239,20 @@ def hold_lock() -> None:
     d = os.environ.get("XDG_RUNTIME_DIR") or ""
     if not os.path.isdir(d):
         d = "/tmp"  # noqa: S108 - per-user name, O_NOFOLLOW and an owner check below
+
     path = os.path.join(d, "taskmgr-hostsetup-%d.lock" % os.getuid())
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     if os.fstat(fd).st_uid != os.getuid():
         print("error %s belongs to another user" % path)
         return
+
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         holder = os.pread(fd, 32, 0).decode(errors="replace").strip()
         print("busy %s %s" % (path, holder or "?"))
         return
+
     os.ftruncate(fd, 0)
     _ = os.pwrite(fd, str(os.getpid()).encode(), 0)
     print("locked %s" % path)
@@ -264,6 +276,7 @@ def used_paths() -> "set[str]":
                 env = f.read().split(b"\0")
         except OSError:
             continue
+
         for e in env:
             if e.startswith(b"PYTHONPATH="):
                 args += e[len(b"PYTHONPATH=") :].split(b":")

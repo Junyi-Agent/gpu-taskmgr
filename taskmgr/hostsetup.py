@@ -170,10 +170,12 @@ def prebuilt_code(path: str) -> tuple[str, str, int]:
     path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isfile(path):
         raise StepFailed("%s not found; %s (or pass --pyz FILE)" % (path, BUILD_HINT))
+
     try:
         version, files = pyz.remote_archive_info(path)
     except (OSError, ValueError) as e:
         raise StepFailed("%s; %s" % (e, BUILD_HINT)) from None
+
     local = pyz.code_version()
     if version != local:
         raise StepFailed(
@@ -234,6 +236,7 @@ def merge_ssh_options(options: list[str], extra: list[str]) -> list[str]:
         else:
             pairs.append([options[i]])
             i += 1
+
     for opt in extra:
         key = opt.split("=", 1)[0].strip().lower()
         pairs = [p for p in pairs if not (len(p) == 2 and p[1].split("=", 1)[0].lower() == key)]
@@ -292,13 +295,16 @@ class HostSetup:
         self.ui: Ui = Ui(args.yes, args.plan, args.prune_old_code)
         self.home: str = home
         self.machines_path: str = os.path.join(self.home, "machines.json")
+
         self.existing: Server | None = None
         if os.path.exists(self.machines_path):
             for s in load_machines(self.home):  # also rejects a broken file up front
                 if s["name"] == args.name:
                     self.existing = s
+
         self.entry: Server = self._wanted_entry()
         self.remote: Remote = Remote(self.entry)
+
         self.probe: Probe = {}
         self.version: str = ""
         self.pyz: str = ""  # the local taskmgr-remote.pyz to upload
@@ -317,9 +323,11 @@ class HostSetup:
         a = self.args
         if not NAME_RE.match(a.name):
             raise TaskmgrError("bad_args", "host name must match ^[A-Za-z0-9._-]{1,64}$")
+
         old = self.existing
         if old is None and not a.ssh:
             raise TaskmgrError("bad_args", "--ssh USER@HOST is required for a new host")
+
         entry: Server = (
             cast(Server, json.loads(json.dumps(old)))
             if old is not None
@@ -331,6 +339,7 @@ class HostSetup:
                 "remote_command": "",
             }
         )
+
         if old is None:
             # TASKMGR_TEST_LOCAL_HOME: test-only, the new entry uses transport "local" with
             # this directory as the server's HOME.
@@ -338,8 +347,10 @@ class HostSetup:
             if test_home:
                 entry["transport"] = "local"
                 entry["local"] = {"home": test_home}
+
         if a.enabled is not None:
             entry["enabled"] = a.enabled
+
         ssh: SshConfig = entry.get("ssh") or {}
         if a.ssh:
             user, host = parse_destination(a.ssh)
@@ -348,15 +359,18 @@ class HostSetup:
                 ssh["user"] = user
             else:
                 _ = ssh.pop("user", None)
+
         if a.port is not None:
             ssh["port"] = a.port
         if a.identity_file is not None:
             ssh["identity_file"] = a.identity_file
+
         options = list(ssh.get("options") or [])
         if old is None:
             options = merge_ssh_options([], list(DEFAULT_SSH_OPTIONS))
         if old is None or a.ssh_option:
             ssh["options"] = merge_ssh_options(options, a.ssh_option or [])
+
         entry["ssh"] = ssh
         return entry
 
@@ -380,9 +394,11 @@ class HostSetup:
             ("machines", "local machine list", self.step_machines, True),
             ("old_code", "code of older versions outside remote_root", self.step_old_code, False),
         ]
+
         self.ui.say(
             "task %s host %s: %s" % (self.command, self.args.name, self.destination()), BOLD
         )
+
         stopped_by: str | None = None
         try:
             for i, (name, title, fn, required) in enumerate(plan):
@@ -391,6 +407,7 @@ class HostSetup:
                         {"name": name, "status": "skipped", "detail": "not run: " + stopped_by}
                     )
                     continue
+
                 self.ui.say("[%d/%d] %s: %s" % (i + 1, len(plan), name, title), CYAN)
                 try:
                     status, detail = fn()
@@ -409,6 +426,7 @@ class HostSetup:
                     status, detail = "failed", str(e)
                 except TaskmgrError as e:
                     status, detail = "failed", e.message
+
                 self.ui.info("-> %s: %s" % (status, detail), STEP_COLORS.get(status))
                 self.steps.append({"name": name, "status": status, "detail": detail})
                 if status in ("declined", "failed") and required:
@@ -417,9 +435,11 @@ class HostSetup:
             if self.staged is not None:
                 self._discard_staged(stopped_by or "the run ended early")
             _ = self._unlock()
+
         failed = any(s["status"] in ("failed", "declined") for s in self.steps)
         complete = not failed and all(s["status"] in ("ok", "changed", "kept") for s in self.steps)
         out: dict[str, object] = {"host": self.args.name, "steps": self.steps, "complete": complete}
+
         if self.ui.plan:
             out["plan"] = True
             out["planned"] = [s["name"] for s in self.steps if s["status"] == "planned"]
@@ -430,6 +450,7 @@ class HostSetup:
             )
             # 0: nothing to change, 1: changes planned, 2: a check failed
             return out, (2 if failed else 1 if n else 0)
+
         self.ui.say(
             "done: %s" % ("the server is set up" if complete else "NOT complete, see the steps"),
             GREEN if complete else RED,
@@ -473,6 +494,7 @@ class HostSetup:
             + "fi\n"
             + self.server_command(self.probe_params(spec))
         )
+
         out = self.sh(script, timeout=120)
         try:
             obj = cast(JsonValue, json.loads(out.strip().splitlines()[-1]))
@@ -520,9 +542,11 @@ class HostSetup:
     def step_ssh(self) -> tuple[str, str]:
         spec = remote_root_from_env() or (self.existing or {}).get("remote_root") or ""
         p = self.run_probe(spec or DEFAULT_REMOTE_ROOT)
+
         uname = p.get("uname") or "?"
         if uname != "Linux":
             raise StepFailed("the server runs %s; taskmgr-remote needs Linux" % uname)
+
         python = p.get("python")
         version = tuple(p.get("python_version") or [])
         if not python:
@@ -530,10 +554,12 @@ class HostSetup:
         vtext = ".".join(str(v) for v in version)
         if version < MIN_PYTHON:
             raise StepFailed("%s is Python %s; taskmgr needs 3.10 or newer" % (python, vtext))
+
         self.ui.info(
             "%s: Linux, user %s, home %s" % (self.destination(), p.get("user"), p.get("home"))
         )
         self.ui.info("python3 %s at %s" % (vtext, python))
+
         if not p.get("systemd_ok"):
             raise StepFailed(
                 "`systemctl --user` does not work (%s); taskmgr needs a systemd user instance"
@@ -550,6 +576,7 @@ class HostSetup:
                 p.get("enabled") or "not enabled",
             )
         )
+
         root = self.root()
         fs = p.get("fs_type") or "unknown"
         where = "exists" if p.get("root_exists") else "does not exist yet"
@@ -562,6 +589,7 @@ class HostSetup:
                 + "Set %s to a directory on a local disk " % REMOTE_ROOT_ENV
                 + "(e.g. /scratch/<user>/taskmgr-remote) and run again."
             )
+
         self._check_root_switch()
         if not self.ui.plan:  # a plan changes nothing, not even the lock file
             self._lock()
@@ -581,6 +609,7 @@ class HostSetup:
             others = [d for d in others if d != old]
         if not others:
             return
+
         where = ", ".join(others)
         problem = (
             "%s already holds taskmgr data (config.json), but this run sets up remote_root " % where
@@ -588,12 +617,14 @@ class HostSetup:
             % (root, root, where)
         )
         keep = "to keep using it, run again with %s=%s" % (REMOTE_ROOT_ENV, others[0])
+
         if self.ui.yes and not self.ui.plan:
             raise StepFailed(
                 "%s. Nothing was changed; %s, or to use %s anyway run without --yes and "
                 % (problem, keep, root)
                 + "confirm"
             )
+
         self.ui.info("WARNING: %s; %s" % (problem, keep), YELLOW)
         self.ui.confirm(
             "use %s as remote_root; the data in %s stays where it is, unused" % (root, where)
@@ -615,9 +646,11 @@ class HostSetup:
         assert p.stdout is not None
         ready, _, _ = select.select([p.stdout], [], [], 120)
         line = cast(bytes, p.stdout.readline()).decode(errors="replace").strip() if ready else ""
+
         if line.startswith("locked "):
             self.ui.info("holding the setup lock %s" % line[len("locked ") :])
             return
+
         err = self._unlock()
         if line.startswith("busy "):
             _, path, pid = (line.split(" ", 2) + ["?", "?"])[:3]
@@ -646,9 +679,11 @@ class HostSetup:
             self.args.pyz or pyz.default_remote_pyz()
         )
         self.ui.info("archive %s (version %s)" % (self.pyz, self.version[:12]))
+
         installed = self.probe.get("code_version")
         short = self.version[:12]
         self.ui.info("local version %s; installed: %s" % (short, (installed or "none")[:12]))
+
         stale = self._stale_uploads()
         if installed == self.version:  # no change, so no question: leftovers are only named
             left = (
@@ -658,6 +693,7 @@ class HostSetup:
                 else ""
             )
             return "ok", "already up to date (%s)%s" % (short, left)
+
         path = self.code_path()
         store = self.store_path()
         final = "%s/%s" % (store, self.archive_name())
@@ -666,6 +702,7 @@ class HostSetup:
             what = "update %s from version %s to %s" % (path, (installed or "unknown")[:12], short)
         else:
             what = "install version %s as %s" % (short, path)
+
         self.ui.confirm(
             "%s: upload %s (%d KB, %d files inside) to %s/, and after step data point %s at "
             % (what, CODE_FILE, size // 1024, self.files, store, path)
@@ -673,9 +710,11 @@ class HostSetup:
             + "older ones that no running job uses are removed)"
             + ("; remove interrupted uploads %s" % ", ".join(stale) if stale else "")
         )
+
         cleaned = self.uploads_removed = self._remove_uploads(stale)
         with open(self.pyz, "rb") as f:
             data = f.read()
+
         script = (
             "set -e\n"
             + "mkdir -p %s\n" % q(store)
@@ -684,10 +723,12 @@ class HostSetup:
             + 'chmod 755 "$new"\n'
             + 'echo "$new"\n'
         )
+
         out = self.sh(script, data).strip().splitlines()
         staged = out[-1] if out else ""
         if not staged.startswith(final + ".new-"):
             raise StepFailed("unexpected staging file %r" % staged)
+
         self.staged = staged
         self.ui.info("uploaded to %s" % staged)
         # Status is finalized when the staged file is moved into place (after step data).
@@ -722,6 +763,7 @@ class HostSetup:
         assert staged is not None
         path, store, name = self.code_path(), self.store_path(), self.archive_name()
         final = "%s/%s" % (store, name)
+
         # The archive gets its final name (an existing file of this version stays as it is:
         # a process may be reading it), then a new link replaces `path` with one rename, so
         # `path` exists at every moment. Old archives are removed only in step service, once
@@ -737,15 +779,18 @@ class HostSetup:
             + "mv -f %s %s\n" % (q(path + ".link-new"), q(path))
             + 'echo "prev=$prev"\n'
         )
+
         last = (self.sh(script).strip().splitlines() or [""])[-1]
         self.staged = None
         self.code_changed = True
         prev = os.path.basename(last[len("prev=") :]) if last.startswith("prev=") else ""
+
         p = self.run_probe()
         if p.get("code_version") != self.version:
             raise StepFailed(
                 "after the switch %s reports version %r" % (path, p.get("code_version"))
             )
+
         detail = "installed version %s: %s -> %s%s" % (
             self.version[:12],
             path,
@@ -770,6 +815,7 @@ class HostSetup:
         keep = [self.archive_name()] + ([self.previous_code] if self.previous_code else [])
         params = {"mode": "prune", "store": self.store_path(), "keep": keep}
         out = self.sh(self.server_command(params), timeout=120)
+
         try:
             reply = cast(JsonValue, json.loads(out.strip().splitlines()[-1]))
         except (ValueError, IndexError):
@@ -784,6 +830,7 @@ class HostSetup:
         self.staged = None
         if staged is None:
             return
+
         try:
             _ = self.sh(
                 "rm -f %s\nrmdir %s %s 2>/dev/null || true\n"
@@ -792,6 +839,7 @@ class HostSetup:
             removed = "removed"
         except (StepFailed, TaskmgrError):
             removed = "could not be removed"
+
         for s in self.steps:
             if s["name"] == "code":
                 s["status"] = "skipped"
@@ -808,11 +856,13 @@ class HostSetup:
         )
         if has_root and has_cfg:
             return "ok", "%s and config.json exist (config.json is never overwritten)" % root
+
         parts: list[str] = []
         if not has_root:
             parts.append("create %s" % root)
         parts.append("create %s with the default settings" % cfg)
         self.ui.confirm(" and ".join(parts))
+
         script = (
             "set -e\n"
             + "umask 077\n"  # remote_root is owner-only (docs/install.md)
@@ -821,6 +871,7 @@ class HostSetup:
             + "if [ ! -e %s ]; then (set -C; cat > %s); fi\n" % (q(cfg), q(cfg))
         )
         _ = self.sh(script, config_text().encode())
+
         p = self.run_probe()
         if not (p.get("root_exists") and p.get("config_exists")):
             raise StepFailed("%s or its config.json is still missing" % root)
@@ -844,12 +895,15 @@ class HostSetup:
         bad = self._incompatible(info)
         counts = info.get("counts")
         self.ui.info("jobs per state: %s" % json.dumps(counts, sort_keys=True))
+
         if not bad:
             return "ok", "no incompatible job directories"
+
         self._list_incompatible(bad)
         live = [e for e in bad if e.get("live")]
         if live:
             raise StepFailed(self._live_message(live, stopped=False))
+
         p = self.run_probe()  # is a daemon running right now?
         if p.get("daemon_running") or p.get("active") == "active":
             if p.get("active") != "active":
@@ -867,6 +921,7 @@ class HostSetup:
                 lambda p: not p.get("daemon_running"), STOP_TIMEOUT, "the daemon to exit"
             )
             self.ui.info("service stopped; it is started again in step service")
+
             info = self.inspect()
             bad = self._incompatible(info)
             live = [e for e in bad if e.get("live")]
@@ -874,21 +929,25 @@ class HostSetup:
                 raise StepFailed(self._live_message(live, stopped=True))
             if not bad:
                 return "changed", "stopped the service; no incompatible job directories left"
+
         backup = "%s/%s/%s" % (self.root(), BACKUP_DIR, utc_stamp())
         moves: list[str] = []
         for e in bad:
             moves.append(_str(e.get("path")))
             moves.extend(_strs(e.get("submission_keys")))
+
         for rel in moves:
             if not re.match(
                 r"^((queue|in-progress|done)/[0-9a-f]{16}|submission-keys/[^/]+)\Z", rel
             ):
                 raise StepFailed("refusing to move unexpected path %r" % rel)
+
         self.ui.confirm(
             "move %d job directories and %d submission keys into %s (same relative paths; "
             % (len(bad), len(moves) - len(bad), backup)
             + "nothing is deleted)"
         )
+
         lines = ["set -e"]
         for rel in moves:
             src, dst = "%s/%s" % (self.root(), rel), "%s/%s" % (backup, rel)
@@ -896,6 +955,7 @@ class HostSetup:
             lines.append("if [ -e %s ]; then echo exists: %s >&2; exit 1; fi" % (q(dst), q(dst)))
             lines.append("mv %s %s" % (q(src), q(dst)))
         _ = self.sh("\n".join(lines) + "\n")
+
         left = self._incompatible(self.inspect())
         if left:
             raise StepFailed("still incompatible after the move: %s" % _paths(left))
@@ -961,6 +1021,7 @@ class HostSetup:
         path = self.unit_path()
         if have == want:
             return "ok", "%s is up to date" % path
+
         if have is None:
             self.ui.info("%s does not exist" % path)
         else:
@@ -968,10 +1029,12 @@ class HostSetup:
                 have.splitlines(), want.splitlines(), "installed", "wanted", lineterm=""
             )
             self.ui.info("\n".join(diff))
+
         self.ui.confirm(
             "%s %s and run `systemctl --user daemon-reload`"
             % ("write" if have is None else "replace", path)
         )
+
         d = "%s/%s" % (self.p_home(), UNIT_DIR)
         script = (
             "set -e\n"
@@ -982,6 +1045,7 @@ class HostSetup:
             + 'mv "$tmp" %s\n' % q(path)
             + "systemctl --user daemon-reload\n"
         )
+
         _ = self.sh(script, want.encode())
         self.unit_changed = True
         if self.run_probe().get("unit") != want:
@@ -998,6 +1062,7 @@ class HostSetup:
             return "the code changed in this run"
         if self.unit_changed:
             return "the unit changed in this run"
+
         p = self.probe
         started = p.get("main_started")
         if started is None:
@@ -1035,6 +1100,7 @@ class HostSetup:
                 self.ui.info("would change: " + "; ".join(todo))
                 raise Planned("; ".join(todo))
             return "ok", "%s is enabled and active (pid %s)" % (UNIT, p.get("main_pid"))
+
         done: list[str] = []
         if p.get("enabled") != "enabled":
             self.ui.info("%s is %s" % (UNIT, p.get("enabled") or "not enabled"))
@@ -1043,6 +1109,7 @@ class HostSetup:
             if self.run_probe().get("enabled") != "enabled":
                 raise StepFailed("%s is still not enabled" % UNIT)
             done.append("enabled")
+
         p = self.probe
         old_pid = p.get("main_pid") or 0
         if p.get("active") != "active":
@@ -1066,6 +1133,7 @@ class HostSetup:
                 )
                 self.systemctl("restart", UNIT)
                 done.append("restarted")
+
         if done and done[-1] in ("started", "restarted"):
             p = self._wait(
                 lambda p: (
@@ -1078,8 +1146,10 @@ class HostSetup:
                 "the daemon to start and take locks/daemon.lock",
             )
             self.ui.info("daemon running, pid %s" % p.get("main_pid"))
+
         if self.code_changed:
             self._prune_code()
+
         if not done:
             return "ok", "%s is enabled and active (pid %s)" % (UNIT, p.get("main_pid"))
         return "changed", "%s (pid %s)" % (", ".join(done), self.probe.get("main_pid"))
@@ -1090,16 +1160,20 @@ class HostSetup:
         linger = self.probe.get("linger")
         if linger == "yes":
             return "ok", "Linger=yes for %s" % user
+
         admin = (
             "an admin must run `sudo loginctl enable-linger %s` once; " % user
             + "until then the service stops when your last login session ends"
         )
+
         self.ui.info("Linger=%s for %s" % (linger_text(self.probe), user))
         self.ui.confirm("`loginctl enable-linger %s` (needs no root on most hosts)" % user)
+
         rc, _, err = self.remote.shell(
             PRELUDE + shlex.join(["loginctl", "--no-ask-password", "enable-linger", user]),
             timeout=60,
         )
+
         if rc != 0:
             raise StepFailed("loginctl enable-linger was refused (%s); %s" % (err.strip(), admin))
         if self.run_probe().get("linger") != "yes":
@@ -1110,8 +1184,10 @@ class HostSetup:
     def step_verify(self) -> tuple[str, str]:
         if self.ui.plan and self.planned:
             return "skipped", "plan: verified after the planned changes are made"
+
         reply = Remote(self.server_entry()).call(["version"], timeout=120)
         p = self.run_probe()
+
         problems: list[str] = []
         if p.get("code_version") != self.version:
             problems.append("code version is %r" % p.get("code_version"))
@@ -1124,6 +1200,7 @@ class HostSetup:
                 "the service's main pid %s does not hold locks/daemon.lock (holder: %s)"
                 % (p.get("main_pid"), p.get("daemon_pid"))
             )
+
         if problems:
             raise StepFailed("; ".join(problems))
         return "ok", "taskmgr-remote answers with protocol_version %s; daemon pid %s" % (
@@ -1137,6 +1214,7 @@ class HostSetup:
         old = self.existing
         if old is not None and _canon(old) == _canon(want):
             return "ok", "%s in %s is up to date" % (self.args.name, self.machines_path)
+
         if old is None:
             self.ui.info("new entry:")
             for k, v in want.items():
@@ -1152,9 +1230,11 @@ class HostSetup:
                         self.ui.info("  - %s: %s" % (k, json.dumps(a)))
                     if k in want:
                         self.ui.info("  + %s: %s" % (k, json.dumps(b)))
+
         self.ui.confirm(
             "%s %s in %s" % ("add" if old is None else "update", self.args.name, self.machines_path)
         )
+
         new = cast(JsonValue, json.loads(json.dumps(want)))
 
         def upsert(servers: list[JsonValue]) -> None:

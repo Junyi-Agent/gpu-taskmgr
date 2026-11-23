@@ -237,12 +237,14 @@ def host_set_enabled(name: str, enabled: bool, home: str) -> CmdResult:
 def host_remove(name: str, yes: bool, home: str) -> CmdResult:
     path = os.path.join(home, "machines.json")
     entry = find_server(load_machines(home), name)
+
     ui = Ui(yes)
     ui.say(
         "task delete host %s: %s, remote_root %s"
         % (name, destination(entry), entry["remote_root"]),
         BOLD,
     )
+
     try:
         ui.confirm("remove %s from %s (the server itself is not touched)" % (name, path))
     except NonInteractive as e:
@@ -282,6 +284,7 @@ def _ping_one(server: Server) -> dict[str, object]:
             }
         )
         return row
+
     row["reachable"] = True
     row["ms"] = round((time.monotonic() - start) * 1000)
     for k in ("protocol_version", "features", "code_version", "code_dir", "user", "hostname"):
@@ -297,10 +300,12 @@ def host_ping(name: str | None, home: str) -> CmdResult:
     else:
         skipped = [s["name"] for s in servers if not s.get("enabled", True)]
         servers = [s for s in servers if s.get("enabled", True)]
+
     rows: list[dict[str, object]] = []
     if servers:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(servers))) as ex:
             rows = list(ex.map(_ping_one, servers))
+
     ok = all(r["reachable"] for r in rows)
     return {"hosts": rows, "skipped": skipped, "complete": ok}, (0 if ok else 2)
 
@@ -348,8 +353,10 @@ def text_setup(out: Mapping[str, object], color: bool, command: str) -> str:
         [_s(s.get("name")), _s(s.get("status")), _s(s.get("detail"))] for s in steps
     ]
     text = render_table(("STEP", "STATUS", "DETAIL"), rows, color, {1: STEP_COLORS})
+
     host = out.get("host")
     failed = any(s.get("status") in ("failed", "declined") for s in steps)
+
     if out.get("plan"):
         planned = [str(n) for n in cast(list[object], out.get("planned") or [])]
         if failed:
@@ -366,6 +373,7 @@ def text_setup(out: Mapping[str, object], color: bool, command: str) -> str:
             )
             + hint("run it without --plan to make the changes", color)
         )
+
     if any(s.get("status") == "kept" for s in steps):
         text += hint(
             "old code was kept; `task %s host %s --prune-old-code` deletes it" % (command, host),
@@ -425,10 +433,12 @@ def text_ping(_args: object, out: Mapping[str, object], color: bool) -> str:
         if skipped
         else ""
     )
+
     if not hosts:
         if skipped:
             return note
         return message("empty", YELLOW, "no servers in the machine list", color)
+
     rows = [
         [
             _s(h.get("host")),
@@ -447,6 +457,7 @@ def text_ping(_args: object, out: Mapping[str, object], color: bool) -> str:
         color,
         {1: {"ok": GREEN, "unreachable": RED}},
     )
+
     for h in hosts:
         if not h.get("reachable"):
             text += message("unreachable", RED, "%s: %s" % (h.get("host"), h.get("error")), color)
