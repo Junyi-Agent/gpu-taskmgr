@@ -287,7 +287,10 @@ Then:
   nothing written, nothing on stdout.
 - `--dest PATH`: a directory, or a file ending in `.tar.gz` / `.tgz` (packed the
   same way `task create job` packs a directory, byte for byte reproducible). Default `./<task_id>`.
-  An existing PATH is an error (`exists`, exit 2) unless `--force` replaces it.
+  An existing PATH is an error (`exists`, exit 2). `--force` replaces it only when it holds an
+  earlier package (a directory with a `task.json`, a `.tar.gz` / `.tgz` file, or a symlink, of
+  which only the link is removed); it refuses (`bad_args`, nothing deleted) the current directory
+  or one above it, a SRC, and a directory that contains a SRC.
 
 Exit 0 valid (stdout: the path), 1 invalid, 2 bad arguments or sources. `-o json` prints
 `{"valid", "path", "archive", "task_id", "content_hash", "features", "source_files",

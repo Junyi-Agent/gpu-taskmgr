@@ -256,7 +256,9 @@ GLOB 的名字。两个源写同一个文件会报错（`conflict`）。打包�
   `--with-cute-helpers` 还会复制 `precompile.py` 和 `cutecache.py`（见 [[docs/task-package.zh-CN]] 的“预编译”）。
 - 结果按 `task validate package` 的规则校验。无效时：退出码 1，错误写到 stderr，不写任何文件，stdout 为空。
 - `--dest PATH`：目录，或以 `.tar.gz` / `.tgz` 结尾的文件（与 `task create job` 打包目录的方式相同，
-  逐字节可复现）。默认 `./<task_id>`。PATH 已存在时报错（`exists`，退出码 2），`--force` 则替换它。
+  逐字节可复现）。默认 `./<task_id>`。PATH 已存在时报错（`exists`，退出码 2）。
+  `--force` 只替换以前生成的包（带 `task.json` 的目录、`.tar.gz` / `.tgz` 文件，或符号链接，只删链接本身）；
+  目标是当前目录或它的上级、某个 SRC、或包含某个 SRC 的目录时拒绝（`bad_args`，什么都不删）。
 
 退出码 0 有效（stdout：路径），1 无效，2 参数或源有误。`-o json` 输出
 `{"valid", "path", "archive", "task_id", "content_hash", "features", "source_files", "warnings"}`
