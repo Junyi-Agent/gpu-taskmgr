@@ -2,12 +2,17 @@
 rejected), text output (the default) and -o json, the grouped help, jobid lookup without
 --host, whoami and version."""
 
+import argparse
 import getpass
 import json
 import os
 import re
 import socket
+import unittest
+from collections.abc import Mapping
+from typing import cast
 
+from taskmgr import remote
 from taskmgr.tests.helpers import OK_RESULT, Env
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -231,6 +236,22 @@ class CliTest(Env):
         rc, obj, err = self.task("logs", "job", "0123456789abcdef", "-o", "json")
         self.assertEqual((rc, self.get(obj, "error", "code")), (2, "not_found"), err)
 
+    def test_usage_names_the_primary_option(self) -> None:
+        """The usage line shows an option's first name, as the docs do (--plan, not the
+        longer alias --dry-run); the option list shows every name."""
+        _, out, _ = self.plain("create", "host", "-h")
+        usage = out.split("\n\n")[0]
+        for word in ("[--yes]", "[--plan]", "[-o text|json]"):
+            self.assertIn(word, usage)
+        self.assertNotIn("--dry-run", usage)
+        self.assertNotIn("--output", usage)
+        self.assertRegex(out, r"(?m)^  --plan, --dry-run +check everything")
+        self.assertRegex(out, r"(?m)^  -y, --yes +answer yes")
+        # build package names both archive suffixes.
+        _, out, _ = self.plain("build", "package", "-h")
+        self.assertIn(".tgz", out.split("\n\n")[1])
+        self.assertIn("a file ending in .tar.gz or .tgz", " ".join(out.split()))
+
     def test_removed_attempt_option_is_a_usage_error(self) -> None:
         rc, out, err = self.plain("logs", "job", "0123456789abcdef", "--attempt", "1")
         self.assertEqual((rc, out), (2, ""))
@@ -421,3 +442,21 @@ class CliTest(Env):
         self.assertEqual(rc, 2)
         self.assertIn("invalid choice: 'bogus'", err)
         self.assertEqual(self.get(self.ok("get", "jobs", "--state", "succeeded"), "jobs"), [])
+
+
+class RemoteHelpTest(unittest.TestCase):
+    """`taskmgr-remote -h`: every subcommand and every option has a help text."""
+
+    def test_every_subcommand_and_option_has_help(self) -> None:
+        def check(p: argparse.ArgumentParser, where: str) -> None:
+            for a in p._actions:
+                if isinstance(a, argparse._SubParsersAction):  # pyright: ignore[reportPrivateUsage]
+                    for c in a._get_subactions():
+                        self.assertTrue(c.help, "%s %s" % (where, c.dest))
+                    subs = cast(Mapping[str, argparse.ArgumentParser], a.choices)
+                    for name, sub in subs.items():
+                        check(sub, "%s %s" % (where, name))
+                else:
+                    self.assertTrue(a.help, "%s %s" % (where, a.dest))
+
+        check(remote.build_parser(), "taskmgr-remote")

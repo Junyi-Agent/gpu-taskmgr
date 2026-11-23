@@ -658,36 +658,70 @@ def cmd_inspect(store: Store, _args: Args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="taskmgr-remote")
+    """The server side of `task`: run by the CLI over ssh with fixed arguments, by systemd
+    (serve) and by the daemon (shim); an operator runs `version` or `serve` by hand."""
+    p = argparse.ArgumentParser(
+        prog="taskmgr-remote",
+        description="Server side of taskmgr: one JSON object per call on stdout (except "
+        + "logs, fetch, serve and shim).",
+    )
     _ = p.add_argument("--root", required=True, help="remote storage root (from the machine list)")
-    _ = p.add_argument("--protocol-version", type=int, default=None)
-    sub = p.add_subparsers(dest="cmd", required=True)
-    _ = sub.add_parser("version")
+    _ = p.add_argument(
+        "--protocol-version",
+        type=int,
+        default=None,
+        metavar="N",
+        help="the client's protocol version; a different one is refused (protocol_mismatch)",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="<subcommand>")
+    jobid_help = "the job's id (16 hex digits)"
+
+    _ = sub.add_parser("version", help="installed code version, features, user and hostname")
     _ = sub.add_parser("inspect", help="read-only: job counts and incompatible job directories")
-    r = sub.add_parser("receive")
-    _ = r.add_argument("--submission-key")
-    j = sub.add_parser("jobs")
-    _ = j.add_argument("--state")
-    _ = j.add_argument("--limit", type=int)
-    for name in ("status", "cancel", "retry"):
-        s = sub.add_parser(name)
-        _ = s.add_argument("jobid")
-        if name == "cancel":
-            _ = s.add_argument("--by", help="user@hostname of the client asking for the cancel")
-    s = sub.add_parser("resolve")
-    _ = s.add_argument("jobid")
-    _ = s.add_argument("--as", dest="as_")
-    _ = s.add_argument("--confirm")
-    lg = sub.add_parser("logs")
-    _ = lg.add_argument("jobid")
-    _ = lg.add_argument("--stream", choices=("stdout", "stderr", "shim"), default="stdout")
-    _ = lg.add_argument("--follow", action="store_true")
-    fe = sub.add_parser("fetch")
-    _ = fe.add_argument("jobid")
-    _ = sub.add_parser("serve")
-    sh = sub.add_parser("shim")
-    _ = sh.add_argument("jobid")
-    _ = sh.add_argument("--lock-fd", type=int, required=True)
+    r = sub.add_parser("receive", help="read a package (tar.gz) on stdin and queue it as a job")
+    _ = r.add_argument(
+        "--submission-key",
+        metavar="KEY",
+        help="idempotency key: a key seen before returns its job (default: a new key)",
+    )
+    j = sub.add_parser("jobs", help="list the jobs, oldest first")
+    _ = j.add_argument("--state", help="only jobs in this state")
+    _ = j.add_argument(
+        "--limit", type=int, metavar="N", help="only the N most recently submitted jobs"
+    )
+    s = sub.add_parser("status", help="one job, with its run, progress and result")
+    _ = s.add_argument("jobid", help=jobid_help)
+    s = sub.add_parser("cancel", help="cancel a job (queued: at once; running: stop it)")
+    _ = s.add_argument("jobid", help=jobid_help)
+    _ = s.add_argument("--by", help="user@hostname of the client asking for the cancel")
+    s = sub.add_parser("retry", help="queue a finished job again as a new job")
+    _ = s.add_argument("jobid", help=jobid_help)
+    s = sub.add_parser("resolve", help="settle a job in the unknown state")
+    _ = s.add_argument("jobid", help=jobid_help)
+    _ = s.add_argument(
+        "--as",
+        dest="as_",
+        metavar="STATE",
+        help="stopped: declare that the job's processes are gone (needs --confirm)",
+    )
+    _ = s.add_argument("--confirm", metavar="JOBID", help="the jobid again, to confirm --as")
+    lg = sub.add_parser("logs", help="print a job's log (raw text)")
+    _ = lg.add_argument("jobid", help=jobid_help)
+    _ = lg.add_argument(
+        "--stream",
+        choices=("stdout", "stderr", "shim"),
+        default="stdout",
+        help="which log (default stdout)",
+    )
+    _ = lg.add_argument("--follow", action="store_true", help="keep printing until the job ends")
+    fe = sub.add_parser("fetch", help="write a job's directory as tar.gz on stdout")
+    _ = fe.add_argument("jobid", help=jobid_help)
+    _ = sub.add_parser("serve", help="run the scheduler daemon (the systemd service runs this)")
+    sh = sub.add_parser("shim", help="internal: supervise one job's run (started by the daemon)")
+    _ = sh.add_argument("jobid", help=jobid_help)
+    _ = sh.add_argument(
+        "--lock-fd", type=int, required=True, help="inherited fd of the job's lock file"
+    )
     return p
 
 

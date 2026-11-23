@@ -252,8 +252,8 @@ class Parser(argparse.ArgumentParser):
                 arguments.append((name, help_text))
             elif a.help != argparse.SUPPRESS:
                 value = _opt_value(a)
-                flag = a.option_strings[0]
-                shown = (max(a.option_strings, key=len) + " " + value).strip()
+                flag = a.option_strings[0]  # the primary name (--plan, not --dry-run)
+                shown = (flag + " " + value).strip()
                 if isinstance(a, argparse._HelpAction):  # pyright: ignore[reportPrivateUsage]
                     help_text = "show this help"
                 else:
