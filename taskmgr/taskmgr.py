@@ -162,14 +162,17 @@ def _package_warnings(root: str) -> list[Problem]:
 
 
 def validate_path(
-    path: str,
+    path: str, report: bool = True
 ) -> tuple[list[Problem], TaskSpec | None, str | None, list[Problem]]:
     """Validate a package directory or archive without a size limit.
-    Returns (errors, task, content_hash, warnings)."""
+    Returns (errors, task, content_hash, warnings); without `report` (a submit: the server
+    hashes and checks the size) content_hash is None and warnings are [] (not computed)."""
     if not os.path.exists(path):
         raise TaskmgrError("not_found", "path does not exist: %s" % path)
     if os.path.isdir(path):
         errors, task = package.validate_dir(path)
+        if not report:
+            return errors, task, None, []
         warnings = _package_warnings(path)
         return errors, task, (None if errors else package.content_hash(path)), warnings
     with tempfile.TemporaryDirectory(prefix="taskmgr-validate-") as tmp:
@@ -186,11 +189,12 @@ def validate_path(
             for s in skipped
         ]
         root = package.package_root(tmp)
-        warnings = _package_warnings(root)
+        warnings = _package_warnings(root) if report else []
         _ = package.remove_excluded(root)  # as the server does before validating
         errors, task = package.validate_dir(root)
         errors = unsafe + errors  # report every error, not only the first unsafe entry
-        return errors, task, (None if errors else package.content_hash(root)), warnings
+        chash = package.content_hash(root) if report and not errors else None
+        return errors, task, chash, warnings
 
 
 def cmd_validate(args: Args) -> CmdResult:
@@ -226,7 +230,7 @@ def cmd_submit(args: Args) -> CmdResult:
     if args.submission_key and not SUBMISSION_KEY_RE.match(args.submission_key):
         raise TaskmgrError("bad_args", "--submission-key must match ^[A-Za-z0-9._-]{1,128}$")
     path = os.path.abspath(args.path)
-    errors, task, _, _ = validate_path(path)  # the server checks the size
+    errors, task, _, _ = validate_path(path, report=False)
     if errors:
         raise TaskmgrError(
             "invalid_package", "package validation failed (%d errors)" % len(errors), details=errors

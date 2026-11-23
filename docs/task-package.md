@@ -257,11 +257,12 @@ for this. Instead the task reports it:
   template's `run.py` shows the order:
 
   ```python
-  import taskmgr_task as tt   # module level: the standard library and taskmgr_task only
+  import taskmgr_task as tt  # module level: the standard library and taskmgr_task only
+
 
   def main():
-      tt.claim_gpu()          # first: the CUDA context in milliseconds, or exit 75
-      import torch            # now; reuses the primary context claim_gpu created
+      tt.claim_gpu()  # first: the CUDA context in milliseconds, or exit 75
+      import torch  # now; reuses the primary context claim_gpu created
   ```
 
   A busy GPU is then found in milliseconds and the relaunch about 1 s later is cheap; with

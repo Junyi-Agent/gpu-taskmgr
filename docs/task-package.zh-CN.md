@@ -226,11 +226,12 @@ GPU 服务器运行在 Exclusive_Process 计算模式下，taskmgr 之外的进�
 - 先创建 CUDA context，再 import torch 或其他重量级库。模板的 `run.py` 给出了顺序：
 
   ```python
-  import taskmgr_task as tt   # 模块顶层：只 import 标准库和 taskmgr_task
+  import taskmgr_task as tt  # 模块顶层：只 import 标准库和 taskmgr_task
+
 
   def main():
-      tt.claim_gpu()          # 第一步：几毫秒内建好 CUDA context，或退出 75
-      import torch            # 现在才 import；复用 claim_gpu 创建的 primary context
+      tt.claim_gpu()  # 第一步：几毫秒内建好 CUDA context，或退出 75
+      import torch  # 现在才 import；复用 claim_gpu 创建的 primary context
   ```
 
   这样 GPU 被占时几毫秒就能发现，约 1 秒后的重新启动代价很小；如果先 `import torch`，每次重试都要

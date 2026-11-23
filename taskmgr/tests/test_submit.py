@@ -1,16 +1,40 @@
 """Submission, server selection, idempotency, protocol version, incoming cleanup."""
 
 import concurrent.futures
+import contextlib
+import io
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
+import unittest
 from typing import cast
+from unittest import mock
 
-from taskmgr import package
+from taskmgr import package, taskmgr
 from taskmgr.records import JsonValue
 from taskmgr.tests.helpers import REMOTE, Env
+
+
+class ValidateForSubmitTest(unittest.TestCase):
+    def test_submit_validation_reads_no_file_twice(self) -> None:
+        """A submit packs a directory anyway: its validation computes no content hash and
+        no size warnings (the server does both)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = os.path.join(tmp, "AA-01")
+            with contextlib.redirect_stdout(io.StringIO()):
+                _ = taskmgr.main(["create", "package", "AA-01", "--dest", pkg])
+            with (
+                mock.patch.object(package, "content_hash") as chash,
+                mock.patch.object(package, "packed_size", return_value=0) as size,
+            ):
+                _, _, h, warnings = taskmgr.validate_path(pkg, report=False)
+                self.assertEqual((h, warnings), (None, []))
+                self.assertEqual((chash.call_count, size.call_count), (0, 0))
+                _ = taskmgr.validate_path(pkg)
+                self.assertEqual((chash.call_count, size.call_count), (0, 1))  # errors: no hash
 
 
 class SubmitTest(Env):
