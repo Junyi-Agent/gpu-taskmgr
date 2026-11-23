@@ -71,7 +71,6 @@ class Store:
         if not root or not os.path.isabs(root):
             raise TaskmgrError("bad_root", "--root must be an absolute path: %r" % (root,))
         self.root: str = root
-        self._lock_fd: int | None = None
         self._lock_depth: int = 0
         self._config: RemoteConfig | None = None
 
