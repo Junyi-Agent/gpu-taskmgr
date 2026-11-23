@@ -107,6 +107,7 @@ CLI 的 `user@hostname`（`via: "cli"`，通过 `taskmgr-remote cancel --by` 发
 queued --派发--> running --退出--> succeeded | failed | invalid_result
 running --以 gpu_busy_exit_code 退出--> running（shim 等待后重新启动；显示 "pending-gpu"）
 running --shim 在 GPU 忙退出和重新启动之间死亡--> queued（同一个 jobid）
+running（有 gpu_request）--以 gpu_busy_exit_code 退出--> queued（同一个 jobid；过 gpu_retry_interval_seconds 后重新挑选 GPU）
 queued --取消--> cancelled
 running（precompile 阶段）--退出码 0--> queued（gpu 阶段；jobid、enqueue_seq、工作目录不变）
 running（precompile 阶段）--其他退出--> failed(precompile)
