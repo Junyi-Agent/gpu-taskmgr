@@ -932,7 +932,7 @@ class AddHostTest(Env):
         self.assertEqual((st["ssh"], st["code"]), ("ok", "failed"))
         self.assertEqual({st[s] for s in ALL_STEPS[2:]}, {"skipped"})
         self.assertIn("%s not found" % missing, self.detail(out, "code"))
-        self.assertIn("python3 -m taskmgr.pyz -o dist", self.detail(out, "code"))
+        self.assertIn("build it with `task build pyz`", self.detail(out, "code"))
         self.assertFalse(os.path.lexists(self.rcode()))
         self.assertEqual(self.machines_raw(), before)
 

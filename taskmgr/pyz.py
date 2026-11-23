@@ -1,6 +1,5 @@
-"""Single-file zipapps: `task.pyz` (local CLI) and `taskmgr-remote.pyz` (server side).
-
-    python3 -m taskmgr.pyz [-o DIR]
+"""Single-file zipapps: `task.pyz` (local CLI) and `taskmgr-remote.pyz` (server side),
+built by `task build pyz [--dest DIR]` (build()).
 
 Each archive holds the package (taskmgr/ without tests/ and __pycache__) plus, at the top,
 the code version, pyproject.toml and the commit. The code version is a hash of the files of
@@ -10,18 +9,15 @@ archive built from it, and an edit of the docs does not make servers restart.
 never builds one itself.
 """
 
-import argparse
 import dataclasses
 import hashlib
 import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import zipapp
 import zipfile
-from typing import cast
 
 from .common import CODE_ROOT, code_is_zipapp, copy_package_tree, read_code_file
 
@@ -154,7 +150,7 @@ def build(out_dir: str, targets: tuple[tuple[str, str], ...] = TARGETS) -> Built
 def default_remote_pyz() -> str:
     """Where `task create host` looks for taskmgr-remote.pyz when --pyz is not given.
 
-    From a checkout: <checkout>/dist/taskmgr-remote.pyz (the default output of this module).
+    From a checkout: <checkout>/dist/taskmgr-remote.pyz (where `task build pyz` writes).
     From task.pyz: taskmgr-remote.pyz next to the archive (symlinks resolved).
     """
     if code_is_zipapp():
@@ -180,26 +176,3 @@ def remote_archive_info(path: str) -> tuple[str, int]:
         raise ValueError("%s has no %s" % (path, VERSION_FILE))
     files = sum(1 for n in names if n.startswith("taskmgr/") and not n.endswith("/"))
     return version, files
-
-
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(
-        prog="python3 -m taskmgr.pyz",
-        description="Build task.pyz and taskmgr-remote.pyz (single-file zipapps).",
-    )
-    _ = ap.add_argument("-o", "--output", default="dist", help="output directory (default dist)")
-    args = ap.parse_args(argv)
-    out_dir = cast(str, args.output)
-    try:
-        info = build(out_dir)
-    except OSError as e:
-        print("build failed: %s" % e, file=sys.stderr)
-        return 2
-    for path, size in info.outputs:
-        print("%s  %d KB" % (path, size // 1024))
-    print("code_version %s  commit %s" % (info.code_version, info.commit or "-"))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

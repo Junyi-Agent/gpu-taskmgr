@@ -35,7 +35,7 @@ PING_TIMEOUT = 60.0
 # Arguments (each returns the command's description)
 
 PYZ_HELP = (
-    "taskmgr-remote.pyz to upload, built by `python3 -m taskmgr.pyz` (default: "
+    "taskmgr-remote.pyz to upload, built by `task build pyz` (default: "
     + "dist/taskmgr-remote.pyz in the checkout, or next to task.pyz); its code version "
     + "must equal this task's"
 )
@@ -118,7 +118,7 @@ def args_update(p: argparse.ArgumentParser) -> str:
         + "(KillMode=process). Every change is confirmed with [y/N] (--yes answers them); on "
         + "an up-to-date server nothing changes and nothing is asked. A disabled server can be "
         + "updated. --plan prints what would change (exit 0: nothing, 1: changes planned, "
-        + "2: a check failed). Build the archive first with `python3 -m taskmgr.pyz -o dist`."
+        + "2: a check failed). Build the archive first with `task build pyz`."
     )
 
 

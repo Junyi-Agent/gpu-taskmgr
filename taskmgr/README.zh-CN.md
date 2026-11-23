@@ -20,7 +20,7 @@ CLI 是一个单文件 `task.pyz`，只需要 `python3` >= 3.10（[[docs/install
 
 ```sh
 # 构建（已有 dist/task.pyz 和 dist/taskmgr-remote.pyz 时可跳过）
-python3 -m taskmgr.pyz -o dist
+bin/task build pyz                   # 在 checkout 里运行：写入 dist/
 
 # 安装（用符号链接，task create host 才能在 dist/ 找到 taskmgr-remote.pyz）
 ln -s "$PWD/dist/task.pyz" ~/.local/bin/task
@@ -42,7 +42,7 @@ task create host gpu1 --ssh tuner@10.0.0.12
 #  6. 把 gpu1 加入本地 ~/.taskmgr/machines.json
 ```
 
-更新服务器（`git pull` 或改代码之后）：重新运行 `python3 -m taskmgr.pyz -o dist`，再运行
+更新服务器（`git pull` 或改代码之后）：重新运行 `task build pyz`，再运行
 `task update host gpu1`。`task create host` 和 `task update host` 都是幂等的：服务器已是最新时，它们不做改动，也不提问。
 每一步、数据检查和手动部署方式见 [[docs/install.zh-CN]]（"远程服务器"一节）。
 

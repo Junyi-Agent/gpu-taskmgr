@@ -1,7 +1,7 @@
 # systemd *user* unit for the taskmgr scheduler daemon (no root needed).
 #
 # `task create host` writes this unit for you. By hand:
-#   python3 -m taskmgr.pyz -o dist                                   # on your machine
+#   task build pyz                                                   # on your machine
 #   ssh SERVER mkdir -p .taskmgr-remote/versions
 #   scp dist/taskmgr-remote.pyz SERVER:.taskmgr-remote/versions/<version>.pyz
 #   ln -s versions/<version>.pyz ~/.taskmgr-remote/taskmgr-remote.pyz   # on the server

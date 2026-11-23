@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
-from . import cliparse, hostcmds, package, packcmd, render
+from . import cliparse, hostcmds, package, packcmd, pyz, render
 from .cliparse import DEFAULT_JOBS_LIMIT, Args, Command, build_parser
 from .common import (
     CODE_ROOT,
@@ -764,7 +764,29 @@ def cmd_ping_host(args: Args) -> CmdResult:
 
 
 # ---------------------------------------------------------------------------
-# whoami / update / version
+# build pyz / whoami / update / version
+
+
+def cmd_build_pyz(args: Args) -> CmdResult:
+    """task.pyz and taskmgr-remote.pyz into --dest (default: where `task create host` looks
+    for taskmgr-remote.pyz in a checkout). From a .pyz --dest is required: the default would
+    be the running archive's own directory."""
+    if args.dest is None and code_is_zipapp():
+        raise TaskmgrError("bad_args", "--dest is required when task runs from a .pyz")
+    dest = os.path.abspath(args.dest or os.path.dirname(pyz.default_remote_pyz()))
+
+    try:
+        built = pyz.build(dest)
+    except OSError as e:
+        raise TaskmgrError("build_failed", "cannot build the zipapps in %s: %s" % (dest, e)) from e
+
+    return {
+        "dest": dest,
+        "code_version": built.code_version,
+        "commit": built.commit,
+        "files": built.files,
+        "archives": [{"path": path, "bytes": size} for path, size in built.outputs],
+    }, 0
 
 
 def _host_versions(args: Args) -> tuple[dict[str, object], int]:
@@ -837,7 +859,7 @@ def cmd_update(_args: Args) -> CmdResult:
     if code_is_zipapp():
         raise TaskmgrError(
             "not_a_checkout",
-            "%s is a zipapp; build a new one from a checkout (python3 -m taskmgr.pyz)" % CODE_ROOT,
+            "%s is a zipapp; build a new one from a checkout (`task build pyz`)" % CODE_ROOT,
         )
     before = _git_out("rev-parse", "--short=12", "HEAD")
     if before is None:
@@ -867,7 +889,7 @@ VERBS = {
     "cancel": "cancel a job",
     "retry": "run a finished job again as a new job",
     "resolve": "resolve a job in the unknown state",
-    "build": "build a task package from files and options",
+    "build": "build a task package from files and options, or the zipapps",
     "validate": "check a task package",
     "update": "update this local CLI, or a server's taskmgr-remote",
     "delete": "remove a server from the machine list",
@@ -1060,6 +1082,16 @@ COMMANDS = [
         H.args_ping,
         cmd_ping_host,
         H.text_ping,
+    ),
+    Command(
+        "build",
+        "pyz",
+        "pyz",
+        "others",
+        "build task.pyz and taskmgr-remote.pyz (single-file zipapps)",
+        C.args_build_pyz,
+        cmd_build_pyz,
+        render.text_build_pyz,
     ),
     Command(
         "whoami",

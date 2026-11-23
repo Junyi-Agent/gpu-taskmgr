@@ -1,14 +1,17 @@
-"""Zipapps: `python3 -m taskmgr.pyz` builds task.pyz and taskmgr-remote.pyz that run alone."""
+"""Zipapps: `task build pyz` builds task.pyz and taskmgr-remote.pyz that run alone."""
 
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+from typing import cast
 
 from taskmgr import pyz
 from taskmgr.common import copy_package_tree, override
+from taskmgr.records import JsonDict
 from taskmgr.tests.helpers import REPO, TASK, Env
 
 
@@ -16,14 +19,15 @@ class PyzTest(Env):
     dist: str = ""
     task_pyz: str = ""
     remote_pyz: str = ""
+    built: JsonDict = {}  # the -o json result of `task build pyz` in setUp
 
     @override
     def setUp(self) -> None:
         super().setUp()
         self.dist = os.path.join(self.tmp, "dist")
         p = subprocess.run(
-            [sys.executable, "-m", "taskmgr.pyz", "-o", self.dist],
-            cwd=REPO,
+            [sys.executable, TASK, "build", "pyz", "--dest", self.dist, "-o", "json", "--plain"],
+            cwd=self.tmp,
             env=self.env,
             capture_output=True,
             text=True,
@@ -32,6 +36,7 @@ class PyzTest(Env):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.task_pyz = os.path.join(self.dist, "task.pyz")
         self.remote_pyz = os.path.join(self.dist, "taskmgr-remote.pyz")
+        self.built = cast(JsonDict, json.loads(p.stdout))
         # From here on nothing may import the checkout: no PYTHONPATH, cwd outside REPO.
         _ = self.env.pop("PYTHONPATH", None)
         for m in self.machines:
@@ -63,6 +68,33 @@ class PyzTest(Env):
             self.assertIn("taskmgr/template/taskmgr_task.py", names)
             self.assertFalse([n for n in names if "/tests/" in n or "__pycache__" in n], names)
             self.assertEqual(version, self.local_code_version())
+
+    def test_build_pyz_result(self) -> None:
+        """`task build pyz`: the archives, their code version and commit (-o json), the same
+        as text; from a .pyz --dest is required (the default is the checkout's dist/)."""
+        self.assertEqual(self.built["dest"], self.dist)
+        self.assertEqual(self.built["code_version"], self.local_code_version())
+        archives = cast(list[JsonDict], self.built["archives"])
+        self.assertEqual([a["path"] for a in archives], [self.task_pyz, self.remote_pyz])
+        self.assertTrue(all(a["bytes"] == os.path.getsize(str(a["path"])) for a in archives))
+        again = os.path.join(self.tmp, "again")
+        p = self.run_pyz(self.task_pyz, "build", "pyz", "--plain")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("--dest is required when task runs from a .pyz (bad_args)", p.stderr)
+        p = self.run_pyz(self.task_pyz, "build", "pyz", "--dest", again, "--plain")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        lines = p.stdout.splitlines()
+        self.assertTrue(lines[0].startswith("built: %s/task.pyz (" % again), lines)
+        self.assertTrue(lines[1].startswith("built: %s/taskmgr-remote.pyz (" % again), lines)
+        self.assertEqual(
+            lines[2],
+            "code_version: %s, commit %s"
+            % (self.local_code_version(), self.built["commit"] or "-"),
+        )
+        self.assertEqual(
+            pyz.remote_archive_info(os.path.join(again, pyz.REMOTE_PYZ))[0],
+            self.local_code_version(),
+        )
 
     def test_exit_codes_pass_through(self) -> None:
         p = self.run_pyz(self.task_pyz, "create", "package", "bad", "--plain")

@@ -259,7 +259,7 @@ def try_flock_fd(path: str, create: bool = False, directory: bool = False) -> in
 
 
 # ---------------------------------------------------------------------------
-# Code root: a directory tree, or a zipapp (.pyz) built by `python3 -m taskmgr.pyz`
+# Code root: a directory tree, or a zipapp (.pyz) built by `task build pyz`
 
 
 def code_is_zipapp() -> bool:

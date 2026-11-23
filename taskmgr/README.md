@@ -21,7 +21,7 @@ single-file zipapps).
 
 ```sh
 # build (skip if dist/task.pyz and dist/taskmgr-remote.pyz exist)
-python3 -m taskmgr.pyz -o dist
+bin/task build pyz                   # in the checkout: writes dist/
 
 # install (a symlink, so that task create host finds taskmgr-remote.pyz in dist/)
 ln -s "$PWD/dist/task.pyz" ~/.local/bin/task
@@ -45,7 +45,7 @@ task create host gpu1 --ssh tuner@10.0.0.12
 #  6. add gpu1 to the local ~/.taskmgr/machines.json
 ```
 
-To update the server (after `git pull` or a code change): run `python3 -m taskmgr.pyz -o dist`
+To update the server (after `git pull` or a code change): run `task build pyz`
 again, then `task update host gpu1`. `task create host` and `task update host` are idempotent:
 on an up-to-date server they change nothing and ask nothing. Every step, the data check and
 the manual fallback: [[docs/install]] (section "Remote server").

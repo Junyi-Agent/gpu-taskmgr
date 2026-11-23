@@ -331,3 +331,21 @@ def text_update(_args: Args, out: Mapping[str, object], color: bool) -> str:
     return message(
         "updated", GREEN, "%s from %s to %s" % (out["path"], out["before"], out["after"]), color
     ) + hint("servers keep their code until `task update host NAME` (see `task version`)", color)
+
+
+def text_build_pyz(_args: Args, out: Mapping[str, object], color: bool) -> str:
+    text = "".join(
+        message("built", GREEN, "%s (%d KB)" % (a.get("path"), _int(a.get("bytes")) // 1024), color)
+        for a in rows(out, "archives")
+    )
+    text += message(
+        "code_version",
+        None,
+        "%s, commit %s" % (out.get("code_version"), _s(out.get("commit"))),
+        color,
+    )
+    return text + hint("`task update host NAME` installs taskmgr-remote.pyz on a server", color)
+
+
+def _int(v: object) -> int:
+    return v if isinstance(v, int) else 0

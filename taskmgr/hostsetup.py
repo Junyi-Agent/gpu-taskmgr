@@ -12,12 +12,12 @@ Steps: ssh (read-only checks), code, remote_root, data, unit, service, linger, v
 (read-only), machines (the local machine list), old_code (removes code that older versions
 installed outside remote_root; see hostlegacy). Everything on the server lives in
 remote_root (default ~/.taskmgr-remote, or $TASKMGR_REMOTE_ROOT): config.json, the job data,
-the code versions/<version>.pyz (built by taskmgr.pyz) and the symlink taskmgr-remote.pyz to
+the code versions/<version>.pyz (built by `task build pyz`) and the symlink taskmgr-remote.pyz to
 it. An installed archive is never modified: an update adds a file and switches the link (see
 pyz.MAIN_PY for why). What runs on the server is in hostserver. From the end of step ssh to
 the end of the run, a lock on the server keeps a second run for the same server user out.
 Progress and prompts go to stderr; the result is a summary of the steps (text on stdout, or
-JSON with --detail; see hostcmds).
+JSON with -o json; see hostcmds).
 """
 
 import datetime
@@ -157,13 +157,13 @@ def remote_root_from_env() -> str:
     return os.environ.get(REMOTE_ROOT_ENV, "").strip()
 
 
-BUILD_HINT = "build it with `python3 -m taskmgr.pyz -o dist` in the checkout"
+BUILD_HINT = "build it with `task build pyz`"
 
 
 def prebuilt_code(path: str) -> tuple[str, str, int]:
     """Check the taskmgr-remote.pyz to upload: (code version, absolute path, files inside).
 
-    `task create host` never builds the archive: it uploads one built by `python3 -m taskmgr.pyz`
+    `task create host` never builds the archive: it uploads one built by `task build pyz`
     and requires its code version to equal the version of the running `task`, so the server
     runs the code the CLI was built from.
     """

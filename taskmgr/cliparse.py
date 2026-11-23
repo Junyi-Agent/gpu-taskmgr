@@ -621,6 +621,19 @@ def args_validate_package(p: argparse.ArgumentParser) -> str:
     )
 
 
+def args_build_pyz(p: argparse.ArgumentParser) -> str:
+    _ = p.add_argument(
+        "--dest",
+        metavar="DIR",
+        help="output directory (default: dist/ in the checkout, where `task create host` "
+        + "looks for taskmgr-remote.pyz; required when task runs from a .pyz)",
+    )
+    return (
+        "Build task.pyz (this CLI) and taskmgr-remote.pyz (the server side) from this code: "
+        + "single-file zipapps that need only python3 >= 3.10. Existing files are replaced."
+    )
+
+
 def args_all_hosts(p: argparse.ArgumentParser) -> None:
     _ = p.add_argument("--host", help=ALL_HOSTS_HELP)
 

@@ -62,6 +62,7 @@ class CliTest(Env):
                 "enable host",
                 "disable host",
                 "ping host",
+                "build pyz",
                 "whoami",
                 "update",
                 "version",
