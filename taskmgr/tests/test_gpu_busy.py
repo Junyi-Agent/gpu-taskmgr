@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+import unittest
 from collections.abc import Callable
 from types import ModuleType
 from typing import cast
@@ -373,6 +374,15 @@ class TaskHelperTest(Env):
                 gpu_busy("")
             self.assertEqual(cm.exception.code, want, raw)
 
+
+class TaskHelperFilesTest(unittest.TestCase):
+    """The template's taskmgr_task.py and run.py, and the examples' copies (only reads files:
+    runs on any OS)."""
+
+    def read_text(self, path: str) -> str:
+        with open(path) as f:
+            return f.read()
+
     def test_helper_copies_identical_and_standalone(self) -> None:
         with open(os.path.join(TEMPLATE, "taskmgr_task.py"), "rb") as f:
             template = f.read()
@@ -423,7 +433,3 @@ class TaskHelperTest(Env):
             timeout=30,
         )
         self.assertEqual(p.stdout.strip(), "['taskmgr_task']", p.stderr)
-
-    def read_text(self, path: str) -> str:
-        with open(path) as f:
-            return f.read()
