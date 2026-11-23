@@ -58,6 +58,7 @@ def commit() -> str | None:
     from; None when unknown (no git, not a repository)."""
     if code_is_zipapp():
         return (read_code_file(COMMIT_FILE) or "").strip() or None
+
     try:
         p = subprocess.run(
             ["git", "-C", CODE_ROOT, "rev-parse", "--short=12", "HEAD"],
@@ -101,12 +102,15 @@ def stage(dest: str) -> tuple[str, int]:
     files = copy_package_tree("", os.path.join(dest, "taskmgr"), EXCLUDE)
     version = code_hash(os.path.join(dest, "taskmgr"))
     extras = {VERSION_FILE: version + "\n"}
+
     pyproject = read_code_file("pyproject.toml")
     if pyproject is not None:
         extras["pyproject.toml"] = pyproject
+
     sha = commit()
     if sha is not None:
         extras[COMMIT_FILE] = sha + "\n"
+
     for name, text in extras.items():
         with open(os.path.join(dest, name), "w") as f:
             _ = f.write(text)
@@ -143,6 +147,7 @@ def build(out_dir: str) -> Built:
     with tempfile.TemporaryDirectory(prefix="taskmgr-pyz-") as tmp:
         staged = os.path.join(tmp, "stage")
         version, files = stage(staged)
+
         outputs: list[tuple[str, int]] = []
         for name, module in TARGETS:
             target = os.path.join(out_dir, name)
@@ -151,6 +156,7 @@ def build(out_dir: str) -> Built:
             _ = shutil.move(part, target + ".tmp")
             os.replace(target + ".tmp", target)
             outputs.append((os.path.abspath(target), os.path.getsize(target)))
+
     return Built(version, commit(), files, outputs)
 
 
@@ -177,9 +183,11 @@ def remote_archive_info(path: str) -> tuple[str, int]:
             version = z.read(VERSION_FILE).decode("utf-8").strip() if VERSION_FILE in names else ""
     except zipfile.BadZipFile:
         raise ValueError("%s is not a zip archive" % path) from None
+
     if "from taskmgr.remote import main" not in main:
         raise ValueError("%s is not a taskmgr-remote.pyz (wrong entry point)" % path)
     if not version:
         raise ValueError("%s has no %s" % (path, VERSION_FILE))
+
     files = sum(1 for n in names if n.startswith("taskmgr/") and not n.endswith("/"))
     return version, files

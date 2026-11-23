@@ -120,14 +120,17 @@ def load_machines(home: str) -> list[Server]:
         raise TaskmgrError("bad_machines", "%s is not valid JSON: %s" % (path, e)) from e
     except OSError as e:
         raise TaskmgrError("bad_machines", "cannot read %s: %s" % (path, e)) from e
+
     if data is None:
         raise TaskmgrError(
             "no_machines",
             "machine list %s does not exist (see taskmgr/deploy/machines.example.json)" % path,
         )
+
     servers = data.get("servers") if isinstance(data, dict) else data
     if not isinstance(servers, list):
         raise TaskmgrError("bad_machines", '%s must contain a "servers" array' % path)
+
     names: set[object] = set()
     for entry in servers:
         s = entry if isinstance(entry, dict) else None
@@ -142,6 +145,7 @@ def load_machines(home: str) -> list[Server]:
             raise TaskmgrError(
                 "bad_machines", "server %s needs remote_root and remote_command" % s["name"]
             )
+
     # Checked above: every entry is an object with name, remote_root and remote_command.
     return cast(list[Server], servers)
 
@@ -193,6 +197,7 @@ class Remote:
         identity_file = ssh.get("identity_file")
         if identity_file:
             cmd += ["-i", os.path.expanduser(identity_file)]
+
         options = list(ssh.get("options") or [])
         cmd += options
         for name, value in (
@@ -202,6 +207,7 @@ class Remote:
         ):
             if not any(name.lower() in o.lower() for o in options):
                 cmd += ["-o", "%s=%d" % (name, value)]
+
         host = ssh.get("host") or self.name
         user = ssh.get("user")
         cmd += ["%s@%s" % (user, host) if user else host]
@@ -261,6 +267,7 @@ class Remote:
             raise ConnError("remote command timed out", self.name) from None
         except OSError as e:
             raise ConnError("cannot run transport: %s" % e, self.name) from e
+
         out = p.stdout.decode(errors="replace")
         err = p.stderr.decode(errors="replace")
         if self._is_conn_failure(p.returncode) and looks_like_ssh_failure(err):
@@ -281,8 +288,10 @@ class Remote:
         timeout None: no limit for an upload (stdin_path), else query_timeout().
         """
         self._inject()
+
         if timeout is None and stdin_path is None:
             timeout = query_timeout()
+
         upload = open(stdin_path, "rb") if stdin_path else None
         try:
             p = subprocess.run(
@@ -299,9 +308,11 @@ class Remote:
         finally:
             if upload is not None:
                 upload.close()
+
         err = p.stderr.decode(errors="replace").strip()
         if self._is_conn_failure(p.returncode):
             raise ConnError(ssh_error(err), self.name)
+
         obj: JsonValue = None
         for line in reversed(p.stdout.decode(errors="replace").splitlines()):
             if line.strip():
@@ -310,10 +321,12 @@ class Remote:
                 except ValueError:
                     pass
                 break
+
         if not isinstance(obj, dict):
             raise NoReplyError(
                 "no valid JSON from remote (exit %d): %s" % (p.returncode, err[-2000:]), self.name
             )
+
         reply = obj
         check_protocol(reply, self.name)
         if "error" in reply:
@@ -333,9 +346,11 @@ class Remote:
             )
         except OSError as e:
             raise ConnError("cannot run transport: %s" % e, self.name) from e
+
         err = p.stderr.decode(errors="replace").strip()
         if self._is_conn_failure(p.returncode):
             raise ConnError(ssh_error(err), self.name)
+
         if p.returncode != 0:
             obj: JsonValue = None
             for line in reversed(err.splitlines()):
@@ -365,6 +380,7 @@ def require_features(reply: JsonDict, needed: Sequence[str], host: str, what: st
     missing = [f for f in needed if f not in have]
     if not missing:
         return
+
     code = reply.get("code_version")
     runs = "code %s" % code[:12] if isinstance(code, str) and code else "older code"
     raise TaskmgrError(
@@ -417,6 +433,7 @@ def query_all(
                 results[name] = f.result()
             except TaskmgrError as e:
                 errors.append({"host": name, "error": e.message, "code": e.code})
+
     order: list[str] = [s["name"] for s in servers]
     errors.sort(key=lambda e: order.index(e["host"]))
     return results, errors
@@ -433,11 +450,13 @@ def edit_machines(home: str, edit: Callable[[list[JsonValue]], None]) -> None:
             data = read_json(path)
         except ValueError as e:
             raise TaskmgrError("bad_machines", "%s is not valid JSON: %s" % (path, e)) from e
+
         if data is None:
             empty: JsonDict = {"servers": []}
             data = empty
         servers = data.get("servers") if isinstance(data, dict) else data
         if not isinstance(servers, list):
             raise TaskmgrError("bad_machines", '%s must contain a "servers" array' % path)
+
         edit(servers)
         atomic_write_bytes(path, (json.dumps(data, indent=2) + "\n").encode())

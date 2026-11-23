@@ -177,12 +177,14 @@ def top_help(commands: Sequence[Command]) -> str:
     for c in commands:
         name = c.verb + (" " + c.shown if c.shown else "")
         groups.setdefault(c.group, []).append((name, c.help))
+
     groups["options"] = [
         ("-o, --output text|json", OUTPUT_HELP + " (logs: the log is always raw text)"),
         ("--plain", PLAIN_HELP),
         ("--home DIR", HOME_HELP),
         ("-h, --help", "show this help"),
     ]
+
     return render_help(
         TOP_USAGE,
         "Run task packages on GPU servers and follow their jobs. A command is a verb and a "
@@ -235,6 +237,7 @@ class Parser(argparse.ArgumentParser):
         resources: list[HelpEntry] = []
         arguments: list[HelpEntry] = []
         options: list[tuple[HelpEntry, str]] = []
+
         for a in self._actions:
             if a.help == argparse.SUPPRESS and not a.option_strings:
                 continue
@@ -320,6 +323,7 @@ class Parser(argparse.ArgumentParser):
             message += " (--detail is now -o json)"
         _ = sys.stderr.write(self.format_usage())
         _ = sys.stderr.write(textout.message("error", RED, message))
+
         if self.prog == "task":
             what = "lists all commands"
         elif self._parts()[1]:
@@ -380,11 +384,13 @@ def build_parser(commands: Sequence[Command], verbs: Mapping[str, str]) -> argpa
         mine = [c for c in commands if c.verb == verb]
         alone = next((c for c in mine if c.resource is None), None)
         vp = sub.add_parser(verb, help=verb_help, description=verb_help)
+
         if alone is not None:  # the verb also runs without a resource (version, update)
             vp.description = alone.setup(vp) or alone.help
             _add_output(vp, alone.text is None)
             vp.set_defaults(resource=None)
         _add_plain(vp)
+
         with_resource = [c for c in mine if c.resource is not None]
         if not with_resource:
             continue
@@ -400,6 +406,7 @@ def build_parser(commands: Sequence[Command], verbs: Mapping[str, str]) -> argpa
             _add_output(rp, c.text is None)
             _add_plain(rp)
             rp.set_defaults(resource=c.resource)  # the singular name, also when typed plural
+
     _no_abbrev(p)
     return p
 
@@ -454,6 +461,7 @@ def args_get_job(p: argparse.ArgumentParser) -> str:
         help="list the N most recently submitted jobs, over all servers (default %d)"
         % DEFAULT_JOBS_LIMIT,
     )
+
     return (
         "Without ID: list the jobs on every enabled server, oldest first. With ID: show that "
         + "job. A job waiting for GPUs lists the processes that hold them on the server "
@@ -485,6 +493,7 @@ def args_wait_job(p: argparse.ArgumentParser) -> str:
         metavar="SECONDS",
         help="give up after this long (default: no limit)",
     )
+
     return (
         "Wait until a job ends, then show it like `task get job ID`; an interrupted job is "
         + "followed to its automatic re-run. Exit 0: succeeded, 1: ended otherwise, "
@@ -547,6 +556,7 @@ def args_build_package(p: argparse.ArgumentParser) -> str:
     _ = p.add_argument(
         "sources", nargs="*", metavar="SRC", help="file or directory to copy; SRC=DEST to place it"
     )
+
     _ = p.add_argument("--task-id", help="task id, e.g. AA-01 (required without a task.json)")
     _ = p.add_argument(
         "--entry",
@@ -581,6 +591,7 @@ def args_build_package(p: argparse.ArgumentParser) -> str:
         metavar="KEY",
         help="key result.json outputs must have (repeatable)",
     )
+
     _ = p.add_argument("--task-md", metavar="FILE", help="use FILE as TASK.md")
     _ = p.add_argument(
         "--with-cute-helpers",
@@ -593,6 +604,7 @@ def args_build_package(p: argparse.ArgumentParser) -> str:
         metavar="GLOB",
         help="leave out names matching GLOB when copying a directory (repeatable)",
     )
+
     _ = p.add_argument(
         "--dest",
         metavar="PATH",
@@ -606,6 +618,7 @@ def args_build_package(p: argparse.ArgumentParser) -> str:
         + "task.json, or a .tar.gz / .tgz file); refused for the current directory, a source "
         + "or a directory that holds one",
     )
+
     return (
         "Build a task package from project files and options, validate it, and print its "
         + "path on stdout (a directory, or an archive when --dest ends in .tar.gz or .tgz), "
