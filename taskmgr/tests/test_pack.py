@@ -32,14 +32,16 @@ class PackTest(Env):
                 _ = f.write(text)
         return p
 
-    def pack(self, *args: object, env: dict[str, str] | None = None) -> tuple[int, str, str]:
+    def pack(
+        self, *args: object, env: dict[str, str] | None = None, cwd: str | None = None
+    ) -> tuple[int, str, str]:
         """Run `task build package` as a script would: text output, no -o json."""
         e = dict(self.env)
         e.update(env or {})
         p = subprocess.run(
             [sys.executable, TASK, "build", "package", "--plain"] + [str(a) for a in args],
             env=e,
-            cwd=self.tmp,
+            cwd=cwd or self.tmp,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=60,
@@ -219,6 +221,76 @@ class PackTest(Env):
         link = os.path.join(out, "link.txt")
         self.assertTrue(stat.S_ISREG(os.lstat(link).st_mode))
         self.assertEqual(self.read(link), b"followed\n")
+
+    def tree(self, root: str) -> list[str]:
+        """Every file under root, relative, sorted."""
+        return sorted(
+            os.path.relpath(os.path.join(d, n), root)
+            for d, _, names in os.walk(root)
+            for n in names
+        )
+
+    def test_force_never_deletes_the_cwd_or_a_source(self) -> None:
+        p = os.path.join(self.tmp, "AB-02")  # named like the task: the default --dest
+        os.rename(self.project(), p)
+        with open(os.path.join(p, "notes.txt"), "w") as f:
+            _ = f.write("not packed\n")
+        before = self.tree(p)
+        entry = ("--task-id", "AB-02", "--entry", "python3 run.py", "--force")
+        for args, cwd, what in (
+            # --dest is the directory that holds the source file.
+            ([os.path.join(p, "run.py"), *entry, "--dest", p], self.tmp, "contains source"),
+            # The default ./<task_id> is the source directory.
+            (["AB-02", *entry], self.tmp, "is source AB-02"),
+            # --dest is the current directory.
+            ([".", *entry, "--dest", "."], p, "is the current directory"),
+            # --dest holds the current directory.
+            (
+                ["../run.py", *entry, "--dest", ".."],
+                os.path.join(p, "spec"),
+                "contains the current",
+            ),
+        ):
+            with self.subTest(args=args):
+                rc, stdout, err = self.pack(*args, cwd=cwd)
+                self.assertEqual((rc, stdout), (2, ""), err)
+                self.assertIn("(bad_args)", err)
+                self.assertIn(what, err)
+                self.assertIn("nothing was deleted", err)
+                self.assertEqual(self.tree(p), before)
+
+    def test_force_replaces_only_a_package(self) -> None:
+        p = self.project()
+        args = (p, "--task-id", "AB-03", "--entry", "python3 run.py", "--force")
+        # A directory that is not a package (no task.json) and a file that is no archive.
+        other = os.path.join(self.tmp, "data")
+        os.makedirs(other)
+        with open(os.path.join(other, "keep.txt"), "w") as f:
+            _ = f.write("keep\n")
+        plain = os.path.join(self.tmp, "notes.txt")
+        with open(plain, "w") as f:
+            _ = f.write("keep\n")
+        for dest, what in ((other, "without a task.json"), (plain, "not named .tar.gz")):
+            with self.subTest(dest=dest):
+                rc, stdout, err = self.pack(*args, "--dest", dest)
+                self.assertEqual((rc, stdout), (2, ""), err)
+                self.assertIn(what, err)
+                self.assertIn("nothing was deleted", err)
+        self.assertEqual(self.tree(other), ["keep.txt"])
+        self.assertTrue(os.path.isfile(plain))
+
+        # An earlier package, an archive and a symlink are replaced.
+        pkg = os.path.join(self.tmp, "AB-03")
+        tgz = os.path.join(self.tmp, "AB-03.tgz")
+        link = os.path.join(self.tmp, "link")
+        os.symlink(other, link)
+        for dest in (pkg, pkg, tgz, tgz, link):
+            with self.subTest(dest=dest):
+                rc, stdout, err = self.pack(*args, "--dest", dest)
+                self.assertEqual((rc, stdout), (0, dest + "\n"), err)
+        self.assertTrue(os.path.isfile(os.path.join(link, "task.json")))
+        self.assertFalse(os.path.islink(link))
+        self.assertEqual(self.tree(other), ["keep.txt"])
 
     def test_errors(self) -> None:
         p = self.project()

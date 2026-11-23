@@ -599,7 +599,13 @@ def args_build_package(p: argparse.ArgumentParser) -> str:
         help="where to write the package: a directory, or a file ending in .tar.gz or .tgz "
         + "(default ./<task_id>)",
     )
-    _ = p.add_argument("--force", action="store_true", help="replace an existing --dest")
+    _ = p.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing --dest that holds an earlier package (a directory with a "
+        + "task.json, or a .tar.gz / .tgz file); refused for the current directory, a source "
+        + "or a directory that holds one",
+    )
     return (
         "Build a task package from project files and options, validate it, and print its "
         + "path on stdout (a directory, or an archive when --dest ends in .tar.gz or .tgz), "

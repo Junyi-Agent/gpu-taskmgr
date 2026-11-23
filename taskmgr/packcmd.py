@@ -265,6 +265,50 @@ def add_helpers(root: str, cute: bool) -> list[str]:
     return warnings
 
 
+def _within(path: str, root: str) -> bool:
+    """Whether path is root or inside it (both absolute and normalized)."""
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def check_replaceable(target: str, sources: Sequence[str]) -> None:
+    """Raise bad_args unless --force may delete the existing target: an earlier package
+    (a directory with a task.json, or a .tar.gz / .tgz file) or a symlink (only the link is
+    removed), and neither the current directory, a source, nor a directory holding one."""
+    link = os.path.islink(target)
+    real = os.path.realpath(target)
+    protected = [("the current directory", os.getcwd())] + [
+        ("source %s" % arg, os.path.abspath(split_source(arg)[0])) for arg in sources
+    ]
+
+    for what, path in protected:
+        same = path == target
+        holds = not link and os.path.isdir(target) and _within(os.path.realpath(path), real)
+        if same or holds:
+            how = "is" if same or os.path.realpath(path) == real else "contains"
+            raise TaskmgrError(
+                "bad_args",
+                "--force would delete %s, which %s %s; nothing was deleted (choose another --dest)"
+                % (target, how, what),
+            )
+
+    if link:
+        return
+    if os.path.isdir(target):
+        task_json = os.path.join(target, "task.json")
+        if os.path.isfile(task_json) and not os.path.islink(task_json):
+            return
+        what = "a directory without a task.json"
+    elif target.endswith((".tar.gz", ".tgz")):
+        return
+    else:
+        what = "a file not named .tar.gz or .tgz"
+    raise TaskmgrError(
+        "bad_args",
+        "%s is %s, not a task package; --force replaces only a package; nothing was deleted"
+        % (target, what),
+    )
+
+
 def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
     out_path = os.path.abspath(a.dest) if a.dest else None
     with tempfile.TemporaryDirectory(prefix="taskmgr-pack-") as tmp:
@@ -302,6 +346,7 @@ def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
                     "exists",
                     "%s already exists; nothing was written (--force replaces it)" % target,
                 )
+            check_replaceable(target, a.sources)
             if os.path.isdir(target) and not os.path.islink(target):
                 shutil.rmtree(target)
             else:
