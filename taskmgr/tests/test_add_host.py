@@ -133,7 +133,10 @@ args = [a for a in sys.argv[1:] if not a.startswith("--")]
 with open(os.path.join(state, "calls.log"), "a") as f:
     f.write("loginctl " + " ".join(args) + "\n")
 flag = os.path.join(state, "linger")
-if args[:1] == ["show-user"]:
+if args[:1] == ["show-user"] and os.path.exists(os.path.join(state, "show-fails")):
+    sys.stderr.write("Failed to get user: Access denied\n")
+    sys.exit(1)
+elif args[:1] == ["show-user"]:
     print("Linger=%%s" %% ("yes" if os.path.exists(flag) else "no"))
 elif args[:1] == ["enable-linger"]:
     if os.path.exists(os.path.join(state, "linger-refuse")):
@@ -907,6 +910,14 @@ class AddHostTest(Env):
         )
         self.assertIn("an admin must run `sudo loginctl enable-linger", self.detail(out, "linger"))
         self.assertEqual(self.entry()["remote_root"], self.rroot())
+
+    def test_unknown_linger_shows_the_loginctl_error(self) -> None:
+        os.makedirs(self.rpath(".fake-systemd"))
+        open(self.rpath(".fake-systemd", "show-fails"), "w").close()
+        rc, out, err = self.add("--plan")
+        self.assertEqual((rc, self.statuses(out)["linger"]), (1, "planned"), err)
+        self.assertIn("linger: unknown (Failed to get user: Access denied)", err)
+        self.assertIn("Linger=unknown (Failed to get user: Access denied) for", err)
 
     def test_remote_root_from_the_environment(self) -> None:
         """TASKMGR_REMOTE_ROOT sets remote_root (`~` is the server's HOME); a later run

@@ -539,7 +539,7 @@ class HostSetup:
                 "`systemctl --user` does not work (%s); taskmgr needs a systemd user instance"
                 % (p.get("systemd_error") or "no error text")
             )
-        self.ui.info("systemd user instance: ok; linger: %s" % (p.get("linger") or "unknown"))
+        self.ui.info("systemd user instance: ok; linger: %s" % linger_text(p))
         self.ui.info(
             "code: %s; unit: %s; service: %s, %s"
             % (
@@ -1094,7 +1094,7 @@ class HostSetup:
             "an admin must run `sudo loginctl enable-linger %s` once; " % user
             + "until then the service stops when your last login session ends"
         )
-        self.ui.info("Linger=%s for %s" % (linger or "unknown", user))
+        self.ui.info("Linger=%s for %s" % (linger_text(self.probe), user))
         self.ui.confirm("`loginctl enable-linger %s` (needs no root on most hosts)" % user)
         rc, _, err = self.remote.shell(
             PRELUDE + shlex.join(["loginctl", "--no-ask-password", "enable-linger", user]),
@@ -1190,6 +1190,12 @@ def _strs(v: JsonValue) -> list[str]:
 
 def _paths(entries: list[JsonDict]) -> str:
     return ", ".join(_str(e.get("path")) for e in entries)
+
+
+def linger_text(p: Probe) -> str:
+    """The probe's Linger value, or "unknown" with the error of `loginctl show-user`."""
+    err = (p.get("linger_error") or "").strip()
+    return p.get("linger") or ("unknown (%s)" % err if err else "unknown")
 
 
 def add_host(args: AddHostArgs, home: str) -> tuple[Mapping[str, object], int]:
