@@ -237,19 +237,33 @@ class Store:
     def write_runner(jobdir: str, runner: Runner) -> None:
         atomic_write_json(os.path.join(jobdir, "runner.json"), runner)
 
-    @staticmethod
-    def set_runner_aside(jobdir: str) -> str | None:
-        """Rename runner.json to the first free runner.prev-N.json (kept for inspection)."""
+    def set_runner_aside(self, jobdir: str) -> str | None:
+        """Rename runner.json to the first free runner.prev-N.json (kept for inspection).
+
+        The record of a GPU-busy exit replaces the last runner.prev-N.json when that one is
+        a GPU-busy record too: a job that keeps exiting 75 keeps one such file, however
+        often it is queued again (job.json gpu_busy_requeues counts the requeues)."""
         src = os.path.join(jobdir, "runner.json")
         if not os.path.exists(src):
             return None
+
         i = 1
         while os.path.lexists(os.path.join(jobdir, "runner.prev-%d.json" % i)):
             i += 1
         dst = os.path.join(jobdir, "runner.prev-%d.json" % i)
+        if i > 1:
+            last = os.path.join(jobdir, "runner.prev-%d.json" % (i - 1))
+            if self._busy_record(src) and self._busy_record(last):
+                dst = last
+
         os.rename(src, dst)
         fsync_dir(jobdir)
         return dst
+
+    def _busy_record(self, path: str) -> bool:
+        """Whether the run record at path shows a GPU-busy exit (see ended_gpu_busy)."""
+        obj, _ = try_read_json(path)
+        return isinstance(obj, dict) and self.ended_gpu_busy(cast(Runner, cast(object, obj)))
 
     # -- GPU busy exits (the entry could not get its GPU) ----------------------
     @property
@@ -288,6 +302,14 @@ def choosing_gpus(job: Job) -> bool:
     """Whether the scheduler must choose the job's GPUs before its next run: it has a
     gpu_request, no GPUs yet, and its next run is not a precompile (which needs none)."""
     return bool(job.get("gpu_request")) and not job.get("gpus") and not precompiling(job)
+
+
+def held_back(job: Job, now: float, interval: float) -> bool:
+    """Whether a job queued again after a GPU-busy exit must still wait before its next
+    dispatch (`now` in epoch seconds). A wait longer than `interval` (the wall clock was set
+    back, or the interval lowered) has passed."""
+    not_before = job.get("not_before_epoch")
+    return not_before is not None and 0 < not_before - now <= interval
 
 
 def run_gpus(job: Job) -> list[GpuDecl]:

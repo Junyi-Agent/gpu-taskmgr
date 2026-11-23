@@ -181,8 +181,10 @@ precompile support, needed by this package; run `task host add gpu1` to update i
 合格的 GPU 不足 `count` 块时，作业保持 `queued`（显示为 `pending-gpu`），`pending_reason` 类似
 `waiting for 2 GPUs with >= 40 GiB free (1 qualify now)`，调度器每轮（`scheduler_poll_seconds`，默认 1 秒）
 重试，与 GPU 被占时的重新启动相同。等待中的作业不预留任何 GPU：后面指定了空闲 GPU 的作业可以先启动。
-如果入口在选中的 GPU 上退出 75（选定之后别的进程抢走了它），作业回到原来的排队位置并清空 GPU，下一轮
-重新挑选；workdir 与其他 GPU-busy 重启一样保留。重试或自动重跑会重新挑选 GPU。有 `precompile` 时，在预编译
+如果入口在选中的 GPU 上退出 75（选定之后别的进程抢走了它），作业回到原来的排队位置并清空 GPU，过了
+`gpu_retry_interval_seconds` 之后的第一轮重新挑选（在此之前 `pending_reason` 是
+`entry exited 75 (GPU busy, #N); choosing GPUs again from <时间>`，N 是这样重新排队的次数）；workdir
+与其他 GPU-busy 重启一样保留，这类退出的运行记录无论发生多少次都只保留一个 `runner.prev-N.json`。重试或自动重跑会重新挑选 GPU。有 `precompile` 时，在预编译
 完成之后才挑选 GPU。
 
 提交时，服务器拒绝这台机器永远满足不了的请求（`invalid_gpus`）：要的 GPU 比机器上（或 `from` 列出的）多，

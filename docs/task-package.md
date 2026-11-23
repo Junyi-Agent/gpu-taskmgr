@@ -204,8 +204,11 @@ When fewer than `count` GPUs qualify, the job stays `queued` (shown `pending-gpu
 scheduler tries again on every pass (`scheduler_poll_seconds`, default 1 s), like the
 GPU-busy relaunch. A waiting job reserves no GPU: a later job with fixed GPUs that are free
 can start before it. If the entry exits 75 on a chosen GPU (another process took it after the
-choice), the job is queued again at its place with its GPUs cleared, and the next pass
-chooses again; the workdir is kept as for any GPU-busy relaunch. A retry or an automatic
+choice), the job is queued again at its place with its GPUs cleared, and the first pass after
+`gpu_retry_interval_seconds` chooses again (until then `pending_reason` reads
+`entry exited 75 (GPU busy, #N); choosing GPUs again from <time>`, N counting these
+requeues); the workdir is kept as for any GPU-busy relaunch, and the run record of such an
+exit is kept as one `runner.prev-N.json` however often it happens. A retry or an automatic
 re-run chooses its GPUs again. With `precompile`, GPUs are chosen after the precompile.
 
 At submit the server refuses a request this machine can never meet (`invalid_gpus`): more GPUs

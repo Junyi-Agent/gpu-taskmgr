@@ -202,3 +202,46 @@ class GpuSelectRunTest(Env):
         )
         self.assertEqual(rc, 2)
         self.assertIn("without gpu_select support", self.text(out, "error", "message"))
+
+
+class GpuSelectBusyBackoffTest(Env):
+    remote_config: JsonDict = {"gpu_retry_interval_seconds": 1.5}
+
+    def test_busy_exit_waits_the_retry_interval_and_keeps_one_record(self) -> None:
+        """A job that chooses its GPUs and keeps exiting 75 is dispatched again only
+        gpu_retry_interval_seconds after each exit (not on the next pass), and its run
+        records set aside for those exits stay one file however often it is queued again."""
+        launches = os.path.join(self.tmp, "launches")
+        script = "date +%%s.%%N >> %s; exit 75" % launches
+        _ = self.start_daemon()
+        j = self.submit(self.make_pkg(script=script, extra={"gpus": {"count": 1}}))
+
+        def times() -> list[float]:
+            try:
+                with open(launches) as f:
+                    return [float(line) for line in f.read().split()]
+            except OSError:
+                return []
+
+        _ = self.wait_for(lambda: len(times()) >= 4, 30, "4 launches")
+        t = times()[:4]
+        gaps = [t[i + 1] - t[i] for i in range(len(t) - 1)]
+        self.assertGreaterEqual(min(gaps), 1.5, t)
+
+        def busy_reason() -> str:
+            try:
+                text = str(self.job(j).get("pending_reason"))
+            except (OSError, ValueError):  # the directory moved meanwhile
+                return ""
+            return text if "GPU busy, #" in text else ""
+
+        self.assertRegex(
+            self.wait_for(busy_reason, 10, "pending_reason"),
+            r"^entry exited 75 \(GPU busy, #\d+\); choosing GPUs again from \S+Z$",
+        )
+        _ = self.ok("cancel", j, "--host", "s1")
+        job = self.wait_state(j, "cancelled")
+
+        self.assertGreaterEqual(job.get("gpu_busy_requeues", 0), 3)
+        prev = sorted(n for n in os.listdir(self.job_dir(j)) if n.startswith("runner.prev-"))
+        self.assertEqual(prev, ["runner.prev-1.json"])

@@ -4,6 +4,7 @@ Shared by the shim (normal supervision), the daemon (startup recovery, dead-shim
 detection, takeover) and `taskmgr-remote resolve`.
 """
 
+import math
 import os
 import signal
 import time
@@ -252,12 +253,15 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
 
     The entry did no work, so the same job goes back to queued (keeping its jobid and
     enqueue_seq; not an interruption, `auto_restarts` is unchanged): the workdir is kept
-    for the next dispatch and runner.json is moved aside as runner.prev-N.json. A requested cancel ends the job
-    as cancelled instead. Returns None when the run record does not show such an exit or
-    the job is not running/stopping (an unknown job is never queued again).
+    for the next dispatch and runner.json is moved aside as runner.prev-N.json. A
+    requested cancel ends the job as cancelled instead. Returns None when the run record
+    does not show such an exit or the job is not running/stopping (an unknown job is never
+    queued again).
 
     A job whose GPUs the scheduler chose (`gpu_request`) gets them cleared, so that it
     chooses again; its shim calls this right after the GPU-busy exit instead of waiting.
+    The scheduler dispatches it again no sooner than gpu_retry_interval_seconds from now
+    (`not_before_epoch`).
     """
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
@@ -268,6 +272,7 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
             or not store.ended_gpu_busy(runner)
         ):
             return None
+
         if not job.get("cancel_requested"):
             # The workdir stays: the next dispatch of this same job reuses it (GPU contract).
             # job.json first: a crash before the rename leaves a queued job whose runner.json
@@ -276,13 +281,24 @@ def requeue_gpu_busy(store: Store, jobid: str) -> Job | None:
             job["dispatched_at"] = None
             job["stop_reason"] = None
             job["error"] = None
+            job["gpu_busy_requeues"] = job.get("gpu_busy_requeues", 0) + 1
             _ = job.pop("pending_reason", None)
             if job.get("gpu_request"):
-                # Its GPUs were chosen at dispatch and one turned out busy: choose again.
+                # Its GPUs were chosen at dispatch and one turned out busy: choose again,
+                # once the retry interval has passed (the shim of a job with fixed GPUs
+                # waits it before its relaunch).
+                not_before = time.time() + float(store.config["gpu_retry_interval_seconds"])
                 job["gpus"] = []
-                job["pending_reason"] = "entry exited %s (GPU busy); choosing GPUs again" % (
-                    runner.get("return_code")
+                job["not_before_epoch"] = not_before
+                job["pending_reason"] = (
+                    "entry exited %s (GPU busy, #%d); choosing GPUs again from %s"
+                    % (
+                        runner.get("return_code"),
+                        job["gpu_busy_requeues"],
+                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(math.ceil(not_before))),
+                    )
                 )
+
             jobdir = store.save_job(jobdir, job)
             _ = store.set_runner_aside(jobdir)
             return job

@@ -32,7 +32,8 @@ Other language: [[docs/internals.zh-CN]]
   package.tar.gz    original upload, immutable
   package/          read-only extracted copy; the run starts from it
   runner.json       authoritative run record, written only by the runner
-  runner.prev-N.json  run record set aside when the job was queued again after a GPU-busy exit
+  runner.prev-N.json  run record set aside when the job was queued again (after a GPU-busy exit, or
+                      for its GPUs after its precompile); consecutive GPU-busy records share one file
   shim.lock         flock held by the shim for its whole life
   stdout.log  stderr.log  shim.log   appended across relaunches, never truncated
   workdir/          copy of package/ (made once per job, reused by GPU-busy relaunches) + progress.json, result.json, artifacts/
@@ -58,6 +59,7 @@ shared files.
  "auto_restarts": 0, "dispatched_at": null | "...",
  "retry_of": null | "<jobid this job re-runs>", "retried_as": ["<jobids of its re-runs>"],
  "pending_reason": "entry exited 75 (GPU busy); retry #3 in 2 s",   (only while waiting)
+ "gpu_busy_requeues": 2, "not_before_epoch": 1761725702.5,   (after a GPU-busy requeue)
  "error": null}
 ```
 
@@ -73,7 +75,11 @@ job is dispatched; a job without it never ran and has no run files. `pending_rea
 set while the shim waits to relaunch an entry that exited with `gpu_busy_exit_code` (see
 Shim below), and when a precompile succeeded; it is removed when a run gets going or the job
 ends. `phase` exists only when `task.json` has `precompile`: `precompile`, then `gpu`
-([[docs/task-package]]). `runner.json` copies it.
+([[docs/task-package]]). `runner.json` copies it. `gpu_busy_requeues` counts how often the
+job went back to `queued` after a GPU-busy exit. A job with `gpu_request` queued again that
+way also gets `not_before_epoch` (`gpu_retry_interval_seconds` after the exit) and a
+`pending_reason` naming that time; the scheduler skips it until then (a wait longer than the
+interval, after the clock was set back, counts as over), and dispatch removes the key.
 
 `runner.json`:
 

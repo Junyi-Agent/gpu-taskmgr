@@ -30,6 +30,7 @@ from .store import (
     end_without_result,
     finalize_run,
     has_run,
+    held_back,
     remove_tree,
     result_complete,
     run_gpus,
@@ -170,8 +171,11 @@ class Daemon:
         """The GPUs' memory and processes for jobs that choose their GPUs, read before the
         state lock is taken (nvidia-smi can be slow); (None, "") when no queued job needs
         them, (None, why) when nvidia-smi failed."""
+        now = time.time()
+        interval = float(self.store.config["gpu_retry_interval_seconds"])
         if not any(
-            j["state"] == "queued" and choosing_gpus(j) for _, j in self.store.iter_jobs(True)
+            j["state"] == "queued" and choosing_gpus(j) and not held_back(j, now, interval)
+            for _, j in self.store.iter_jobs(True)
         ):
             return None, ""
         try:
@@ -220,7 +224,13 @@ class Daemon:
             )
             reserved: set[str] = set()
             max_cpu = cfg["max_cpu_jobs"]
+            now = time.time()
+            retry_interval = float(cfg["gpu_retry_interval_seconds"])
             for jobdir, job in queued:
+                if held_back(job, now, retry_interval):
+                    # Queued again after a GPU-busy exit, not due yet; a job that chooses
+                    # its GPUs has none to reserve.
+                    continue
                 if choosing_gpus(job):
                     # Any GPUs that meet the request, among those no job holds or an
                     # earlier queued job waits for; it reserves nothing while it waits.
@@ -298,6 +308,7 @@ class Daemon:
         job["stop_reason"] = None
         job["error"] = None
         _ = job.pop("pending_reason", None)
+        _ = job.pop("not_before_epoch", None)
         jobdir = st.save_job(jobdir, job)
         err = self.spawn_shim(job["jobid"], jobdir)
         if err:
