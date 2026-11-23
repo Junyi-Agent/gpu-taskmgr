@@ -19,11 +19,16 @@ import tempfile
 import zipapp
 import zipfile
 
-from .common import CODE_ROOT, code_is_zipapp, copy_package_tree, read_code_file
+from .common import (
+    CODE_ROOT,
+    COMMIT_FILE,
+    VERSION_FILE,
+    code_is_zipapp,
+    copy_package_tree,
+    read_code_file,
+)
 
 INTERPRETER = "/usr/bin/env python3"
-VERSION_FILE = ".taskmgr-code-version"
-COMMIT_FILE = ".taskmgr-commit"
 # Package parts that are not put into the archives.
 EXCLUDE = ("__pycache__", "tests", ".DS_Store", "*.pyc")
 # Top-level parts of taskmgr/ outside the code version: documentation and samples that no
@@ -48,7 +53,9 @@ sys.exit(main())
 """
 
 
-def _commit() -> str | None:
+def commit() -> str | None:
+    """The git commit of the running code: HEAD of the checkout, or the one a .pyz was built
+    from; None when unknown (no git, not a repository)."""
     if code_is_zipapp():
         return (read_code_file(COMMIT_FILE) or "").strip() or None
     try:
@@ -97,9 +104,9 @@ def stage(dest: str) -> tuple[str, int]:
     pyproject = read_code_file("pyproject.toml")
     if pyproject is not None:
         extras["pyproject.toml"] = pyproject
-    commit = _commit()
-    if commit is not None:
-        extras[COMMIT_FILE] = commit + "\n"
+    sha = commit()
+    if sha is not None:
+        extras[COMMIT_FILE] = sha + "\n"
     for name, text in extras.items():
         with open(os.path.join(dest, name), "w") as f:
             _ = f.write(text)
@@ -144,7 +151,7 @@ def build(out_dir: str, targets: tuple[tuple[str, str], ...] = TARGETS) -> Built
             _ = shutil.move(part, target + ".tmp")
             os.replace(target + ".tmp", target)
             outputs.append((os.path.abspath(target), os.path.getsize(target)))
-    return Built(version, _commit(), files, outputs)
+    return Built(version, commit(), files, outputs)
 
 
 def default_remote_pyz() -> str:

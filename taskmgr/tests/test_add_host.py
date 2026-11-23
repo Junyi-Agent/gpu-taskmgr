@@ -24,7 +24,7 @@ import zipfile
 from typing import cast
 
 from taskmgr import hostlegacy, hostsetup, pyz
-from taskmgr.common import DEFAULT_REMOTE_CONFIG, override
+from taskmgr.common import DEFAULT_REMOTE_CONFIG, VERSION_FILE, override
 from taskmgr.records import JsonDict, JsonValue, Server
 from taskmgr.tests.helpers import REMOTE, REPO, TASK, Env, kill_quiet, pid_alive
 from taskmgr.transport import Remote
@@ -264,7 +264,7 @@ class AddHostTest(Env):
 
     def installed_version(self) -> str:
         with zipfile.ZipFile(self.rcode()) as z:
-            return z.read(pyz.VERSION_FILE).decode().strip()
+            return z.read(VERSION_FILE).decode().strip()
 
     def store(self) -> list[str]:
         return sorted(os.listdir(os.path.join(self.rroot(), hostsetup.CODE_STORE)))
@@ -279,7 +279,7 @@ class AddHostTest(Env):
             _ = f.write(b"#!/usr/bin/env python3\n")
             with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
                 for info, data in members:
-                    if info.filename == pyz.VERSION_FILE:
+                    if info.filename == VERSION_FILE:
                         data = (version + "\n").encode()
                     z.writestr(info, data)
         os.chmod(fake, 0o755)
@@ -961,7 +961,7 @@ class AddHostTest(Env):
             _ = f.write(b"#!/usr/bin/env python3\n")
             with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
                 for info, data in members:
-                    if info.filename == pyz.VERSION_FILE:
+                    if info.filename == VERSION_FILE:
                         data = b"0" * 64 + b"\n"
                     z.writestr(info, data)
         rc, out, err = self.add("--yes", archive=stale)

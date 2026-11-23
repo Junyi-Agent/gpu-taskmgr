@@ -33,7 +33,7 @@ from collections.abc import Callable, Mapping
 from typing import Protocol, TypedDict, cast
 
 from . import hostlegacy, pyz
-from .common import DEFAULT_REMOTE_CONFIG, TaskmgrError, read_code_file
+from .common import DEFAULT_REMOTE_CONFIG, VERSION_FILE, TaskmgrError, read_code_file
 from .hostlegacy import OLD_REMOTE_ROOT, LegacyProbe
 from .prompt import Declined, Kept, NonInteractive, Planned, Ui
 from .records import JsonDict, JsonValue, Server, SshConfig
@@ -458,7 +458,7 @@ class HostSetup:
             "root": spec,
             "code": CODE_FILE,
             "store": CODE_STORE,
-            "version_file": pyz.VERSION_FILE,
+            "version_file": VERSION_FILE,
             "unit": "%s/%s.service" % (UNIT_DIR, UNIT),
             "unit_name": UNIT,
             "data_roots": data_roots,

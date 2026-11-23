@@ -261,6 +261,11 @@ def try_flock_fd(path: str, create: bool = False, directory: bool = False) -> in
 # ---------------------------------------------------------------------------
 # Code root: a directory tree, or a zipapp (.pyz) built by `task build pyz`
 
+# Files at the top of a .pyz (see pyz.stage): its code version and the commit it was built
+# from. `task create host` installs the remote one, so the server's `version` reads it.
+VERSION_FILE = ".taskmgr-code-version"
+COMMIT_FILE = ".taskmgr-commit"
+
 
 def code_is_zipapp() -> bool:
     """True when this code runs from a .pyz archive."""

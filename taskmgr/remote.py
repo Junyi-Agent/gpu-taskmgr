@@ -30,6 +30,7 @@ from .common import (
     SCHEMA_VERSION,
     SUBMISSION_KEY_RE,
     TERMINAL_STATES,
+    VERSION_FILE,
     TaskmgrError,
     atomic_write_json,
     read_code_file,
@@ -677,7 +678,7 @@ def inspect_root(root: str) -> dict[str, object]:
 def version_info() -> dict[str, object]:
     """`version`: the installed code version (written by `task create host`) and who we run as."""
     # Written by `task create host` and by the .pyz build; missing in a plain checkout (tests).
-    code_version = (read_code_file(".taskmgr-code-version") or "").strip() or None
+    code_version = (read_code_file(VERSION_FILE) or "").strip() or None
     return {
         "ok": True,
         "code_version": code_version,

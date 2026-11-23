@@ -10,7 +10,7 @@ import zipfile
 from typing import cast
 
 from taskmgr import pyz
-from taskmgr.common import copy_package_tree, override
+from taskmgr.common import VERSION_FILE, copy_package_tree, override
 from taskmgr.records import JsonDict
 from taskmgr.tests.helpers import REPO, TASK, Env
 
@@ -63,7 +63,7 @@ class PyzTest(Env):
             self.assertTrue(os.access(archive, os.X_OK))
             with zipfile.ZipFile(archive) as z:
                 names = z.namelist()
-                version = z.read(".taskmgr-code-version").decode().strip()
+                version = z.read(VERSION_FILE).decode().strip()
             self.assertIn("taskmgr/remote.py", names)
             self.assertIn("taskmgr/template/taskmgr_task.py", names)
             self.assertFalse([n for n in names if "/tests/" in n or "__pycache__" in n], names)

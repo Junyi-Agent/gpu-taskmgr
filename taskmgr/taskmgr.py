@@ -829,9 +829,7 @@ def local_version() -> dict[str, object]:
     if pyproject is not None:
         m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M)
         version = m.group(1) if m else None
-    commit = _git_out("rev-parse", "--short=12", "HEAD")
-    if commit is None:  # a .pyz records the commit it was built from
-        commit = (read_code_file(".taskmgr-commit") or "").strip() or None
+    commit = pyz.commit()
     dirty = _git_out("status", "--porcelain", "--untracked-files=no")
     code_version = local_code_version()
     return {
