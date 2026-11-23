@@ -197,7 +197,8 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
             return 0
         if job.get("gpu_request"):
             # The scheduler chose these GPUs; one is busy after all. Queue the job again
-            # so that the scheduler chooses again (maybe other GPUs) on its next pass.
+            # so that the scheduler chooses again (maybe other GPUs) once
+            # gpu_retry_interval_seconds have passed.
             requeued = requeue_gpu_busy(store, jobid)
             log("entry exited GPU busy; job is now %s" % (requeued or job)["state"])
             return 0
