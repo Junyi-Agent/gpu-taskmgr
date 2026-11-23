@@ -62,16 +62,20 @@ def build_env(
         home, user = pw.pw_dir, pw.pw_name
     except KeyError:
         home, user = os.environ.get("HOME", "/"), os.environ.get("USER", "")
+
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "USER": user, "LANG": "C.UTF-8"}
     base_env: dict[str, str] = cfg["base_env"] or {}
     env.update({str(k): str(v) for k, v in base_env.items()})
+
     environment: TaskEnvironment = task.get("environment") or {}
     venv = environment.get("venv")
     if venv:
         env["VIRTUAL_ENV"] = venv
         env["PATH"] = os.path.join(venv, "bin") + (":" + env["PATH"] if env.get("PATH") else "")
+
     task_env: dict[str, str] = task.get("env") or {}
     env.update(task_env)
+
     env.update(
         {
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
@@ -83,6 +87,7 @@ def build_env(
             "TASKMGR_RESULT_FILE": os.path.join(workdir, "result.json"),
         }
     )
+
     if busy_code is not None and not precompiling(job):
         env["TASKMGR_GPU_BUSY_EXIT_CODE"] = str(busy_code)
     else:  # also when base_env sets it: the helper would exit with a code nobody waits for
@@ -115,9 +120,11 @@ def prestart_checks(
     for p in ([venv] if venv else []) + list(required_paths):
         if not os.path.exists(p):
             errors.append("required path does not exist: %s" % p)
+
     path, err = resolve_entry(run_command(task, job)[0][0], workdir, env.get("PATH", ""))
     if err:
         errors.append(err)
+
     uuids = [g["uuid"] for g in run_gpus(job)]
     if uuids:
         try:
@@ -127,6 +134,7 @@ def prestart_checks(
                 errors.append("GPUs not visible on this machine: %s" % ",".join(missing))
         except TaskmgrError as e:
             errors.append(e.message)
+
     return path, errors
 
 
@@ -134,6 +142,7 @@ def prepare_workdir(jobdir: str) -> str:
     workdir = os.path.join(jobdir, "workdir")
     if os.path.exists(workdir):
         raise RuntimeError("workdir already exists: %s" % workdir)
+
     _ = shutil.copytree(os.path.join(jobdir, "package"), workdir, symlinks=True)
     # Writable by the owner, no group or other bits (a package of an older version has them).
     for dirpath, _dirnames, filenames in os.walk(workdir):
@@ -156,6 +165,7 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
     ):
         log("job %s is not startable (state=%s); exiting" % (jobid, job["state"]))
         return 0
+
     cfg = store.config
     task = load_task(jobdir)
     runner.update(
@@ -174,6 +184,7 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
     workdir = os.path.join(jobdir, "workdir")
     if not (requeued and os.path.isdir(workdir)):
         workdir = prepare_workdir(jobdir)
+
     env = build_env(cfg, task, job, workdir, store.gpu_busy_exit_code)
     path, errors = prestart_checks(task, job, env, workdir)
     if job.get("cancel_requested"):
@@ -190,6 +201,7 @@ def run(store: Store, jobid: str, lock_fd: int) -> int:
         separator = "--- taskmgr: launch after requeue (%s) ---" % (
             "precompile done" if job.get("phase") == PHASE_GPU else "GPU busy"
         )
+
     argv, timeout = run_command(task, job)
     while True:
         pid = launch(store, jobdir, runner, argv, path, env, workdir, separator)
@@ -222,6 +234,7 @@ def end_before_launch(store: Store, jobid: str, runner: Runner, error: ErrorInfo
         if job.get("cancel_requested"):
             _ = end_cancelled(store, jobid, runner)
             return
+
         runner["status"] = "failed"
         runner["error"] = error
         jobdir = end_without_result(store, jobdir, job, "failed", error, runner)
@@ -247,9 +260,11 @@ def launch(
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
     out_fd = os.open(os.path.join(jobdir, "stdout.log"), flags, PRIVATE_FILE)
     err_fd = os.open(os.path.join(jobdir, "stderr.log"), flags, PRIVATE_FILE)
+
     if separator:
         for fd in (out_fd, err_fd):
             _ = os.write(fd, (separator + "\n").encode())
+
     rfd, wfd = os.pipe()
     pid = os.fork()
     if pid == 0:  # child: new session, wait for the go signal, then exec
@@ -271,9 +286,11 @@ def launch(
                 _ = os.write(2, ("taskmgr: cannot exec %s: %s\n" % (argv[0], e)).encode())
             finally:
                 os._exit(127)
+
     os.close(rfd)
     os.close(out_fd)
     os.close(err_fd)
+
     _crash_point("before_identity")
     leader_start = procutil.start_time(pid)
     # A relaunch replaces the identity and clears the previous launch's exit only here, so
@@ -295,8 +312,10 @@ def launch(
             "exited": False,
         }
     )
+
     store.write_runner(jobdir, runner)  # fsynced before the child may exec (Section 12.1)
     _crash_point("before_exec")
+
     _ = os.write(wfd, b"x")
     os.close(wfd)
     log("started pid=%d argv=%s" % (pid, argv))
@@ -313,6 +332,7 @@ def set_waiting(store: Store, jobid: str, reason: str | None) -> bool:
         jobdir, job = store.load_job(jobid)
         if job["state"] not in ("running", "stopping"):
             return False
+
         changed = job.get("pending_reason") != reason
         if (
             reason is not None
@@ -322,6 +342,7 @@ def set_waiting(store: Store, jobid: str, reason: str | None) -> bool:
             job["state"] = "running"
             job["stop_reason"] = None
             changed = True
+
         if changed:
             if reason is None:
                 _ = job.pop("pending_reason", None)
@@ -339,15 +360,18 @@ def wait_for_gpu(store: Store, jobid: str, jobdir: str, runner: Runner, cfg: Rem
     interval = float(cfg["gpu_retry_interval_seconds"])
     poll = float(cfg["control_poll_seconds"])
     retries = runner.get("gpu_busy_retries", 0) + 1
+
     runner.update(
         {"status": "waiting_gpu", "gpu_busy_retries": retries, "last_gpu_busy_at": utcnow_iso()}
     )
     store.write_runner(jobdir, runner)
+
     log("entry exited %s (GPU busy); relaunch #%d in %g s" % (code, retries, interval))
     reason = "entry exited %s (GPU busy); retry #%d in %g s" % (code, retries, interval)
     if not set_waiting(store, jobid, reason):
         log("job is no longer running; not relaunching")
         return False
+
     deadline = time.monotonic() + interval
     last_poll: float | None = None
     while True:
@@ -451,6 +475,7 @@ def supervise(
                 stop_reason = requested_stop(job, now - t0, timeout)
             elif timeout and now - t0 >= timeout:
                 stop_reason = "timeout"
+
             if stop_reason:
                 if stop_reason != "leftover":
                     log("stopping process group %d: %s" % (pid, stop_reason))
@@ -475,10 +500,12 @@ def supervise(
         _, st = os.waitpid(pid, 0)
         exit_status = st
         record_exit(st)
+
     # A leftover cleanup is no stop of the entry: its "GPU busy" exit still counts.
     exited_busy = busy_code is not None and runner.get("return_code") == busy_code
     if exited_busy and stop_reason not in STOP_OUTCOME:
         return "gpu_busy"
+
     _crash_point("before_finalize")
     status = STOP_OUTCOME.get(stop_reason) if stop_reason else None
     job = finalize_run(store, jobid, status=status)
@@ -501,6 +528,7 @@ def fail_unstarted(store: Store, jobid: str, e: Exception) -> None:
             or runner.get("shim_pid") not in (None, os.getpid())
         ):
             return
+
         msg = "the run supervisor failed before starting the entry: %s" % e
         end_before_launch(store, jobid, runner, {"kind": "shim_error", "message": msg})
     log("run ended as failed (shim_error)")

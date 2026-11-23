@@ -49,6 +49,7 @@ def _smi(query: str, timeout: float = SMI_TIMEOUT) -> list[list[str]]:
             raise subprocess.CalledProcessError(proc.returncode, cmd)
     except (OSError, subprocess.SubprocessError) as e:
         raise TaskmgrError("nvidia_smi_failed", "cannot query GPUs with nvidia-smi: %s" % e) from e
+
     return [
         [p.strip() for p in line.split(",")]
         for line in out.decode(errors="replace").splitlines()
@@ -80,6 +81,7 @@ def resolve_declarations(decls: Sequence[object]) -> list[GpuDecl]:
     """Resolve declared GPU indices/UUIDs to [{"declared": d, "uuid": u}, ...]."""
     if not decls:
         return []
+
     available = query_gpus()
     by_index = dict(available)
     uuids = {u for _, u in available}
@@ -101,6 +103,7 @@ def resolve_declarations(decls: Sequence[object]) -> list[GpuDecl]:
             errors.append("GPU %s does not exist on this machine" % d)
         else:
             out.append({"declared": d, "uuid": d})
+
     resolved = [g["uuid"] for g in out]
     if len(set(resolved)) != len(resolved):
         errors.append("gpus resolves to duplicate devices: %s" % resolved)
@@ -141,6 +144,7 @@ def process_owner_and_command(pid: int) -> tuple[str | None, str | None]:
         command = " ".join(args) or None
     except OSError:
         pass
+
     if command is not None and len(command) > HOLDER_COMMAND_MAX:
         command = command[: HOLDER_COMMAND_MAX - 3] + "..."
     return user, command
@@ -169,6 +173,7 @@ def gpu_holders(uuids: Iterable[str] | None = None) -> list[GpuHolder]:
         if tag:
             h["taskmgr_jobid"] = tag
         out.append(h)
+
     out.sort(key=lambda h: (h["gpu"] if h["gpu"] is not None else 1 << 30, h["pid"]))
     return out
 
@@ -217,13 +222,16 @@ def request_from_task(spec: GpuSelect) -> GpuRequest:
     req: GpuRequest = {"count": spec["count"]}
     if "min_free_gb" in spec:
         req["min_free_gb"] = spec["min_free_gb"]
+
     available = query_gpu_state()
     if "from" in spec:
         req["from_uuids"] = [g["uuid"] for g in resolve_declarations(list(spec["from"]))]
+
     cand = [g for g in available if g.uuid in req.get("from_uuids", [g.uuid])]
     if "min_free_gb" in req:
         need = req["min_free_gb"] * MIB_PER_GB
         cand = [g for g in cand if g.total_mib is None or g.total_mib >= need]
+
     if len(cand) < req["count"]:
         raise TaskmgrError(
             "invalid_gpus",
@@ -271,6 +279,7 @@ def select_gpus(
         if need is not None and (g.free_mib is None or g.free_mib < need):
             continue
         ok.append(g)
+
     if len(ok) < req["count"]:
         return None, "waiting for %s (%d qualify now)" % (describe_request(req), len(ok))
     ok.sort(key=lambda g: (-(g.free_mib or 0), g.idx))

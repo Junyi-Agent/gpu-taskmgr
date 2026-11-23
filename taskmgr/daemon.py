@@ -90,12 +90,15 @@ class Daemon:
                 "%s of %s failed (%d/%d): %s\n%s"
                 % (what, jobid, n, MAX_JOB_ERRORS, e, traceback.format_exc())
             )
+
             if n < MAX_JOB_ERRORS:
                 return
+
             _ = self.job_errors.pop(jobid, None)
             tk = self.takeovers.pop(jobid, None)
             if tk is not None:
                 tk.close()
+
             msg = "%s failed %d times: %s" % (what, n, e)
             try:
                 _ = mark_unknown(self.store, jobid, "recovery_error", msg)
@@ -149,6 +152,7 @@ class Daemon:
                 if os.path.abspath(jobdir) != want:
                     log("repairing location of %s -> %s" % (jid, want))
                     _ = st.save_job(jobdir, job)
+
                 if job["state"] in ("running", "stopping"):
                     self.guarded(jid, "recovery", self.check_run)
                 elif job["state"] in TERMINAL_STATES and has_run(job):
@@ -235,15 +239,18 @@ class Daemon:
         the job dir, or record why it waits (pending_reason) and return None. Needs the lock."""
         request = job.get("gpu_request")
         assert request is not None
+
         if state is None:
             chosen, reason = None, "cannot choose GPUs: %s" % (why or "no GPU information")
         else:
             chosen, reason = select_gpus(request, state, taken)
+
         if chosen is None:
             if job.get("pending_reason") != reason:  # written only when the reason changes
                 job["pending_reason"] = reason
                 _ = self.store.save_job(jobdir, job)
             return None
+
         job["gpus"] = chosen
         log("chose GPUs %s for %s" % ([g["declared"] for g in chosen], job["jobid"]))
         return self.store.save_job(jobdir, job)
@@ -252,6 +259,7 @@ class Daemon:
         st = self.store
         cfg = st.config
         gpu_state, gpu_error = self.gpu_state()
+
         with st.state_lock():
             jobs = list(st.iter_jobs(active=True))
             held: dict[str, str] = {}  # uuid -> state of the holder
@@ -263,10 +271,12 @@ class Daemon:
                             held[g["uuid"]] = job["state"]
                     else:
                         cpu_active += 1
+
             queued = sorted(
                 (j for j in jobs if j[1]["state"] == "queued"),
                 key=lambda e: (e[1].get("enqueue_seq", 0), e[1]["jobid"]),
             )
+
             reserved: set[str] = set()
             max_cpu = cfg["max_cpu_jobs"]
             now = time.time()
@@ -276,6 +286,7 @@ class Daemon:
                     # Queued again after a GPU-busy exit, not due yet; a job that chooses
                     # its GPUs has none to reserve.
                     continue
+
                 if choosing_gpus(job):
                     # Any GPUs that meet the request, among those no job holds or an
                     # earlier queued job waits for; it reserves nothing while it waits.
@@ -284,6 +295,7 @@ class Daemon:
                     if chose is None:
                         continue
                     jobdir = chose
+
                 uuids = [g["uuid"] for g in run_gpus(job)]
                 if not uuids:
                     if (max_cpu is None or cpu_active < int(max_cpu)) and self.dispatch(
@@ -291,6 +303,7 @@ class Daemon:
                     ) in ("running", "unknown"):
                         cpu_active += 1
                     continue
+
                 if any(held.get(u) == "unknown" for u in uuids):
                     continue  # do not let an unknown job lock other GPUs via reservation
                 if all(u not in held and u not in reserved for u in uuids):
@@ -314,6 +327,7 @@ class Daemon:
         jobdir, job = st.load_job(job["jobid"])  # re-read under the lock
         if job["state"] != "queued":
             return None
+
         old, _ = st.read_runner(jobdir)
         ended_precompile = (
             old is not None
@@ -326,6 +340,7 @@ class Daemon:
             # queued for its GPUs after its precompile (store.queue_for_gpus).
             _ = st.set_runner_aside(jobdir)
             old = None
+
         # A crash between writing runner.json and job.json leaves a queued job with a
         # run record. Without an identity nothing was started: dispatch again. With
         # one (not expected) a task may have run: an operator has to decide.
@@ -339,6 +354,7 @@ class Daemon:
             }
             _ = st.save_job(jobdir, job)
             return job["state"]
+
         runner: Runner = {
             "schema_version": 1,
             "jobid": job["jobid"],
@@ -351,6 +367,7 @@ class Daemon:
         if "phase" in job:
             runner["phase"] = job["phase"]
         st.write_runner(jobdir, runner)
+
         job["state"] = "running"
         job["dispatched_at"] = runner["dispatched_at"]
         job["stop_reason"] = None
@@ -358,6 +375,7 @@ class Daemon:
         _ = job.pop("pending_reason", None)
         _ = job.pop("not_before_epoch", None)
         jobdir = st.save_job(jobdir, job)
+
         err = self.spawn_shim(job["jobid"], jobdir)
         if err:
             log("shim start failed for %s: %s" % (job["jobid"], err))
@@ -375,6 +393,7 @@ class Daemon:
             failure: ErrorInfo = {"kind": "shim_start_failed", "message": err}
             _ = end_without_result(st, jobdir, job, "failed", failure, runner)
             return job["state"]
+
         log("dispatched %s gpus=%s" % (job["jobid"], [g["uuid"] for g in run_gpus(job)]))
         return job["state"]
 
@@ -382,6 +401,7 @@ class Daemon:
         """Double-fork a shim into its own session, handing it the locked shim.lock."""
         lock_fd = os.open(os.path.join(jobdir, "shim.lock"), os.O_RDWR | os.O_CREAT, PRIVATE_FILE)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
         pkg_parent = CODE_ROOT  # a directory, or the .pyz (zip files work on PYTHONPATH)
         # TASKMGR_SHIM_EXECUTABLE: test-only override to simulate a shim that cannot start.
         exe = os.environ.get("TASKMGR_SHIM_EXECUTABLE") or sys.executable
@@ -398,6 +418,7 @@ class Daemon:
         ]
         env = dict(os.environ)
         env["PYTHONPATH"] = pkg_parent + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+
         rfd, wfd = os.pipe()
         try:
             pid = os.fork()
@@ -405,12 +426,14 @@ class Daemon:
             for fd in (rfd, wfd, lock_fd):
                 os.close(fd)
             return "fork failed: %s" % e
+
         if pid == 0:
             try:
                 os.close(rfd)
                 os.setsid()
                 if os.fork() > 0:
                     os._exit(0)
+
                 log_fd = os.open(
                     os.path.join(jobdir, "shim.log"),
                     os.O_WRONLY | os.O_CREAT | os.O_APPEND,
@@ -429,12 +452,14 @@ class Daemon:
                     _ = os.write(wfd, ("%s: %s" % (type(e).__name__, e)).encode() or b"error")
                 finally:
                     os._exit(127)
+
         os.close(wfd)
         os.close(lock_fd)
         try:
             _ = os.waitpid(pid, 0)
         except ChildProcessError:
             pass
+
         chunks: list[bytes] = []
         while True:
             b = os.read(rfd, 4096)
@@ -478,17 +503,21 @@ class Daemon:
                 '{"error": {"code": "daemon_running", "message": "another daemon holds locks/daemon.lock"}}\n'
             )
             return 2
+
         global _log_file
         log_flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         _log_file = os.fdopen(
             os.open(st.path("daemon", "daemon.log"), log_flags, PRIVATE_FILE), "a"
         )
+
         _ = signal.signal(signal.SIGTERM, self._on_signal)
         _ = signal.signal(signal.SIGINT, self._on_signal)
         _ = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         log("starting; root=%s" % st.root)
+
         self._step("incoming cleanup", self.clean_incoming)
         self._step("recovery", self.recover)
+
         control_poll = float(st.config["control_poll_seconds"])
         interval = min(float(st.config["scheduler_poll_seconds"]), control_poll)
         last_health = 0.0
@@ -500,6 +529,7 @@ class Daemon:
                 self._step("health check", self.health_check)
             self._step("scheduling", self.schedule_pass)
             self._sleep(interval)
+
         log("stopping (running shims and tasks are left alone)")
         return 0
 

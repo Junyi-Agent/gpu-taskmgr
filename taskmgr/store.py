@@ -101,16 +101,19 @@ class Store:
             obj, err = try_read_json(self.path("config.json"))
             if err and err != "missing":
                 raise TaskmgrError("bad_config", "config.json is %s" % err)
+
             if isinstance(obj, dict):
                 cfg.update(obj)
             elif err is None:
                 raise TaskmgrError("bad_config", "config.json is not a JSON object")
+
             for key, tp in cast(dict[str, object], RemoteConfig.__annotations__).items():
                 if not _type_ok(cfg.get(key), tp):
                     raise TaskmgrError(
                         "bad_config",
                         "config.json: %s has the wrong type: %r" % (key, cfg.get(key)),
                     )
+
             busy = cfg.get("gpu_busy_exit_code")
             if busy is not None and not (isinstance(busy, int) and 1 <= busy <= 255):
                 # taskmgr_task.py exits 75 for any value outside 1-255.
@@ -119,6 +122,7 @@ class Store:
                     "config.json: gpu_busy_exit_code must be null or an integer from 1 to 255: %r"
                     % busy,
                 )
+
             self._config = cast(RemoteConfig, cast(object, cfg))
         return self._config
 
@@ -132,6 +136,7 @@ class Store:
             finally:
                 self._lock_depth -= 1
             return
+
         os.makedirs(self.path("locks"), PRIVATE_DIR, exist_ok=True)
         fd = os.open(self.path("locks", "state.lock"), os.O_RDWR | os.O_CREAT, PRIVATE_FILE)
         try:
@@ -187,6 +192,7 @@ class Store:
         dirs = ACTIVE_JOB_DIRS if active else JOB_DIRS
         if not self._lock_depth:
             dirs += ("queue",)
+
         for i, d in enumerate(dirs):
             base = self.path(d)
             try:
@@ -206,6 +212,7 @@ class Store:
         assert self._lock_depth, "state lock required"
         job["updated_at"] = utcnow_iso()
         atomic_write_json(os.path.join(jobdir, "job.json"), job)
+
         want = self.dir_for(job["state"], job["jobid"])
         if os.path.abspath(jobdir) != want:
             os.rename(jobdir, want)
@@ -226,10 +233,12 @@ class Store:
         raw, _ = try_read_json(p)
         c: JsonDict = raw if isinstance(raw, dict) else {}
         seq = c.get("next_enqueue_seq")
+
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
             # Missing or corrupt counter: continue after the highest sequence number in use.
             used: list[object] = [j.get("enqueue_seq") for _, j in self.iter_jobs()]
             seq = max((n for n in used if isinstance(n, int)), default=0) + 1
+
         c["next_enqueue_seq"] = seq + 1
         atomic_write_json(p, c)
         return seq
@@ -407,6 +416,7 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
     p = os.path.join(workdir, "result.json")
     warnings: list[str] = []
     verrs: list[str] = []
+
     try:
         raw = read_regular_file(p, follow_symlinks=False)
     except FileNotFoundError:
@@ -420,6 +430,7 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
         )
     except OSError as e:
         return {"schema_version": SCHEMA_VERSION}, ["result.json unreadable: %s" % e], warnings
+
     try:
         parsed = cast(JsonValue, json.loads(raw.decode("utf-8")))
         if not isinstance(parsed, dict):
@@ -433,6 +444,7 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
             ["result.json is corrupt (kept as %s): %s" % (os.path.basename(keep), e)],
             warnings,
         )
+
     obj = parsed
     if "_taskmgr" in obj:
         meta = _as_dict(obj.pop("_taskmgr"))
@@ -444,6 +456,7 @@ def read_task_result(workdir: str, own: str | None = None) -> tuple[JsonDict, li
         )
         if not ours:
             warnings.append("task_wrote_taskmgr")
+
     _ = obj.setdefault("schema_version", SCHEMA_VERSION)
     return obj, verrs, warnings
 
@@ -548,9 +561,11 @@ def finalize_run(
             if not job.get("cancel_requested"):
                 return queue_for_gpus(store, jobdir, job)
             status = "cancelled"
+
     raw_runner, _ = store.read_runner(jobdir)
     runner: Runner = raw_runner or {"jobid": jobid}
     tm: object = runner.get("taskmgr")
+
     if runner.get("final") and isinstance(tm, dict):
         meta = tm
         if not result_complete(jobdir):
@@ -566,6 +581,7 @@ def finalize_run(
         warns += w2
         # A precompile writes no result: the entry does.
         verrs = [] if precompiling(job) else verrs or validate_outputs(business, task)
+
         if status is None:
             rc, sig = runner.get("return_code"), runner.get("signal")
             if sig is not None:
@@ -581,12 +597,15 @@ def finalize_run(
                 status = "invalid_result"
             else:
                 status = "succeeded"
+
         if status == "failed" and error and precompiling(job):
             error = {"kind": "precompile", "message": "precompile: %s" % error["message"]}
         warns = list(dict.fromkeys(warns))
+
         # Persist the step 2-3 findings first so a crash here does not lose them.
         runner["warnings"] = warns
         store.write_runner(jobdir, runner)
+
         meta = build_meta(store, job, runner, status, verrs, error, warns)
         write_result(jobdir, business, meta)
         runner.update(
@@ -598,6 +617,7 @@ def finalize_run(
             }
         )
         store.write_runner(jobdir, runner)
+
     with store.state_lock():
         jobdir, job = store.load_job(jobid)
         if _settled(job):
@@ -697,8 +717,10 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
             return job
         if found is None or os.path.abspath(found) != os.path.abspath(jobdir):
             result = None  # read again under the lock
+
         stop_reason = job.get("stop_reason") if job["state"] in ("stopping", "unknown") else None
         runner = mark_run_interrupted(store, jobdir, jobid, reason)
+
         if job.get("cancel_requested"):
             _ = end_without_result(store, jobdir, job, "cancelled", None, runner, result)
             return job
@@ -710,6 +732,7 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
                 store, jobdir, job, "failed", OPERATOR_STOPPED_ERROR, runner, result
             )
             return job
+
         # A crash after the clone was renamed into queue/ but before this job was saved
         # leaves the clone behind; reuse it instead of cloning twice. Only this step
         # creates a job with retry_of == jobid while jobid is not terminal.
@@ -717,6 +740,7 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
         maxr = store.config["max_auto_restarts"]
         restarts = job.get("auto_restarts", 0)
         error: ErrorInfo = {"kind": "interrupted", "message": reason}
+
         if rerun_job is not None:
             if rerun_job["jobid"] not in job.get("retried_as", []):
                 job["retried_as"] = job.get("retried_as", []) + [rerun_job["jobid"]]
@@ -731,6 +755,7 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
         else:
             _ = clone_job(store, jobdir, job, automatic=True)
             jobdir = cast(str, store.find_job_dir(jobid))
+
         _ = end_without_result(store, jobdir, job, "failed", error, runner, result)
         return job
 
@@ -835,6 +860,7 @@ def link_tree(src: str, dst: str) -> None:
                 os.symlink(os.readlink(s), t)
             elif name in filenames:
                 _link_or_copy(s, t)
+
     for s, t in reversed(made):
         os.chmod(t, stat.S_IMODE(os.lstat(s).st_mode))
 
@@ -873,6 +899,7 @@ def clone_job(
         with staging_dir(store, "retry") as updir:
             stage_package(old_jobdir, updir)
             return clone_job(store, old_jobdir, old, automatic=automatic, staged=updir)
+
     jobid = store.new_jobid()  # asserts the state lock
     job = new_job_record(
         jobid,
@@ -886,6 +913,7 @@ def clone_job(
         phase=initial_phase(load_task(old_jobdir)),  # a new job has an empty workdir
         gpu_request=old.get("gpu_request"),  # chooses its GPUs again
     )
+
     enqueue_staged(store, staged, job)
     old["retried_as"] = old.get("retried_as", []) + [jobid]
     _ = store.save_job(old_jobdir, old)
@@ -919,6 +947,7 @@ def end_without_result(
         if not runner.get("taskmgr"):
             runner["taskmgr"] = meta
             store.write_runner(jobdir, runner)
+
     job["state"] = state
     job["error"] = error
     job["ended_at"] = utcnow_iso()
