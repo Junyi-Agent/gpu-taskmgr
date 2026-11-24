@@ -90,7 +90,7 @@ up: "[[taskmgr/README.zh-CN]]"
 ### 服务器功能
 
 有些 `task.json` 键需要服务器的代码实现了对应功能。`taskmgr-remote` 的每个应答都带
-`"features"`：其代码实现的功能列表（已排序）。没有这个键的服务器运行的是早于该列表的代码，一个功能都不支持：
+`"features"`：其代码实现的功能列表（已排序）：
 
 | 功能 | 含义 |
 | --- | --- |
@@ -99,13 +99,13 @@ up: "[[taskmgr/README.zh-CN]]"
 | `gpu_select` | `task.json` 的 `gpus` 为对象（按条件选择 GPU） |
 | `gpu_holders` | 等待 GPU 的作业的 `task get job` 列出占用这些 GPU 的进程（[[docs/usage.zh-CN]]） |
 | `cancel_by` | `task cancel job` 记录是谁请求的（`cancel_request`，[[docs/usage.zh-CN]]） |
-| `jobs_limit` | `task get jobs -n N` 只从每台服务器取最新的 N 个作业（较旧的服务器发回它的全部作业，由 CLI 保留最新的 N 个） |
+| `jobs_limit` | `task get jobs -n N` 只从每台服务器取最新的 N 个作业 |
 
 `task validate package -o json` 列出任务包需要的功能（`"features"`）。任务包需要功能时，`task create job`
 在上传前向服务器查询功能（`taskmgr-remote version`），服务器缺少其中任一个就拒绝：错误
-`unsupported_feature`（退出码 2，不上传任何东西），例如 `server gpu1 runs code 3f9a1c0e7b2d without
-precompile support, needed by this package; run `task update host gpu1` to update it`；`details` 里有
-`missing` 和 `server_features`。`task ping host -o json` 和 `task get version -o json` 显示每台服务器的
+`unsupported_feature`（退出码 2，不上传任何东西）。错误信息写明服务器、它的代码版本和缺少的功能，
+以 ``run `task update host gpu1` to update it`` 结尾；`details` 里有 `missing` 和 `server_features`。
+通过协议 3 检查的服务器都有上表的全部功能，这项检查是给以后新增的功能用的。`task ping host -o json` 和 `task get version -o json` 显示每台服务器的
 `features`。
 
 - 不打进归档、也不计入内容哈希的路径：任一路径分量名为 `__pycache__`、`.git` 或 `.DS_Store`，

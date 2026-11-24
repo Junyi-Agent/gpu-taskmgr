@@ -112,7 +112,7 @@ def pick_round_robin(home: str, servers: list[Server]) -> Server:
 # create package / validate package / build package
 
 
-def cmd_init(args: Args) -> CmdResult:
+def cmd_create_package(args: Args) -> CmdResult:
     if not TASK_ID_RE.match(args.task_id):
         raise TaskmgrError("bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$")
 
@@ -220,15 +220,15 @@ def cmd_validate(args: Args) -> CmdResult:
     }, 0
 
 
-def cmd_pack(args: Args) -> CmdResult:
-    return packcmd.cmd_pack(args)
+def cmd_build_package(args: Args) -> CmdResult:
+    return packcmd.cmd_build_package(args)
 
 
 # ---------------------------------------------------------------------------
 # create job
 
 
-def cmd_submit(args: Args) -> CmdResult:
+def cmd_create_job(args: Args) -> CmdResult:
     if args.submission_key and not args.host:
         raise TaskmgrError(
             "bad_args",
@@ -316,7 +316,7 @@ def query_targets(servers: list[Server], host: str | None) -> tuple[list[Server]
 
 def _strip(reply: JsonDict, keep_features: bool = False) -> JsonDict:
     """A remote reply without the protocol fields (`features` is kept only for the commands
-    that report on servers: version, whoami)."""
+    that report on servers: get version, get user)."""
     _ = reply.pop("protocol_version", None)
     _ = reply.pop("ok", None)
     if not keep_features:
@@ -365,7 +365,7 @@ def report_partial(out: Mapping[str, object], what: str) -> None:
 def cmd_get_job(args: Args) -> CmdResult:
     """`task get jobs` (the list) or `task get job ID` (one job)."""
     if not args.jobid:
-        return cmd_jobs(args)
+        return cmd_list_jobs(args)
     if args.state or args.limit:
         raise TaskmgrError(
             "bad_args", "--state and -n apply to the list of jobs, not to job %s" % args.jobid
@@ -378,7 +378,7 @@ def cmd_get_job(args: Args) -> CmdResult:
 def newest_jobs(remote: Remote, rargs: list[object], limit: int, timeout: float) -> JsonDict:
     """`get jobs` of one server with --limit, so it sends only its `limit` newest jobs. A server
     without the jobs_limit feature rejects --limit with a usage error (no JSON reply): it is
-    asked again for all its jobs, and cmd_jobs cuts the list."""
+    asked again for all its jobs, and cmd_list_jobs cuts the list."""
     try:
         return remote.call(rargs + ["--limit", limit], None, timeout)
     except NoReplyError as e:
@@ -387,7 +387,7 @@ def newest_jobs(remote: Remote, rargs: list[object], limit: int, timeout: float)
     return remote.call(rargs, None, timeout)
 
 
-def cmd_jobs(args: Args) -> CmdResult:
+def cmd_list_jobs(args: Args) -> CmdResult:
     limit = args.limit or DEFAULT_JOBS_LIMIT
     rargs: list[object] = ["get", "jobs"]
     if args.state:
@@ -807,7 +807,7 @@ def cmd_ping_host(args: Args) -> CmdResult:
 
 
 # ---------------------------------------------------------------------------
-# build pyz / whoami / update / version
+# build pyz / get user / get version / update cli
 
 
 def cmd_build_pyz(args: Args) -> CmdResult:
@@ -849,14 +849,14 @@ def cmd_get_user(args: Args) -> CmdResult:
 
 
 def _git(*argv: str) -> subprocess.CompletedProcess[str] | None:
-    """Run git in the checkout; None when git is not installed or this is a .pyz."""
+    """Run git in the checkout; None when this is a .pyz, or git is missing or timed out."""
     if code_is_zipapp():
         return None
     try:
         return subprocess.run(
             ["git", "-C", CODE_ROOT, *argv], capture_output=True, text=True, timeout=300
         )
-    except FileNotFoundError:
+    except (OSError, subprocess.SubprocessError):
         return None
 
 
@@ -905,20 +905,23 @@ def cmd_update_cli(_args: Args) -> CmdResult:
             "%s is a zipapp; build a new one from a checkout (`task build pyz`)" % CODE_ROOT,
         )
 
-    before = _git_out("rev-parse", "--short=12", "HEAD")
+    before = pyz.commit()
     if before is None:
         raise TaskmgrError(
             "not_a_checkout", "%s is not a git checkout (or git is missing)" % CODE_ROOT
         )
 
     p = _git("pull", "--ff-only")
-    assert p is not None  # git ran just above
+    if p is None:
+        raise TaskmgrError(
+            "update_failed", "git pull --ff-only in %s did not finish in 300 s" % CODE_ROOT
+        )
     if p.returncode != 0:
         raise TaskmgrError(
             "update_failed", "git pull --ff-only failed in %s:\n%s" % (CODE_ROOT, p.stderr.strip())
         )
 
-    after = _git_out("rev-parse", "--short=12", "HEAD")
+    after = pyz.commit()
     return {"path": CODE_ROOT, "before": before, "after": after, "changed": before != after}, 0
 
 
@@ -954,8 +957,8 @@ COMMANDS = [
         "jobs",
         "submit a task package to a server",
         C.args_create_job,
-        cmd_submit,
-        render.text_submit,
+        cmd_create_job,
+        render.text_create_job,
     ),
     Command(
         "get",
@@ -975,7 +978,7 @@ COMMANDS = [
         "wait for a job to end; the exit code tells how",
         C.args_wait_job,
         cmd_wait_job,
-        render.text_status,
+        render.text_job,
     ),
     Command(
         "logs",
@@ -1034,8 +1037,8 @@ COMMANDS = [
         "packages",
         "create a task package from the template",
         C.args_create_package,
-        cmd_init,
-        render.text_init,
+        cmd_create_package,
+        render.text_create_package,
     ),
     Command(
         "build",
@@ -1044,8 +1047,8 @@ COMMANDS = [
         "packages",
         "build a task package from files and options; print its path",
         C.args_build_package,
-        cmd_pack,
-        render.text_pack,
+        cmd_build_package,
+        render.text_build_package,
     ),
     Command(
         "validate",

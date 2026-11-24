@@ -98,8 +98,7 @@ after the upload.
 ### Server features
 
 Some `task.json` keys need a server whose code implements them. Every `taskmgr-remote`
-reply carries `"features"`, the sorted list of what its code implements (a server without
-the key runs code older than the list and implements none of them):
+reply carries `"features"`, the sorted list of what its code implements:
 
 | Feature | Meaning |
 | --- | --- |
@@ -108,14 +107,15 @@ the key runs code older than the list and implements none of them):
 | `gpu_select` | `task.json` `gpus` as an object (GPU selection) |
 | `gpu_holders` | `task get job` of a job waiting for GPUs lists the processes holding them ([[docs/usage]]) |
 | `cancel_by` | `task cancel job` records who asked (`cancel_request`, [[docs/usage]]) |
-| `jobs_limit` | `task get jobs -n N` gets only the N newest jobs from each server (an older server sends all its jobs and the CLI keeps the newest N) |
+| `jobs_limit` | `task get jobs -n N` gets only the N newest jobs from each server |
 
 `task validate package -o json` lists the features a package needs (`"features"`). `task create job`
 asks the server for its features (`taskmgr-remote version`) before the upload when the
 package needs any, and refuses a server that lacks one: error `unsupported_feature` (exit
-2, nothing uploaded), e.g. `server gpu1 runs code 3f9a1c0e7b2d without precompile support,
-needed by this package; run `task update host gpu1` to update it`; `details` has `missing` and
-`server_features`. `task ping host -o json` and `task get version -o json` show each server's
+2, nothing uploaded). The message names the server, its code version and the missing
+feature and ends with ``run `task update host gpu1` to update it``; `details` has `missing`
+and `server_features`. Every server that passes the protocol 3 check has all the features
+above; the check is there for the features added later. `task ping host -o json` and `task get version -o json` show each server's
 `features`.
 
 - Left out of the packed archive and of the content hash: every path with a component

@@ -9,9 +9,9 @@ up: "[[taskmgr/README]]"
 
 Other language: [[docs/usage.zh-CN]]
 
-A command is a verb and a resource, as in kubectl: `task <verb> <resource> [args]`. Every
-resource also has a plural name (`job` or `jobs`, `package` or `packages`, `host` or
-`hosts`), and either works. `task -h` lists the commands, `task <verb> -h` the resources of
+A command is a verb and a resource, as in kubectl: `task <verb> <resource> [args]`. The
+resources `job`, `package` and `host` also have a plural name (`jobs`, `packages`, `hosts`),
+and either works. `task -h` lists the commands, `task <verb> -h` the resources of
 a verb, and `task <verb> <resource> -h` its arguments and options.
 
 | Verb | `job` | `package` | `host` |
@@ -168,9 +168,8 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 - `task get jobs` lists the 10 most recently submitted jobs over all queried servers together;
   `-n N` (a positive integer) changes the count. `--host` and `--state` filter first, so
   `-n` counts the jobs that remain. `-o json` returns the same jobs. Each server sends only
-  its N newest jobs (server feature `jobs_limit`); a server with older code sends all of
-  them and the CLI keeps the newest N. `--state` and `-n` apply only to the list: with a
-  jobid they are an error (`bad_args`).
+  its N newest jobs (server feature `jobs_limit`). `--state` and `-n` apply only to the
+  list: with a jobid they are an error (`bad_args`).
 - Rows are sorted by submission time (UTC), newest last. STATE has the same color in every command that
   shows it: queued and `pending-gpu` yellow, running and `precompiling` cyan, stopping magenta, unknown bold
   magenta, succeeded green, failed / invalid_result / timed_out red, cancelled gray.
@@ -205,7 +204,7 @@ Submit receipt (`task create job`): `{"host", "jobid", "task_id", "submission_ke
 or no valid reply: error code `remote_error`), stderr names the chosen host and the
 submission key and prints the retry command
 `task create job PATH --host H --submission-key K`; the CLI never resubmits to another
-server. A package that uses a feature (such as `precompile`) the server's code lacks is
+server. A package that uses a feature the server's code lacks is
 refused before the upload with `unsupported_feature` (exit 2); the message ends with
 ``run `task update host H` to update it`` (see [[docs/task-package]], Server features).
 
@@ -374,8 +373,6 @@ when `task get version` shows `differs`, or when `task create job` fails with `u
 ## get user, get version, update cli
 
 - `task get user [--host H]` asks each server which user and hostname taskmgr runs as there.
-  A server with older code shows `-`, with the hint
-  ``- means the server runs older code; `task update host NAME` updates it``.
 - `task update cli` runs `git pull --ff-only` in the local checkout the CLI runs from. Servers
   keep their code until `task update host NAME` installs the new version; when it pulled
   new commits, the output ends with

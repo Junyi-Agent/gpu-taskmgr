@@ -60,5 +60,5 @@ task fetch job <jobid> --dest ./results/
 task create job "$(task build package src/ --task-id AA-02 --entry 'python3 run.py' --gpus 0)"
 ```
 
-命令的形式是 `task <动词> <资源>`，和 kubectl 一样；`task -h` 列出全部命令，每种资源也可以用复数名
-（`task get jobs`），`-o json` 输出完整的 JSON 对象。
+命令的形式是 `task <动词> <资源>`，和 kubectl 一样；`task -h` 列出全部命令，job、host、package
+这三种资源也可以用复数名（`task get jobs`），`-o json` 输出完整的 JSON 对象。

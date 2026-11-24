@@ -98,9 +98,9 @@ Other language: [[docs/assumptions.zh-CN]]
     servers too, because they may still hold jobs.
 21. Command line (by user decision, departs from desc-1): kubectl-style
     `task <verb> <resource> [args]` (`task create job PKG`, `task get jobs`,
-    `task create host NAME`), every resource also under its plural name, and `-o text|json`
-    for the output format. A command name of desc-1 is a usage error that names the new
-    form; [[docs/usage]] (Command changes) lists them.
+    `task create host NAME`), job, host and package also under their plural names, and
+    `-o text|json` for the output format. A command name of desc-1 is a usage error that
+    names the new form; [[docs/usage]] (Command changes) lists them.
 
 ## Limitations
 

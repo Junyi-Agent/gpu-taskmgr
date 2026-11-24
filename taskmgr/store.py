@@ -667,7 +667,7 @@ def result_complete(jobdir: str) -> bool:
     return meta is not None and meta.get("final") is True and "status" in meta
 
 
-OPERATOR_MARKED_STOPPED = "operator_marked_stopped"  # `task resolve --as stopped`
+OPERATOR_MARKED_STOPPED = "operator_marked_stopped"  # `task resolve job ID --as stopped`
 OPERATOR_STOPPED_ERROR: ErrorInfo = {
     "kind": OPERATOR_MARKED_STOPPED,
     "message": "operator confirmed all processes are gone",
@@ -703,8 +703,8 @@ def interrupt_run(store: Store, jobid: str, reason: str, *, rerun: bool = True) 
     itself ends as failed with error.kind "interrupted" and points to it via
     `retried_as`. No re-run is created when a cancel was requested (cancelled), when the
     job was being stopped for its timeout (timed_out), when an operator marked the run
-    stopped (failed / operator_marked_stopped), or with rerun=False: `task resolve` of an
-    unknown job, which never re-runs (failed / interrupted; `task retry` re-runs it).
+    stopped (failed / operator_marked_stopped), or with rerun=False: `task resolve job` of an
+    unknown job, which never re-runs (failed / interrupted; `task retry job` re-runs it).
     Returns the interrupted job.
     """
     # The task's result.json is read before the lock is taken (the directory of a job
@@ -887,7 +887,7 @@ def clone_job(
 ) -> Job:
     """Create a new queued job that runs the same package again. Needs the state lock.
 
-    `task retry` (automatic=False) puts the new job at the back of the queue; an
+    `task retry job` (automatic=False) puts the new job at the back of the queue; an
     automatic re-run after an interruption keeps the original queue position and counts
     the restart. The new job is built in a staging directory and renamed into queue/,
     like a submission; then the old job records the new jobid in `retried_as` and is

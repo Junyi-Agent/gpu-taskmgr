@@ -3,8 +3,8 @@ job and package commands, and argparse with the help layout of `task -h` (usage 
 description, bold sections, colored usage errors).
 
 The command line is kubectl-style, `task <verb> <resource> [args]` (`task get jobs`,
-`task create host NAME`, `task get version`). Every resource has a singular and a plural
-name and either works (`task get job ID`, `task get jobs`).
+`task create host NAME`, `task get version`). The job, host and package resources also
+have a plural name and either works (`task get job ID`, `task get jobs`).
 """
 
 # Args declares the attributes argparse sets; their defaults come from the parser.
@@ -108,6 +108,8 @@ RENAMED = {
     "whoami": "`task get user`",
     "version": "`task get version`",
 }
+# Old commands whose word is still a verb: the verb without a resource names the new form.
+RENAMED_VERBS = {"update": "`task update cli` (a server: `task update host NAME`)"}
 
 HelpEntry = tuple[str, str]  # (name column, help text)
 HELP_WIDTH = 88
@@ -115,7 +117,7 @@ OUTPUT_HELP = "output format: text (default) or json, the full JSON object"
 LOGS_OUTPUT_HELP = "the log is always raw text; json also prints an error as a JSON object"
 PLAIN_HELP = "no colors (also NO_COLOR=1)"
 HOME_HELP = "local state directory (default $TASKMGR_HOME or ~/.taskmgr)"
-TOP_USAGE = "task <command> [<resource>] [args]"
+TOP_USAGE = "task <command> <resource> [args]"
 # Placement of the common options at the end of every option list and usage line.
 COMMON_ORDER = {"-o": 1, "--plain": 2, "-h": 3}
 
@@ -190,8 +192,7 @@ def top_help(commands: Sequence[Command]) -> str:
     return render_help(
         TOP_USAGE,
         "Run task packages on GPU servers and follow their jobs. A command is a verb and a "
-        + "resource; every resource also has a plural name (job or jobs, host or hosts, "
-        + "package or packages).",
+        + "resource; job, host and package also have a plural name (jobs, hosts, packages).",
         list(groups.items()),
         "`task <command> -h` lists a command's resources; "
         + "`task <command> <resource> -h` shows its arguments and options.",
@@ -323,6 +324,9 @@ class Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         if "unrecognized arguments" in message and "--detail" in message:
             message += " (--detail is now -o json)"
+        verb = self.prog.removeprefix("task ")
+        if "required: <resource>" in message and verb in RENAMED_VERBS:
+            message += "; `task %s` alone is now %s" % (verb, RENAMED_VERBS[verb])
         _ = sys.stderr.write(self.format_usage())
         _ = sys.stderr.write(textout.message("error", RED, message))
 
@@ -426,9 +430,8 @@ def args_create_job(p: argparse.ArgumentParser) -> str:
     )
     return (
         "Submit a task package to a server as a new job. The package is validated first; if "
-        + "it uses a feature the server's code lacks (e.g. precompile on an older server), it "
-        + "is refused before the upload with unsupported_feature: run `task update host HOST` "
-        + "to update the server."
+        + "it uses a feature the server's code lacks, it is refused before the upload with "
+        + "unsupported_feature: run `task update host HOST` to update the server."
     )
 
 
