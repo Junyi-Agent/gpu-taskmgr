@@ -32,7 +32,8 @@ docker run --rm --init -v "$PWD":/src:ro python:3.10-slim \
 目录中运行或命令行包含该目录的进程，给只读的任务包副本恢复 `u+w`，然后删除目录。被 `SIGKILL`
 的测试进程无法清理；在 Docker 中容器会随之一起消失。
 
-测试环境会去掉继承来的所有 `TASKMGR_*` 变量和 `NO_COLOR`，再设置测试需要的值，因此 shell 中的
+测试环境会去掉继承来的所有 `TASKMGR_*` 变量、`NO_COLOR` 和 `FORCE_COLOR`，再设置测试需要的值
+（stdout 和 stderr 是管道，`color=True` 会设 `FORCE_COLOR=1`），因此 shell 中的
 设置不会影响测试结果。
 
 要断言某个任务在调度器处理过之后"仍在排队"，用 `Env.wait_scheduler_passes(n)` 代替固定的

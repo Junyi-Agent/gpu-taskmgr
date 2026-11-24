@@ -1,6 +1,10 @@
-# Install once: uv run pre-commit install
+# Install once per clone or worktree: uv run pre-commit install
+#   (installs both stages below: pre-commit and pre-push)
 # Run on everything: uv run pre-commit run --all-files
 # ruff and basedpyright run from the project venv, so their versions come from uv.lock.
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
 repos:
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.10.6
@@ -30,3 +34,47 @@ repos:
         types_or: [python, pyi]
         pass_filenames: false  # type-check the whole project, configured in pyproject.toml
         require_serial: true
+
+      # Workflow guards (CLAUDE.md, docs/adr/0001-0003)
+      - id: adr-index
+        name: ADR list matches the files; 已验证 only with a human-filled 验证 section
+        entry: python3 scripts/repo_check.py check adrs
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      - id: git-guard-tests
+        name: git guard hook tests
+        entry: python3 .claude/hooks/test_git_guard.py
+        language: system
+        files: ^\.claude/hooks/(test_)?git_guard\.py$
+        pass_filenames: false
+
+      - id: adr-guard-tests
+        name: ADR guard hook tests
+        entry: python3 .claude/hooks/test_adr_guard.py
+        language: system
+        files: ^(\.claude/hooks/(test_)?adr_guard\.py|\.claude/settings\.json|scripts/repo_check\.py|docs/adr/template\.md)$
+        pass_filenames: false
+
+      - id: repo-check-tests
+        name: repo check script tests
+        entry: python3 scripts/test_repo_check.py
+        language: system
+        files: ^scripts/(test_)?repo_check\.py$
+        pass_filenames: false
+
+      - id: review-gate-tests
+        name: review gate tests
+        entry: python3 scripts/test_review_gate.py
+        language: system
+        files: ^scripts/(test_)?review_gate\.py$
+        pass_filenames: false
+
+      - id: review-gate
+        name: review gate (3 Claude reviewers, >=2 approve)
+        entry: python3 scripts/review_gate.py
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false

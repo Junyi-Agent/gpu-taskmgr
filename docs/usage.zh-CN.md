@@ -100,9 +100,10 @@ task version                           # 本地版本和每台服务器上的代
 
 ## 输出
 
-所有输出都带颜色：stdout 上的文本和 `-o json` JSON、stderr 上的错误和进度、`-h` 帮助和参数错误，
-不论是否在终端里。`--plain`（放在命令行任意位置）或环境变量 `NO_COLOR` 关闭颜色。读取输出的脚本
-使用 `-o json --plain`。
+stdout 和 stderr 都是终端时，所有输出都带颜色：stdout 上的文本和 `-o json` JSON、stderr 上的错误和
+进度、`-h` 帮助和参数错误。输出到管道或重定向到文件时不带颜色，脚本可以直接读 `-o json`。
+`FORCE_COLOR=1` 强制开颜色；`--plain`（放在命令行任意位置）或环境变量 `NO_COLOR` 在任何情况下都关闭
+颜色。
 
 所有命令的输出只有以下几种形式：
 

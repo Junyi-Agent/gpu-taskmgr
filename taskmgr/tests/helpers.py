@@ -138,9 +138,11 @@ class Env(unittest.TestCase):
         self.boot_file = os.path.join(self.tmp, "boot_id")
         self.set_boot("boot-1")
         # Nothing in the caller's environment may steer the code under test: drop every
-        # TASKMGR_* variable (test hooks, TASKMGR_HOME, ...) and NO_COLOR.
+        # TASKMGR_* variable (test hooks, TASKMGR_HOME, ...), NO_COLOR and FORCE_COLOR.
         self.env = {
-            k: v for k, v in os.environ.items() if not k.startswith("TASKMGR_") and k != "NO_COLOR"
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("TASKMGR_") and k not in ("NO_COLOR", "FORCE_COLOR")
         }
         self.env.update(
             {
@@ -308,8 +310,11 @@ class Env(unittest.TestCase):
         color: bool = False,
     ) -> tuple[int, JsonValue, str]:
         """Run `task`. Without text=True, -o json is added so stdout is the JSON object
-        (`logs` prints the raw log either way); without color=True, --plain."""
+        (`logs` prints the raw log either way); without color=True, --plain. stdout and
+        stderr are pipes, so color=True also sets FORCE_COLOR=1."""
         e = dict(self.env)
+        if color:
+            e["FORCE_COLOR"] = "1"
         e.update(env or {})
         p = subprocess.run(
             self._task_argv(args, text, color),

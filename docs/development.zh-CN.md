@@ -19,14 +19,17 @@ up: "[[taskmgr/README.zh-CN]]"
 | --- | --- |
 | `ruff` | 代码检查（`ruff check`，规则见 `[tool.ruff.lint]`）和格式化（`ruff format`，行宽 100）；覆盖 `taskmgr/` 和 `bin/` 下无扩展名的脚本 |
 | `basedpyright` | 类型检查，`typeCheckingMode = "all"`，Python 3.10，平台 Linux |
-| `pre-commit` | 每次提交时运行下面的 hook |
+| `pre-commit` | 每次提交和 push 前运行下面的 hook |
 
 ## 环境准备
 
 ```sh
 uv sync                          # 创建 .venv（Python 3.10 + 开发工具）
-uv run pre-commit install        # 安装 git hook
+uv run pre-commit install        # 安装 pre-commit 和 pre-push 两个 git hook
 ```
+
+每个新 clone 和新 worktree 都要跑这两条。开发流程（每个改动在仓库外建 worktree、PR 合并到 `main`、
+ADR）见 `CLAUDE.md`；决策记录在 `docs/adr/`。
 
 ## Hook（`.pre-commit-config.yaml`）
 
@@ -36,6 +39,9 @@ uv run pre-commit install        # 安装 git hook
 | `ruff-check` | `uv run --frozen ruff check --fix` | 检查暂存的 Python 文件并应用安全修复；有修复或仍有错误时提交失败 |
 | `ruff-format` | `uv run --frozen ruff format` | 格式化暂存的 Python 文件；有文件被改动时提交失败，重新 add 后再提交 |
 | `basedpyright` | `uv run --frozen basedpyright` | 检查整个项目（不只检查暂存文件） |
+| `adr-index` | `python3 scripts/repo_check.py check adrs` | `docs/adr/README.md` 的列表和文件一致；已验证的 ADR 由人类填了「验证」一节 |
+| `git-guard-tests`、`adr-guard-tests`、`repo-check-tests`、`review-gate-tests` | `.claude/hooks/` 和 `scripts/` 的单元测试 | 改到这些文件时运行 |
+| `review-gate`（pre-push） | `python3 scripts/review_gate.py` | 3 个 Claude 分别从正确性、设计与文档、流程与安全审查 `origin/main..` 被 push 的 ref，2 个同意才放行（`docs/adr/0002-pre-push-review-gate.md`）；需要已登录的 `claude` CLI |
 
 ruff 和 basedpyright 在项目 venv 中运行（`language: system` + `uv run --frozen`），因此 hook 使用的
 就是 `uv.lock` 中锁定的版本。
