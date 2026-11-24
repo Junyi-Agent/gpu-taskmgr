@@ -1,9 +1,15 @@
 """task.json `gpus` as an object: GPUs chosen by condition when the job is launched."""
 
 import os
+import stat
+import subprocess
+import tempfile
 import time
+import unittest
+from unittest import mock
 
 from taskmgr import gpu
+from taskmgr.common import TaskmgrError
 from taskmgr.records import GpuRequest, JsonDict, JsonValue
 from taskmgr.tests.helpers import GPUS, OK_RESULT, Env
 
@@ -285,3 +291,51 @@ class GpuStateReadTest(Env):
         self.assertEqual(self.daemon_log().count("cannot read the GPU state"), 1)
         self.assertIn("timed out", str(self.job(j).get("pending_reason")))
         _ = self.ok("cancel", "job", j, "--host", "s1")
+
+
+class StuckSmiTest(unittest.TestCase):
+    def test_an_unkillable_nvidia_smi_keeps_no_pipes_and_is_not_started_again(self) -> None:
+        """nvidia-smi stuck in the driver survives SIGKILL: its pipes are closed, and later
+        calls fail at once instead of leaving one more process each."""
+        tmp = tempfile.mkdtemp()
+        smi = os.path.join(tmp, "nvidia-smi")
+        calls = os.path.join(tmp, "calls")
+        with open(smi, "w") as f:
+            _ = f.write("#!/bin/sh\necho x >> %s\nexec sleep 1000\n" % calls)
+        os.chmod(smi, stat.S_IRWXU)
+
+        def no_kill(_self: object) -> None:  # SIGKILL does not end a process in state D
+            pass
+
+        def cleanup() -> None:
+            stuck = gpu._stuck  # pyright: ignore[reportPrivateUsage]
+            gpu._stuck = None  # pyright: ignore[reportPrivateUsage]
+            if stuck is not None:
+                stuck.kill()
+                _ = stuck.wait()
+
+        self.addCleanup(cleanup)
+        with (
+            mock.patch.dict(os.environ, {"TASKMGR_NVIDIA_SMI": smi}),
+            mock.patch.object(subprocess.Popen, "kill", no_kill),
+        ):
+            with self.assertRaisesRegex(TaskmgrError, "timed out"):
+                _ = gpu._smi("--query-gpu=index", timeout=0.5)  # pyright: ignore[reportPrivateUsage]
+            for _ in range(3):
+                with self.assertRaisesRegex(TaskmgrError, "still stuck"):
+                    _ = gpu._smi("--query-gpu=index", timeout=0.5)  # pyright: ignore[reportPrivateUsage]
+
+        stuck = gpu._stuck  # pyright: ignore[reportPrivateUsage]
+        assert stuck is not None and stuck.stdout is not None and stuck.stderr is not None
+        self.assertTrue(stuck.stdout.closed and stuck.stderr.closed)
+        with open(calls) as f:
+            self.assertEqual(len(f.read().splitlines()), 1)
+
+        # Once the stuck one is gone, nvidia-smi runs again.
+        stuck.kill()
+        _ = stuck.wait()
+        with open(smi, "w") as f:
+            _ = f.write("#!/bin/sh\necho 0\n")
+        with mock.patch.dict(os.environ, {"TASKMGR_NVIDIA_SMI": smi}):
+            self.assertEqual(gpu._smi("--query-gpu=index", timeout=5), [["0"]])  # pyright: ignore[reportPrivateUsage]
+        self.assertIsNone(gpu._stuck)  # pyright: ignore[reportPrivateUsage]

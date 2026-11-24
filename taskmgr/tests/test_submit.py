@@ -208,11 +208,17 @@ class SubmitTest(Env):
             ("2", ["jobs"]),
             ("2", ["status", jid]),
             ("2", ["retry", jid]),
-            ("2", ["logs", jid]),
+            ("2", ["logs", jid, "--stream", "stdout"]),
+            ("2", ["fetch", jid]),
         ):
             rc, out, err = self.remote("--protocol-version", version, *verb)
             self.assertEqual(rc, 2, verb)
-            self.assertIn("protocol_mismatch", "%s %s" % (out, err))
+            # The streaming commands keep stdout for the stream: their errors are on stderr.
+            if verb[0] in ("logs", "fetch"):
+                self.assertEqual(out, "", verb)
+                self.assertIn('"protocol_mismatch"', err, verb)
+            else:
+                self.assertEqual(self.get(out, "error", "code"), "protocol_mismatch", verb)
         rc, out, _ = self.task(
             "get",
             "job",
