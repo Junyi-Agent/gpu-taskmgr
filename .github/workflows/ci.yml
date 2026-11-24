@@ -26,6 +26,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true  # the jy-skills-copies hook compares the copies with .claude/jy-skills
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true

@@ -36,6 +36,19 @@ repos:
         require_serial: true
 
       # Workflow guards (CLAUDE.md, docs/adr/0001-0003)
+      - id: jy-skills-copies
+        name: hooks and scripts copied from .claude/jy-skills are unchanged
+        # Local differences belong in .claude/review_gate.json, not in the copies (CLAUDE.md).
+        entry: >-
+          bash -c 'test -f .claude/jy-skills/VERSION || { echo "run: git submodule update --init .claude/jy-skills"; exit 1; };
+          for f in .claude/hooks/git_guard.py .claude/hooks/test_git_guard.py .claude/hooks/adr_guard.py
+          .claude/hooks/test_adr_guard.py scripts/review_gate.py scripts/test_review_gate.py
+          scripts/repo_check.py scripts/test_repo_check.py; do
+          cmp -s "$f" ".claude/jy-skills/$f" || { echo "$f differs from .claude/jy-skills/$f: copy it unchanged"; exit 1; }; done'
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: adr-index
         name: ADR list matches the files; 已验证 only with a human-filled 验证 section
         entry: python3 scripts/repo_check.py check adrs

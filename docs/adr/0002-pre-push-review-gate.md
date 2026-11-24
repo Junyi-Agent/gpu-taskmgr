@@ -13,7 +13,7 @@ pre-commit 和 CI 只做格式、lint、类型检查和单元测试，查不出 
 - 并行跑 3 个 `claude -p`，方向分别是：正确性；设计与文档一致性（`agent/desc-*.md`、ADR、中英文文档）；流程与安全。只给 Read/Grep/Glob 工具，用 `--json-schema` 要求结构化输出。
 - ≥2 个 approve 才 exit 0；报错、超时、输出解析失败都算 reject，否则非零退出阻止 push。
 - 本地找不到 `origin/main`（或没有共同祖先）时阻止 push，提示先 `git fetch origin`。
-- 脚本从 Junyi-Agent/skills v1.1.0 的 `scripts/review_gate.py` 复制，只改了 3 个审查方向的说明。
+- 脚本从 Junyi-Agent/skills 的 `scripts/review_gate.py` 原样复制。本仓库的 3 个审查方向写在 `.claude/review_gate.json`（skills 1.2.0 起支持），从 merge-base 读取，push 改不了审查自己的 reviewer。
 - CI 不跑这个 hook（`pre-commit run --all-files` 只跑 pre-commit 阶段）。
 
 ## 后果
