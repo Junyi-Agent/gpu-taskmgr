@@ -27,16 +27,19 @@ else:  # runtime stays stdlib-only; typing.override only exists from Python 3.12
         return func
 
 
-PROTOCOL_VERSION = 2
+# 3: taskmgr-remote commands are `<verb> <resource>` (`get jobs`, `get job ID`, `create job`,
+# ...; docs/adr/0004-kubectl-style-cli.md). 2: one-word subcommands (`jobs`, `status`, ...).
+PROTOCOL_VERSION = 3
 
-# What this code implements beyond protocol 2, reported in every taskmgr-remote reply as
-# "features" (a sorted list). A server without the key runs code older than this list.
+# What this code implements, reported in every taskmgr-remote reply as "features" (a sorted
+# list). Protocol-2 code added them one by one; every protocol-3 server has all of these.
+# A later feature is added here, so that the client can tell a server that lacks it.
 #   strict_task_json  the server rejects task.json keys it does not know (no silent ignore)
 #   precompile        task.json `precompile` (compile without GPUs before the entry runs)
-#   gpu_holders       `status` of a job waiting for GPUs lists who holds them
+#   gpu_holders       `get job` of a job waiting for GPUs lists who holds them
 #   gpu_select        task.json `gpus` as an object: GPUs chosen at launch by condition
-#   cancel_by         `cancel --by USER@HOST` records who asked (job.json cancel_request)
-#   jobs_limit        `jobs --limit N` returns only the N most recently submitted jobs
+#   cancel_by         `cancel job --by USER@HOST` records who asked (job.json cancel_request)
+#   jobs_limit        `get jobs --limit N` returns only the N most recently submitted jobs
 # `task create job` refuses a package that uses a feature its server does not report
 # (package.task_features), before the upload.
 FEATURES: tuple[str, ...] = (

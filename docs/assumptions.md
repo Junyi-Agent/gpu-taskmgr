@@ -35,11 +35,16 @@ Other language: [[docs/assumptions.zh-CN]]
    answered) plus an `error` (`wait_timeout`) and exits 2. When a query that returns after
    the deadline shows a terminal state (or `unknown`), that state wins and the exit code is
    the one of that state. Ctrl-C prints an `interrupted` error and exits 2.
-8. Protocol compatibility means equal integer `protocol_version` (currently 2; 1 was the
-   attempt-based protocol). Additions that keep protocol 2 are announced in the reply key
+8. Protocol compatibility means equal integer `protocol_version` (currently 3, whose
+   `taskmgr-remote` commands are `<verb> <resource>` like `task`'s, see
+   [[docs/adr/0004-kubectl-style-cli]]; 2 had one-word subcommands such as `jobs` and
+   `status`; 1 was the attempt-based protocol). A server of another protocol answers with
+   `protocol_mismatch`; a protocol-2 server, which rejects the new commands with a usage error,
+   is reported the same way. The message names `task update host NAME`. Additions that keep
+   protocol 3 are announced in the reply key
    `features` ([[docs/task-package]], Server features); a client checks a feature before it
    relies on it. ssh exit status 255 is treated as a connection failure for
-   `taskmgr-remote` subcommands. For the shell scripts `task create host` runs, a script may
+   `taskmgr-remote` commands. For the shell scripts `task create host` runs, a script may
    exit 255 itself, so 255 counts as a connection failure only when stderr reads like an
    ssh error (`ssh:`, `connection refused`, `permission denied (`, ...). ssh runs with
    `BatchMode=yes` and, unless the machine entry sets them, `ConnectTimeout=10`,
@@ -66,7 +71,7 @@ Other language: [[docs/assumptions.zh-CN]]
     three logs and `workdir/`, not `package/`, `package.tar.gz` or `shim.lock`.
 14. `max_cpu_jobs` counts CPU-only jobs in running, stopping and unknown.
 15. jobid uniqueness is checked against all job directories on the server.
-    `receive` answers a known submission key (dedup or conflict) right after extraction and
+    `create job` answers a known submission key (dedup or conflict) right after extraction and
     hashing, before GPU resolution and validation, so a retry after a lost ACK succeeds even
     if the machine's GPUs changed. A corrupt `result.json`, or one that is not a regular
     file, is kept as `result.json.corrupt` (or `.corrupt.N` if that name is taken).

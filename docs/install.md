@@ -115,14 +115,19 @@ for a server already in the machine list and keeps its entry as it is: it takes 
 options (change those with `task create host`), fails with `unknown_host` for a name not in
 the list, and also updates a disabled server (which stays disabled). Use it when
 `task version` or `task ping host` shows a server on another code version, or when a
-command fails with `unsupported_feature`.
+command fails with `unsupported_feature` or `protocol_mismatch`.
+
+Servers installed before protocol 3 (one-word `taskmgr-remote` subcommands such as `jobs` and
+`serve`) answer every command of this CLI with `protocol_mismatch` until they are updated: run
+`task update host NAME` once per server. The update also rewrites the unit, whose `ExecStart`
+now ends in `run daemon`; until then the new code still accepts the old unit's `serve`.
 
 | Step | Checks | Changes (each asked) |
 | --- | --- | --- |
 | `ssh` | ssh works (BatchMode), Linux, `python3` >= 3.10, `systemctl --user` works, linger, installed code version, unit file, service state, filesystem of `remote_root` (warns on NFS, CIFS, FUSE, ...) | none; a failed check stops the run |
 | `code` | the prebuilt `taskmgr-remote.pyz` (`--pyz`, default see above) exists and has the code version of the running `task` (otherwise the step fails: rebuild with `task build pyz`); the code version inside `<remote_root>/taskmgr-remote.pyz` against it | upload that file to `<remote_root>/versions/<version>.pyz.new-*`; after the `data` step it is renamed to `<remote_root>/versions/<version>.pyz` and the symlink `<remote_root>/taskmgr-remote.pyz` is switched to it (one rename). The archive the link pointed to before is kept. Upload files `*.new-*` older than 10 minutes (left by an interrupted run) are removed as part of this confirmed change; on an up-to-date server they are only listed in the detail |
 | `remote_root` | `remote_root` and `config.json` exist | `mkdir -p` with mode 0700 (an existing `remote_root` the user owns loses its group and other bits), write `config.json` with the defaults when it is missing; an existing `config.json` is never overwritten |
-| `data` | `taskmgr-remote inspect` (read-only): job directories that the new code cannot handle (protocol-1 `attempts/`, `job.json` missing current fields) | stop the service, then move those directories (and their `submission-keys/*.json`) into `<remote_root>/backups/<UTC time>/`; nothing is deleted. Jobs that may still run (running, stopping, unknown, or in `in-progress/`) are never moved: the step fails and lists them |
+| `data` | `taskmgr-remote describe store` (read-only): job directories that the new code cannot handle (protocol-1 `attempts/`, `job.json` missing current fields) | stop the service, then move those directories (and their `submission-keys/*.json`) into `<remote_root>/backups/<UTC time>/`; nothing is deleted. Jobs that may still run (running, stopping, unknown, or in `in-progress/`) are never moved: the step fails and lists them |
 | `unit` | `~/.config/systemd/user/taskmgr-remote.service` against the generated unit (shows a diff) | write it, `systemctl --user daemon-reload` |
 | `service` | enabled, active, and whether the running daemon is older than the installed code or unit | `enable`; `start`; `restart` (running tasks keep running, `KillMode=process`); then waits until the daemon holds `locks/daemon.lock`. After a code change, once the daemon runs the new code, removes the archives in `versions/` other than the current one, the previous one and any a running process uses (a running job's shim imports from the archive it started with) |
 | `linger` | `loginctl show-user` | `loginctl enable-linger <user>`; if refused, the step fails with the command an admin has to run once, and the run continues |
@@ -179,7 +184,7 @@ Notes:
   results are not visible to other users of the server. `taskmgr-remote` creates directories
   with mode 0700 and files with 0600 (logs, uploads, records); a job's `package/` keeps only
   the owner's read and execute bits, and its `workdir/` copy is 0700 / 0600 (0700 for
-  executables). Every `taskmgr-remote` command except `inspect` and `version` also removes
+  executables). Every `taskmgr-remote` command except `describe store` and `version` also removes
   the group and other bits of an existing `remote_root` that its user owns, so directories
   created by older versions are covered. Files that a task writes get the daemon's umask,
   inside that tree.
@@ -278,10 +283,10 @@ daemon's main PID; the daemon exits on SIGTERM without touching shims, and on th
 start runs restart recovery. We chose this over `systemd-run --user --scope` per shim
 because it needs no D-Bus access from the daemon and keeps the daemon a plain process that
 also runs outside systemd (tmux, nohup): `nohup ~/.taskmgr-remote/taskmgr-remote.pyz
---root ~/.taskmgr-remote serve > /dev/null 2>&1 &`; stop with `kill <pid>` (pid in
+--root ~/.taskmgr-remote run daemon > /dev/null 2>&1 &`; stop with `kill <pid>` (pid in
 `locks/daemon.lock`).
 
-A second `serve` on the same root exits with code 2 (it cannot take `locks/daemon.lock`).
+A second `run daemon` on the same root exits with code 2 (it cannot take `locks/daemon.lock`).
 
 ## Remote `config.json`
 

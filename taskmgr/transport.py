@@ -323,6 +323,9 @@ class Remote:
                 break
 
         if not isinstance(obj, dict):
+            older = older_server_error(p.returncode, err, self.name)
+            if older is not None:
+                raise older
             raise NoReplyError(
                 "no valid JSON from remote (exit %d): %s" % (p.returncode, err[-2000:]), self.name
             )
@@ -362,6 +365,9 @@ class Remote:
             if isinstance(obj, dict) and "error" in obj:
                 check_protocol(obj, self.name)
                 raise remote_error(obj, self.name, with_details=False)
+            older = older_server_error(p.returncode, err, self.name)
+            if older is not None:
+                raise older
             raise TaskmgrError(
                 "remote_error", "remote exited %d: %s" % (p.returncode, err[-2000:]), 2, self.name
             )
@@ -393,15 +399,39 @@ def require_features(reply: JsonDict, needed: Sequence[str], host: str, what: st
     )
 
 
+def update_hint(remote_version: object, host: str | None) -> str:
+    """What to run when the server's protocol differs from this CLI's."""
+    if isinstance(remote_version, int) and remote_version > PROTOCOL_VERSION:
+        return "; update this CLI (`task update`)"
+    return "; run `task update host %s` to update the server" % (host or "NAME")
+
+
 def check_protocol(obj: JsonDict, host: str | None) -> None:
     v = obj.get("protocol_version")
     if v != PROTOCOL_VERSION:
         raise TaskmgrError(
             "protocol_mismatch",
-            "remote protocol_version %r is incompatible with local %d" % (v, PROTOCOL_VERSION),
+            "remote protocol_version %r is incompatible with local %d%s"
+            % (v, PROTOCOL_VERSION, update_hint(v, host)),
             2,
             host,
         )
+
+
+def older_server_error(returncode: int, stderr: str, host: str) -> TaskmgrError | None:
+    """protocol_mismatch for a usage error about an unknown command: a server older than
+    protocol 3 has no `<verb> <resource>` commands (docs/adr/0004-kubectl-style-cli.md)
+    and argparse rejects them before it compares protocol versions."""
+    if returncode != 2 or "invalid choice" not in stderr:
+        return None
+    return TaskmgrError(
+        "protocol_mismatch",
+        "the server's taskmgr-remote does not know this command (it speaks a protocol older "
+        + "than %d)%s" % (PROTOCOL_VERSION, update_hint(None, host)),
+        2,
+        host,
+        {"stderr": stderr[-500:]},
+    )
 
 
 def query_all(

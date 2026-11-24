@@ -71,7 +71,7 @@ EEXIST).
 | `TASKMGR_SHIM_EXECUTABLE` | interpreter used to exec the shim (shim start failure) |
 | `TASKMGR_TEST_SHIM_CRASH=<point>` | shim exits at `before_identity`, `before_exec`, `after_exit_recorded`, `before_finalize` (`test_recovery.py` checks the recovery after each) |
 | `TASKMGR_TEST_IGNORE_KILL=1` | stop procedure sends no signals (unconfirmed stop) |
-| `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` sleeps while holding the upload lock |
+| `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `create job` sleeps while holding the upload lock |
 | machine entry `"local": {"home": "/dir"}` | `transport: local` runs every command (and `task create host` scripts) with `HOME=/dir` |
 | `TASKMGR_TEST_LOCAL_HOME=/dir` | `task create host` creates a new entry with `transport: local` and `"local": {"home": "/dir"}` |
 | `TASKMGR_TEST_INTERACTIVE=1` | `task create host` reads answers from stdin even when it is not a terminal |

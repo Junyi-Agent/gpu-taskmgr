@@ -65,8 +65,8 @@ shared files.
 
 `cancel_request` is written by the first cancel request, together with `cancel_requested`:
 `by` is the `user@hostname` of the CLI that sent `task cancel job` (`via: "cli"`, sent as
-`taskmgr-remote cancel --by`), or the server user and hostname when the cancel came without
-`--by`, e.g. `taskmgr-remote cancel` run on the server or an older CLI (`via: "remote"`).
+`taskmgr-remote cancel job --by`), or the server user and hostname when the cancel came without
+`--by`, e.g. `taskmgr-remote cancel job` run on the server or an older CLI (`via: "remote"`).
 Later requests do not change it.
 
 `auto_restarts` counts the automatic re-runs in a chain (0 for a submission or a manual

@@ -115,7 +115,7 @@ class SchedTest(Env):
         _ = self.start_daemon()
         time.sleep(0.5)
         p = subprocess.run(
-            [sys.executable, REMOTE, "--root", self.root(), "serve"],
+            [sys.executable, REMOTE, "--root", self.root(), "run", "daemon"],
             env=self.env,
             capture_output=True,
             timeout=20,

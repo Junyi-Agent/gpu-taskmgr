@@ -672,15 +672,15 @@ class RecoveryTest(Env):
 
     def test_remote_resolve_as_stopped_checks_its_arguments(self) -> None:
         u, _ = self.make_unknown()
-        rc, out, _ = self.remote("resolve", u, "--as", "running", "--confirm", u)
+        rc, out, _ = self.remote("resolve", "job", u, "--as", "running", "--confirm", u)
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "bad_args"))
-        rc, out, _ = self.remote("resolve", u, "--as", "stopped", "--confirm", "0" * 16)
+        rc, out, _ = self.remote("resolve", "job", u, "--as", "stopped", "--confirm", "0" * 16)
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "bad_args"))
-        rc, out, _ = self.remote("resolve", u, "--as", "stopped")
+        rc, out, _ = self.remote("resolve", "job", u, "--as", "stopped")
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "bad_args"))
         self.assertEqual(self.job(u)["state"], "unknown")
         q = self.submit(self.make_pkg(gpus=[1]))
-        rc, out, _ = self.remote("resolve", q, "--as", "stopped", "--confirm", q)
+        rc, out, _ = self.remote("resolve", "job", q, "--as", "stopped", "--confirm", q)
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "not_unknown"))
         self.assertEqual(self.job(q)["state"], "queued")
 

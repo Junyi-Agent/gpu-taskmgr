@@ -1,4 +1,4 @@
-"""Scheduler daemon: `taskmgr-remote serve` (Sections 1.1, 5.2, 7.2, 9.3, 12.2)."""
+"""Scheduler daemon: `taskmgr-remote run daemon` (Sections 1.1, 5.2, 7.2, 9.3, 12.2)."""
 
 import fcntl
 import os
@@ -411,6 +411,7 @@ class Daemon:
             "taskmgr.remote",
             "--root",
             self.store.root,
+            "run",
             "shim",
             jobid,
             "--lock-fd",

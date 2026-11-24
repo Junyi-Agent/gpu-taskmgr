@@ -182,25 +182,35 @@ class SubmitTest(Env):
         tgz = os.path.join(self.tmp, "p.tgz")
         package.pack_dir(pkg, tgz)
         with open(tgz, "rb") as f:
-            rc, ack, _ = self.remote("receive", "--submission-key", "lost-1", stdin=f)
+            rc, ack, _ = self.remote("create", "job", "--submission-key", "lost-1", stdin=f)
         self.assertEqual(rc, 0)
         r = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "lost-1", pkg))
         self.assertEqual((r["jobid"], r["deduplicated"]), (self.get(ack, "jobid"), True))
 
     def test_protocol_version_mismatch(self) -> None:
         # The remote refuses a client of another version and names its own.
-        rc, out, _ = self.remote("--protocol-version", "99", "jobs")
+        rc, out, _ = self.remote("--protocol-version", "99", "get", "jobs")
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "protocol_mismatch"))
-        self.assertEqual(self.get(out, "protocol_version"), 2)
+        self.assertEqual(self.get(out, "protocol_version"), 3)
         rc, out, _ = self.task(
             "get", "jobs", "--host", "s1", env={"TASKMGR_TEST_PROTOCOL_VERSION": "99"}
         )
         # jobs lists every target; the per-server error carries the reason.
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "all_hosts_failed"))
         self.assertEqual(self.get(out, "errors", 0, "code"), "protocol_mismatch")
-        # Protocol 1 (attempt-based) clients and remotes are rejected in both directions.
-        for verb in (["jobs"], ["retry", "0123456789abcdef"], ["logs", "0123456789abcdef"]):
-            rc, out, err = self.remote("--protocol-version", "1", *verb)
+        # Clients of protocol 1 (attempt-based) and 2 (one-word subcommands) are rejected with
+        # protocol_mismatch, also for commands this code does not have.
+        jid = "0123456789abcdef"
+        for version, verb in (
+            ("1", ["get", "jobs"]),
+            ("1", ["retry", "job", jid]),
+            ("1", ["logs", "job", jid]),
+            ("2", ["jobs"]),
+            ("2", ["status", jid]),
+            ("2", ["retry", jid]),
+            ("2", ["logs", jid]),
+        ):
+            rc, out, err = self.remote("--protocol-version", version, *verb)
             self.assertEqual(rc, 2, verb)
             self.assertIn("protocol_mismatch", "%s %s" % (out, err))
         rc, out, _ = self.task(
@@ -256,6 +266,44 @@ class SubmitTest(Env):
         self.assertIn("protocol_mismatch", err)
         self.assertNotIn("not_found", err)
 
+    def test_client_names_the_update_for_a_protocol_2_server(self) -> None:
+        """A protocol-2 server has no `<verb> <resource>` commands: its argparse rejects them
+        with a usage error and no JSON. The client reports protocol_mismatch and the command
+        that updates the server, for queries, actions and streams; `version` still answers
+        (with protocol 2) and the client refuses that reply the same way."""
+        fake = os.path.join(self.tmp, "fake-remote")
+        version = '{"protocol_version": 2, "code_version": "old", "features": []}'
+        with open(fake, "w") as f:
+            _ = f.write(
+                "#!/bin/sh\n"
+                + 'case " $* " in *" version "*) echo \'%s\'; exit 0;; esac\n' % version
+                + "echo 'usage: taskmgr-remote [-h] --root ROOT [--protocol-version N] "
+                + "<subcommand> ...' >&2\n"
+                + 'echo "taskmgr-remote: error: argument <subcommand>: invalid choice: '
+                + "'get' (choose from 'version', 'jobs')\" >&2\n"
+                + "exit 2\n"
+            )
+        os.chmod(fake, 0o755)
+        self.server("s1")["remote_command"] = fake
+        self.write_machines()
+        hint = "task update host s1"
+        rc, out, err = self.task("get", "jobs", "--host", "s1")
+        self.assertEqual(self.get(out, "errors", 0, "code"), "protocol_mismatch", err)
+        self.assertIn(hint, self.text(out, "errors", 0, "error"))
+        for argv in (
+            ["get", "job", "0123456789abcdef", "--host", "s1"],
+            ["cancel", "job", "0123456789abcdef", "--host", "s1"],
+            ["ping", "host", "s1"],
+        ):
+            rc, out, err = self.task(*argv)
+            self.assertEqual(rc, 2, argv)
+            self.assertIn("protocol_mismatch", "%s %s" % (out, err), argv)
+            self.assertIn(hint, "%s %s" % (out, err), argv)
+        rc, _, err = self.task("logs", "job", "0123456789abcdef", "--host", "s1")
+        self.assertEqual(rc, 2)
+        self.assertIn("protocol_mismatch", err)
+        self.assertIn(hint, err)
+
     def test_daemon_restart_keeps_in_progress_upload(self) -> None:
         pkg = self.make_pkg()
         tgz = os.path.join(self.tmp, "p.tgz")
@@ -269,7 +317,7 @@ class SubmitTest(Env):
         env = dict(self.env, TASKMGR_TEST_RECEIVE_PAUSE="4")
         with open(tgz, "rb") as f:
             p = subprocess.Popen(
-                [sys.executable, REMOTE, "--root", self.root(), "receive"],
+                [sys.executable, REMOTE, "--root", self.root(), "create", "job"],
                 stdin=f,
                 stdout=subprocess.PIPE,
                 env=env,
@@ -297,7 +345,7 @@ class SubmitTest(Env):
         with open(blob, "wb") as f:
             _ = f.write(os.urandom(3 << 20))  # incompressible: the archive stays > 2 MiB
         with open(blob, "rb") as f:
-            rc, out, _ = self.remote("receive", stdin=f)
+            rc, out, _ = self.remote("create", "job", stdin=f)
         self.assertEqual(rc, 2)
         self.assertEqual(self.get(out, "error", "code"), "package_too_large")
         self.assertIn("upload of more than", self.text(out, "error", "message"))
