@@ -326,7 +326,7 @@ class Parser(argparse.ArgumentParser):
             message += " (--detail is now -o json)"
         verb = self.prog.removeprefix("task ")
         if "required: <resource>" in message and verb in RENAMED_VERBS:
-            message += "; `task %s` alone is now %s" % (verb, RENAMED_VERBS[verb])
+            message = "`task %s` alone is now %s" % (verb, RENAMED_VERBS[verb])
         _ = sys.stderr.write(self.format_usage())
         _ = sys.stderr.write(textout.message("error", RED, message))
 
