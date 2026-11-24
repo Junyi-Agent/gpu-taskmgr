@@ -1,0 +1,7 @@
+{
+  "reviewers": {
+    "correctness": "Focus: correctness of the code. Look for bugs, wrong edge-case handling, races between the local `task` CLI, the SSH transport and the remote daemon/shim, state files left inconsistent after a crash or preemption, exceptions on unexpected input, and tests that do not actually test the change.",
+    "design-docs": "Focus: design and documentation. Check the change against the specs in agent/desc-*.md and the ADRs in docs/adr/: CLI commands keep the kubectl-style `task <verb> <resource>` structure with -o json (docs/adr/0004), the protocol version is bumped when the task <-> taskmgr-remote interface changes, and the docs (README.md, docs/*.md and their .zh-CN.md twins, taskmgr/README*.md) match the code.",
+    "workflow-safety": "Focus: repository workflow and safety. Check the change follows CLAUDE.md (worktree flow, ADR status rules), does not weaken or bypass hooks, pre-commit, CI or this review gate, and does not add secrets, destructive commands on the GPU servers (rm -rf, killing processes it does not own) or network calls without need."
+  }
+}

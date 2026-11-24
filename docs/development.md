@@ -26,10 +26,11 @@ The runtime has no third-party dependencies. The `dev` dependency group holds th
 
 ```sh
 uv sync                          # creates .venv with Python 3.10 and the dev tools
+git submodule update --init .claude/jy-skills   # the jy-skills-copies hook compares against it
 uv run pre-commit install        # installs the pre-commit and pre-push git hooks
 ```
 
-Run both in every new clone and every new worktree. The workflow (a worktree outside the
+Run them in every new clone and every new worktree. The workflow (a worktree outside the
 repository per change, PRs into `main`, ADRs) is in `CLAUDE.md`; decisions are in
 `docs/adr/`.
 
@@ -42,8 +43,9 @@ repository per change, PRs into `main`, ADRs) is in `CLAUDE.md`; decisions are i
 | `ruff-format` | `uv run --frozen ruff format` | reformats staged Python files; the commit fails if files changed, re-stage them |
 | `basedpyright` | `uv run --frozen basedpyright` | checks the whole project (not only staged files) |
 | `adr-index` | `python3 scripts/repo_check.py check adrs` | the list in `docs/adr/README.md` matches the files; an ADR in 已验证 has a human-filled 验证 section |
+| `jy-skills-copies` | `cmp` against `.claude/jy-skills/` | the hooks and scripts copied from Junyi-Agent/skills are unchanged; this repo's differences live in `.claude/review_gate.json` |
 | `git-guard-tests`, `adr-guard-tests`, `repo-check-tests`, `review-gate-tests` | the unit tests of `.claude/hooks/` and `scripts/` | run when those files change |
-| `review-gate` (pre-push) | `python3 scripts/review_gate.py` | 3 Claude reviewers (correctness, design and docs, workflow and safety) review `origin/main..` the pushed ref; the push needs 2 approvals (`docs/adr/0002-pre-push-review-gate.md`); needs the `claude` CLI, logged in |
+| `review-gate` (pre-push) | `python3 scripts/review_gate.py` | 3 Claude reviewers (the focuses in `.claude/review_gate.json`: correctness, design and docs, workflow and safety) review `origin/main..` the pushed ref; the push needs 2 approvals (`docs/adr/0002-pre-push-review-gate.md`); needs the `claude` CLI, logged in |
 
 ruff and basedpyright run from the project venv (`language: system` + `uv run --frozen`),
 so the versions in `uv.lock` are the ones the hooks use.

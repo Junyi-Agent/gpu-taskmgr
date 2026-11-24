@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Check that the ADRs follow the rules in docs/adr/README.md.
+"""Check that skills and ADRs are registered consistently with the rules in CLAUDE.md.
 
-Adapted from scripts/repo_check.py of Junyi-Agent/skills (the .claude/jy-skills submodule,
-v1.1.0) with the skill checks removed: this repo has no skills/ directory.
+Usage: repo_check.py check (skills|adrs) [-o text|json]
 
-Usage: repo_check.py check adrs [-o text|json]
+check skills (CLAUDE.md, README.md):
+  - every skills/<name>/ with a SKILL.md has the symlink .claude/skills/<name> -> ../../skills/<name>
+  - every entry in .claude/skills/ is such a symlink to an existing skill (none dangling)
+  - the frontmatter name in SKILL.md equals the directory name
+  - README.md lists the skill as [`<name>`](skills/<name>)
 
 check adrs (docs/adr/README.md):
   - every docs/adr/NNNN-*.md has a line "状态：<提议|采纳|已验证|已取代（见 NNNN）>"
@@ -32,6 +35,7 @@ INDEX_ROW = re.compile(r"^\|\s*\[(\d{4})\]\(([^)]+)\)\s*\|.*\|\s*([^|]+?)\s*\|\s
 VERIFY_SECTION = re.compile(r"^## 验证\s*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
 PLACEHOLDER = "（只由人类填写"
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+FRONTMATTER_NAME = re.compile(r"\A---\n(?:.*\n)*?name:\s*\"?([^\"\n]+?)\"?\s*\n(?:.*\n)*?---\n")
 
 
 def adr_status(text: str) -> str | None:
@@ -44,6 +48,55 @@ def adr_verification(text: str) -> str:
     m = VERIFY_SECTION.search(text)
     lines = m.group(1).splitlines() if m else []
     return "\n".join(ln for ln in lines if not ln.strip().startswith(PLACEHOLDER)).strip()
+
+
+def check_skills(root: Path) -> list[str]:
+    problems = []
+    skills_dir = root / "skills"
+    if not skills_dir.is_dir():  # a repo that copies this script has no skills of its own
+        return problems
+    links_dir = root / ".claude" / "skills"
+    readme = root / "README.md"
+    readme_text = readme.read_text() if readme.is_file() else ""
+    names = sorted(
+        p.name for p in skills_dir.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()
+    )
+
+    for name in names:
+        link = links_dir / name
+        want = f"../../skills/{name}"
+        if not link.is_symlink():
+            problems.append(
+                f".claude/skills/{name} 不存在或不是软链接：运行 "
+                f"ln -s {want} .claude/skills/{name}（见 CLAUDE.md）"
+            )
+        elif (target := str(link.readlink())) != want:
+            problems.append(
+                f".claude/skills/{name} 指向 {target}，应为 {want}：运行 "
+                f"ln -sfn {want} .claude/skills/{name}"
+            )
+
+        m = FRONTMATTER_NAME.match((skills_dir / name / "SKILL.md").read_text())
+        if not m:
+            problems.append(f"skills/{name}/SKILL.md 的 frontmatter 没有 name")
+        elif m.group(1) != name:
+            problems.append(
+                f"skills/{name}/SKILL.md 的 name 是 {m.group(1)!r}，应与目录名 {name!r} 一致"
+            )
+
+        if f"[`{name}`](skills/{name})" not in readme_text:
+            problems.append(
+                f"README.md 的 skill 表里没有 {name}：加一行 | [`{name}`](skills/{name}) | <用途> |"
+            )
+
+    if links_dir.is_dir():
+        for link in sorted(links_dir.iterdir()):
+            if link.name not in names:
+                problems.append(
+                    f".claude/skills/{link.name} 没有对应的 skills/{link.name}/SKILL.md："
+                    "删掉这个软链接，或把 skill 放进 skills/"
+                )
+    return problems
 
 
 def check_adrs(root: Path) -> list[str]:
@@ -97,7 +150,7 @@ def check_adrs(root: Path) -> list[str]:
     return problems
 
 
-CHECKS = {"adrs": check_adrs}
+CHECKS = {"skills": check_skills, "adrs": check_adrs}
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -105,12 +158,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     verbs = p.add_subparsers(dest="verb", required=True, metavar="VERB")
     check = verbs.add_parser("check", allow_abbrev=False, help="check repo consistency")
     resources = check.add_subparsers(dest="resource", required=True, metavar="RESOURCE")
-    r = resources.add_parser(
-        "adrs",
-        allow_abbrev=False,
-        help="ADR status lines, the ADR list and human-only verification",
-    )
-    r.add_argument("-o", "--output", choices=["text", "json"], default="text")
+    for name, help_text in [
+        ("skills", "skill symlinks, SKILL.md names and the README table"),
+        ("adrs", "ADR status lines, the ADR list and human-only verification"),
+    ]:
+        r = resources.add_parser(name, allow_abbrev=False, help=help_text)
+        r.add_argument("-o", "--output", choices=["text", "json"], default="text")
     return p.parse_args(argv)
 
 

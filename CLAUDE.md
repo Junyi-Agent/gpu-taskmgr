@@ -21,6 +21,7 @@ push 时 pre-push hook 跑 `scripts/review_gate.py`：3 个 Claude 分别从正�
 
 ```bash
 uv sync
+git submodule update --init .claude/jy-skills
 uv run pre-commit install
 ```
 
@@ -32,4 +33,4 @@ uv run pre-commit install
 - 发版：PR 里改 `pyproject.toml` 的 `version`，合并后对 `main` 打 `v<版本>` tag 并 push，`.github/workflows/release.yml` 检查、构建 pyz 并发布 release，不手动 `gh release create`（[[docs/adr/0005-release-on-tag]]）。
 - 文档有中英两份（`*.md` 和 `*.zh-CN.md`），改一份同步改另一份。
 - 流程或架构决策写 ADR（`docs/adr/`）。状态分三种：提议 = 只写了文档；采纳 = 允许实现，可能已实现；已验证 = 人类测试了代码并确认。agent 最多改到「采纳」，「已验证」只由人类改。
-- `.claude/hooks/git_guard.py`、`adr_guard.py` 和 `scripts/review_gate.py`、`repo_check.py` 从 `.claude/jy-skills`（Junyi-Agent/skills v1.1.0）复制而来，同步上游时整文件替换后跑对应测试。
+- `.claude/hooks/git_guard.py`、`adr_guard.py`、`scripts/review_gate.py`、`repo_check.py` 和它们的测试从 `.claude/jy-skills`（Junyi-Agent/skills）原样复制，不在本仓库改。本仓库的差异放在配置里：审查门禁的 3 个方向在 `.claude/review_gate.json`。同步上游：把 submodule 升到新 tag，整文件复制这 8 个文件，跑对应测试；pre-commit 的 `jy-skills-copies` 检查副本和 submodule 一致。需要改这些文件的行为时，先改上游并发版。

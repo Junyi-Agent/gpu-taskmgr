@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from repo_check import check_adrs
+from repo_check import check_adrs, check_skills
 
 HERE = Path(__file__).resolve().parent
 
@@ -31,12 +31,76 @@ class Tree:
     def __init__(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        (self.root / ".claude" / "skills").mkdir(parents=True)
         (self.root / "docs" / "adr").mkdir(parents=True)
 
     def write(self, rel: str, text: str) -> None:
         p = self.root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text)
+
+    def skill(self, name: str, link: bool = True, readme: bool = True) -> None:
+        self.write(f"skills/{name}/SKILL.md", f'---\nname: "{name}"\ndescription: "x"\n---\n')
+        if link:
+            (self.root / ".claude" / "skills" / name).symlink_to(f"../../skills/{name}")
+        if readme:
+            old = (
+                (self.root / "README.md").read_text() if (self.root / "README.md").exists() else ""
+            )
+            self.write("README.md", old + f"| [`{name}`](skills/{name}) | x |\n")
+
+
+class SkillsTest(unittest.TestCase):
+    def setUp(self):
+        self.t = Tree()
+
+    def tearDown(self):
+        self.t.tmp.cleanup()
+
+    def test_no_skills_directory(self):
+        """A repo that copies this script (and links the skills in from a submodule)."""
+        (self.t.root / ".claude" / "skills" / "jy-a").symlink_to("../jy-skills/skills/jy-a")
+        self.assertEqual(check_skills(self.t.root), [])
+
+    def test_consistent(self):
+        self.t.skill("jy-a")
+        self.t.skill("jy-b")
+        self.assertEqual(check_skills(self.t.root), [])
+
+    def test_missing_symlink(self):
+        self.t.skill("jy-a", link=False)
+        [p] = check_skills(self.t.root)
+        self.assertIn("ln -s ../../skills/jy-a .claude/skills/jy-a", p)
+
+    def test_wrong_target(self):
+        self.t.skill("jy-a", link=False)
+        (self.t.root / ".claude" / "skills" / "jy-a").symlink_to("/abs/skills/jy-a")
+        [p] = check_skills(self.t.root)
+        self.assertIn("应为 ../../skills/jy-a", p)
+
+    def test_plain_directory_instead_of_symlink(self):
+        self.t.skill("jy-a", link=False)
+        (self.t.root / ".claude" / "skills" / "jy-a").mkdir()
+        [p] = check_skills(self.t.root)
+        self.assertIn("不是软链接", p)
+
+    def test_dangling_symlink(self):
+        self.t.skill("jy-a")
+        (self.t.root / ".claude" / "skills" / "jy-gone").symlink_to("../../skills/jy-gone")
+        [p] = check_skills(self.t.root)
+        self.assertIn("jy-gone", p)
+
+    def test_missing_readme_row(self):
+        self.t.skill("jy-a", readme=False)
+        self.t.write("README.md", "")
+        [p] = check_skills(self.t.root)
+        self.assertIn("README.md 的 skill 表里没有 jy-a", p)
+
+    def test_frontmatter_name_mismatch(self):
+        self.t.skill("jy-a")
+        self.t.write("skills/jy-a/SKILL.md", '---\nname: "jy-b"\n---\n')
+        [p] = check_skills(self.t.root)
+        self.assertIn("应与目录名", p)
 
 
 class AdrsTest(unittest.TestCase):
@@ -99,13 +163,16 @@ class CliTest(unittest.TestCase):
         )
 
     def test_this_repo_passes(self):
-        r = self.run_cli("check", "adrs", "-o", "json")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(json.loads(r.stdout), {"resource": "adrs", "ok": True, "problems": []})
+        for resource in ("skills", "adrs"):
+            r = self.run_cli("check", resource, "-o", "json")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(
+                json.loads(r.stdout), {"resource": resource, "ok": True, "problems": []}
+            )
 
     def test_bad_arguments(self):
         self.assertEqual(self.run_cli("check").returncode, 2)
-        self.assertEqual(self.run_cli("check", "skills").returncode, 2)
+        self.assertEqual(self.run_cli("check", "things").returncode, 2)
 
 
 if __name__ == "__main__":

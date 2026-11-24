@@ -19,14 +19,10 @@ If the hook input cannot be read, the check itself fails, or a command (or shell
 that mentions git/gh cannot be parsed, it is denied.
 
 Loop mode (JY_MAINTAIN_LOOP=1 in the hook's own environment, set by the launchd job of the
-jy-repo-maintain loop, docs/adr/0006 of Junyi-Agent/skills): `gh pr merge` must name the PR
-and also pass `maintain.py check pr` (no guardrail files, no X bump) with the config of this checkout;
+jy-repo-maintain loop, docs/adr/0006): `gh pr merge` must name the PR and also pass
+`maintain.py check pr` (no guardrail files, no X bump) with the config of this checkout;
 only the gh commands in LOOP_GH run, `gh api` only as a GET; and the loop cannot put the
 labels by which a human accepts or approves an issue (`accept_label`, `approve_label`).
-This repo runs no such loop yet; without .claude/maintain.json loop mode denies every merge.
-
-Copied from .claude/hooks/git_guard.py of Junyi-Agent/skills (the .claude/jy-skills
-submodule, v1.1.0); only MAINTAIN points at the .claude/skills symlink. See docs/adr/0001.
 """
 
 from __future__ import annotations
@@ -106,7 +102,6 @@ GH_VALUE_OPTS = {
 # Loop mode (docs/adr/0006). The script and config come from the checkout this hook runs
 # from, never from the worktree of the PR being merged, so a PR cannot loosen its own check.
 PROJECT = Path(__file__).resolve().parents[2]
-MAINTAIN = PROJECT / ".claude" / "skills" / "jy-repo-maintain" / "scripts" / "maintain.py"
 MAINTAIN_CONFIG = PROJECT / ".claude" / "maintain.json"
 # gh commands the loop may run, per command its subcommands (None: any).
 LOOP_GH: dict[str, set[str] | None] = {
@@ -581,11 +576,19 @@ def loop_mode() -> bool:
     return os.environ.get("JY_MAINTAIN_LOOP") == "1"
 
 
+def maintain_script(project: Path = PROJECT) -> Path:
+    """maintain.py of the checkout: skills/ in this repo; .claude/skills/ (symlinks into a
+    submodule) in a repo that copies this hook unchanged. A missing script fails the check."""
+    rel = Path("jy-repo-maintain") / "scripts" / "maintain.py"
+    candidates = [project / "skills" / rel, project / ".claude" / "skills" / rel]
+    return next((p for p in candidates if p.is_file()), candidates[0])
+
+
 def maintain_policy(args: list[str], cwd: str) -> tuple[int, str]:
     """Run `maintain.py check pr <args>`; exit 0 means the loop may merge."""
     try:
         r = subprocess.run(
-            [sys.executable, str(MAINTAIN), "check", "pr", *args],
+            [sys.executable, str(maintain_script()), "check", "pr", *args],
             capture_output=True,
             text=True,
             timeout=60,
