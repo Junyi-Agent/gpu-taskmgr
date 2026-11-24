@@ -17,7 +17,7 @@ up: "[[taskmgr/README.zh-CN]]"
 
 | 工具 | 用途 |
 | --- | --- |
-| `ruff` | 代码检查（`ruff check`，规则见 `[tool.ruff.lint]`）和格式化（`ruff format`，行宽 100）；覆盖 `taskmgr/` 和 `bin/` 下无扩展名的脚本 |
+| `ruff` | 代码检查（`ruff check`，规则见 `[tool.ruff.lint]`）和格式化（`ruff format`，行宽 100）；覆盖 `taskmgr/` 和 `bin/` 下无扩展名的脚本；`ruff format` 也格式化 Markdown 文件里的 `python` 代码块 |
 | `basedpyright` | 类型检查，`typeCheckingMode = "all"`，Python 3.10，平台 Linux |
 | `pre-commit` | 每次提交和 push 前运行下面的 hook |
 
@@ -38,7 +38,7 @@ ADR）见 `CLAUDE.md`；决策记录在 `docs/adr/`。
 | --- | --- | --- |
 | `uv-lock` | `uv lock` | 保持 `uv.lock` 与 `pyproject.toml` 一致 |
 | `ruff-check` | `uv run --frozen ruff check --fix` | 检查暂存的 Python 文件并应用安全修复；有修复或仍有错误时提交失败 |
-| `ruff-format` | `uv run --frozen ruff format` | 格式化暂存的 Python 文件；有文件被改动时提交失败，重新 add 后再提交 |
+| `ruff-format` | `uv run --frozen ruff format` | 格式化暂存的 Python 文件，以及暂存的 Markdown 文件里的 `python` 代码块；有文件被改动时提交失败，重新 add 后再提交 |
 | `basedpyright` | `uv run --frozen basedpyright` | 检查整个项目（不只检查暂存文件） |
 | `adr-index` | `python3 scripts/repo_check.py check adrs` | `docs/adr/README.md` 的列表和文件一致；已验证的 ADR 由人类填了「验证」一节 |
 | `jy-skills-copies` | 和 `.claude/jy-skills/` 逐个 `cmp` | 从 Junyi-Agent/skills 复制的 hook 和脚本没有改动；本仓库的差异放在 `.claude/review_gate.json` |
@@ -117,4 +117,5 @@ workflow 先跑 CI 检查，再检查 tag 等于 `v` + `pyproject.toml` 的版�
 release。然后构建 `task.pyz` 和 `taskmgr-remote.pyz`，核对它们报告的版本、commit 和协议，创建 release，
 附上两个压缩包、`SHA256SUMS` 和自动生成的说明。`PROTOCOL_VERSION` 和上一个 tag 不同时，说明开头写明
 要跑 `task update host NAME`。手动运行这个 workflow（Actions → Release → Run workflow）是演练：除了
-发 release 都做，构建结果存为 artifact。
+发 release 都做，构建结果存为 artifact。演练按“现在 push `v<版本>`”来检查：这个 tag 还不存在、commit 在
+`main` 上、没有同名 release。

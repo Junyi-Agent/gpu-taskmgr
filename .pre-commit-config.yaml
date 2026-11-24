@@ -24,7 +24,7 @@ repos:
         name: ruff format
         entry: uv run --frozen ruff format
         language: system
-        types_or: [python, pyi]
+        types_or: [python, pyi, markdown]  # markdown: the python code blocks in the docs
         require_serial: true
 
       - id: basedpyright

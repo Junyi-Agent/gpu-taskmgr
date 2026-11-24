@@ -18,7 +18,7 @@ The runtime has no third-party dependencies. The `dev` dependency group holds th
 
 | Tool | Use |
 | --- | --- |
-| `ruff` | linting (`ruff check`, rules in `[tool.ruff.lint]`) and formatting (`ruff format`, line length 100); covers `taskmgr/` and the extensionless scripts in `bin/` |
+| `ruff` | linting (`ruff check`, rules in `[tool.ruff.lint]`) and formatting (`ruff format`, line length 100); covers `taskmgr/` and the extensionless scripts in `bin/`; `ruff format` also formats the `python` code blocks in Markdown files |
 | `basedpyright` | type checking, `typeCheckingMode = "all"`, Python 3.10, platform Linux |
 | `pre-commit` | runs the hooks below on each commit and before each push |
 
@@ -40,7 +40,7 @@ repository per change, PRs into `main`, ADRs) is in `CLAUDE.md`; decisions are i
 | --- | --- | --- |
 | `uv-lock` | `uv lock` | keeps `uv.lock` in sync with `pyproject.toml` |
 | `ruff-check` | `uv run --frozen ruff check --fix` | lints staged Python files and applies safe fixes; the commit fails on fixes or remaining errors |
-| `ruff-format` | `uv run --frozen ruff format` | reformats staged Python files; the commit fails if files changed, re-stage them |
+| `ruff-format` | `uv run --frozen ruff format` | reformats staged Python files and the `python` code blocks of staged Markdown files; the commit fails if files changed, re-stage them |
 | `basedpyright` | `uv run --frozen basedpyright` | checks the whole project (not only staged files) |
 | `adr-index` | `python3 scripts/repo_check.py check adrs` | the list in `docs/adr/README.md` matches the files; an ADR in 已验证 has a human-filled 验证 section |
 | `jy-skills-copies` | `cmp` against `.claude/jy-skills/` | the hooks and scripts copied from Junyi-Agent/skills are unchanged; this repo's differences live in `.claude/review_gate.json` |
@@ -127,4 +127,5 @@ checks the version, commit and protocol they report, and creates the release wit
 archives, `SHA256SUMS` and generated notes. When `PROTOCOL_VERSION` changed since the
 previous tag, the notes start with the `task update host NAME` reminder. Running the workflow
 by hand (Actions → Release → Run workflow) is a dry run: everything but the release, with
-the build kept as an artifact.
+the build kept as an artifact. It checks the tag `v<version>` as if it were pushed now: the
+tag does not exist yet, the commit is on `main` and there is no release of it.
