@@ -262,7 +262,7 @@ def cmd_submit(args: Args) -> CmdResult:
             upload = path
 
         try:
-            ack = remote.call(["receive", "--submission-key", key], stdin_path=upload)
+            ack = remote.call(["create", "job", "--submission-key", key], stdin_path=upload)
         except (ConnError, KeyboardInterrupt) as e:
             msg = e.message if isinstance(e, ConnError) else "interrupted during upload"
             note(
@@ -376,7 +376,7 @@ def cmd_get_job(args: Args) -> CmdResult:
 
 
 def newest_jobs(remote: Remote, rargs: list[object], limit: int, timeout: float) -> JsonDict:
-    """`jobs` of one server with --limit, so it sends only its `limit` newest jobs. A server
+    """`get jobs` of one server with --limit, so it sends only its `limit` newest jobs. A server
     without the jobs_limit feature rejects --limit with a usage error (no JSON reply): it is
     asked again for all its jobs, and cmd_jobs cuts the list."""
     try:
@@ -389,7 +389,7 @@ def newest_jobs(remote: Remote, rargs: list[object], limit: int, timeout: float)
 
 def cmd_jobs(args: Args) -> CmdResult:
     limit = args.limit or DEFAULT_JOBS_LIMIT
-    rargs: list[object] = ["jobs"]
+    rargs: list[object] = ["get", "jobs"]
     if args.state:
         rargs += ["--state", args.state]
 
@@ -464,7 +464,7 @@ def locate(
     timeout: the limit of each status query (default query_timeout())."""
     if args.host:
         server = find_server(servers, args.host)
-        st = Remote(server).call(["status", args.jobid], timeout=timeout)
+        st = Remote(server).call(["get", "job", args.jobid], timeout=timeout)
         if not st.get("found"):
             raise TaskmgrError(
                 "not_found", "job %s not found on %s" % (args.jobid, args.host), 2, args.host
@@ -472,7 +472,7 @@ def locate(
         return server, st, True
 
     servers, skipped = query_targets(servers, None)
-    results, errors = query_all(servers, ["status", args.jobid], timeout)
+    results, errors = query_all(servers, ["get", "job", args.jobid], timeout)
     matches = [(s, results[s["name"]]) for s in servers if results.get(s["name"], {}).get("found")]
 
     if len(matches) > 1:
@@ -534,7 +534,7 @@ def wait_status(args: Args, servers: list[Server]) -> CmdResult:
             if server is None:
                 server, st, complete = locate(args, servers, limit)
             else:
-                st = Remote(server).call(["status", jobid], timeout=limit)
+                st = Remote(server).call(["get", "job", jobid], timeout=limit)
                 if not st.get("found"):
                     raise TaskmgrError(
                         "not_found",
@@ -649,7 +649,7 @@ def local_actor() -> str:
 
 def cmd_cancel(args: Args) -> CmdResult:
     server, st = job_server(args)
-    rargs: list[object] = ["cancel", args.jobid]
+    rargs: list[object] = ["cancel", "job", args.jobid]
     if "cancel_by" in reply_features(st):  # an older server has no --by
         rargs += ["--by", local_actor()]
     out = _strip(Remote(server).call(rargs))
@@ -658,11 +658,11 @@ def cmd_cancel(args: Args) -> CmdResult:
 
 
 def cmd_retry(args: Args) -> CmdResult:
-    return _host_call(args, ["retry", args.jobid])
+    return _host_call(args, ["retry", "job", args.jobid])
 
 
 def cmd_resolve(args: Args) -> CmdResult:
-    rargs: list[object] = ["resolve", args.jobid]
+    rargs: list[object] = ["resolve", "job", args.jobid]
     if args.as_:
         if args.confirm is None:
             raise TaskmgrError("bad_args", "--as stopped requires --confirm <jobid>")
@@ -678,7 +678,7 @@ def cmd_resolve(args: Args) -> CmdResult:
 
 def cmd_logs(args: Args) -> CmdResult:
     server, _ = job_server(args)
-    rargs: list[object] = ["logs", args.jobid, "--stream", args.stream]
+    rargs: list[object] = ["logs", "job", args.jobid, "--stream", args.stream]
     if args.follow:
         rargs.append("--follow")
     _ = sys.stdout.flush()
@@ -744,7 +744,7 @@ def cmd_fetch(args: Args) -> CmdResult:
     try:
         tar_path = os.path.join(staging, "stream.tar.gz")
         with open(tar_path, "wb") as f:
-            _ = remote.stream(["fetch", jobid], f)
+            _ = remote.stream(["fetch", "job", jobid], f)
 
         extracted = os.path.join(staging, "x")
         unsafe = package.safe_extract(tar_path, extracted, skip_unsafe=True)

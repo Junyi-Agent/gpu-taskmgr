@@ -235,7 +235,7 @@ class PackageTest(Env):
             self.assertFalse(self.get(out, "valid"))
             # The remote side refuses it independently of the local check.
             with open(path, "rb") as f:
-                rc, out, _ = self.remote("receive", stdin=f)
+                rc, out, _ = self.remote("create", "job", stdin=f)
             self.assertEqual(rc, 2, (extra, out))
             self.assertEqual(self.get(out, "error", "code"), "unsafe_package")
         self.assertEqual(os.listdir(os.path.join(self.root(), "queue")), [])
@@ -287,7 +287,7 @@ class PackageTest(Env):
         )
         self.assertEqual(self.task("validate", "package", path)[0], 1)
         with open(path, "rb") as f:
-            rc, out, _ = self.remote("receive", stdin=f)
+            rc, out, _ = self.remote("create", "job", stdin=f)
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "unsafe_package"))
 
     def test_validate_archive_reports_all_errors(self) -> None:

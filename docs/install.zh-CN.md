@@ -100,14 +100,18 @@ detail 是改动内容；不询问，也不做任何改动（不上传、不调�
 `task update host NAME [--pyz FILE] [--yes] [--plan] [--prune-old-code]` 对机器列表里已有的
 服务器执行同样的步骤，并保持它的条目不变：它不接受 ssh 选项（要改用 `task create host`），名字不在
 列表里时报 `unknown_host`，已禁用的服务器也能更新（更新后仍是禁用）。`task version` 或
-`task ping host` 显示某台服务器的代码版本不同，或命令报 `unsupported_feature` 时用它。
+`task ping host` 显示某台服务器的代码版本不同，或命令报 `unsupported_feature` 或 `protocol_mismatch` 时用它。
+
+协议 3 之前安装的服务器（`taskmgr-remote` 用 `jobs`、`serve` 这类单词子命令）在更新前对这个 CLI 的
+每条命令都应答 `protocol_mismatch`：每台服务器执行一次 `task update host NAME`。更新也会重写 unit，
+它的 `ExecStart` 现在以 `run daemon` 结尾；重写之前，新代码仍接受旧 unit 的 `serve`。
 
 | 步骤 | 检查 | 改动（每项都会询问） |
 | --- | --- | --- |
 | `ssh` | ssh 能连通（BatchMode）、Linux、`python3` >= 3.10、`systemctl --user` 可用、linger、已安装的代码版本、unit 文件、服务状态、`remote_root` 所在文件系统（NFS、CIFS、FUSE 等给出警告） | 无；检查失败则停止 |
 | `code` | 构建好的 `taskmgr-remote.pyz`（`--pyz`，默认位置见上文）存在，且 code version 与当前运行的 `task` 相同（否则这一步失败：用 `task build pyz` 重新构建）；再比较 `<remote_root>/taskmgr-remote.pyz` 内的代码版本和它 | 上传这个文件到 `<remote_root>/versions/<版本>.pyz.new-*`；`data` 步骤之后改名为 `<remote_root>/versions/<版本>.pyz`，并把符号链接 `<remote_root>/taskmgr-remote.pyz` 切换过去（一次 rename）。链接原来指向的压缩包保留。超过 10 分钟的上传文件 `*.new-*`（中断的运行留下的）作为这项改动的一部分，在确认后删除；服务器已是最新时只在 detail 中列出 |
 | `remote_root` | `remote_root` 和 `config.json` 是否存在 | `mkdir -p`，权限 0700（用户自己拥有的已有 `remote_root` 去掉组和其他用户的权限）；`config.json` 不存在时写入默认配置；已有的 `config.json` 永远不会被覆盖 |
-| `data` | `taskmgr-remote inspect`（只读）：新代码无法处理的作业目录（协议 1 的 `attempts/`、`job.json` 缺少当前字段） | 停止服务，然后把这些目录（以及对应的 `submission-keys/*.json`）移到 `<remote_root>/backups/<UTC 时间>/`；不删除任何东西。可能仍在运行的作业（running、stopping、unknown，或位于 `in-progress/`）永远不会被移动：这一步失败并列出它们 |
+| `data` | `taskmgr-remote describe store`（只读）：新代码无法处理的作业目录（协议 1 的 `attempts/`、`job.json` 缺少当前字段） | 停止服务，然后把这些目录（以及对应的 `submission-keys/*.json`）移到 `<remote_root>/backups/<UTC 时间>/`；不删除任何东西。可能仍在运行的作业（running、stopping、unknown，或位于 `in-progress/`）永远不会被移动：这一步失败并列出它们 |
 | `unit` | 比较 `~/.config/systemd/user/taskmgr-remote.service` 和生成的 unit（显示 diff） | 写入文件，执行 `systemctl --user daemon-reload` |
 | `service` | 是否 enabled、是否 active，以及正在运行的守护进程是否早于已安装的代码或 unit | `enable`；`start`；`restart`（正在运行的任务不受影响，`KillMode=process`）；之后等待守护进程拿到 `locks/daemon.lock`。代码有变化时，等守护进程运行新代码后，删除 `versions/` 中除当前版本、上一个版本和仍被运行中进程使用的压缩包以外的文件（运行中作业的 shim 从它启动时的压缩包导入） |
 | `linger` | `loginctl show-user` | `loginctl enable-linger <user>`；被拒绝时这一步失败，并给出管理员需要执行一次的命令，后续步骤继续执行 |
@@ -158,7 +162,7 @@ detail 是改动内容；不询问，也不做任何改动（不上传、不调�
 - 只有服务器账户能读 `remote_root`：作业包、`task.json` 的 `env`、日志和结果对服务器上的其他用户
   不可见。`taskmgr-remote` 创建的目录权限是 0700，文件是 0600（日志、上传文件、各种记录）；作业的
   `package/` 只保留属主的读和执行权限，复制出的 `workdir/` 是 0700 / 0600（可执行文件 0700）。除
-  `inspect` 和 `version` 之外，每条 `taskmgr-remote` 命令还会去掉用户自己拥有的已有 `remote_root`
+  `describe store` 和 `version` 之外，每条 `taskmgr-remote` 命令还会去掉用户自己拥有的已有 `remote_root`
   的组和其他用户权限，所以旧版本创建的目录也受保护。任务自己写的文件使用守护进程的 umask，位于这个
   目录树之内。
 - 对同一服务器用户的两次 `create host` 不会重叠：从 `ssh` 步骤结束到整次运行结束，服务器上有一个
@@ -245,9 +249,9 @@ shim 和任务。设置 `KillMode=process` 后，systemd 只向守护进程的�
 SIGTERM 后直接退出，不碰 shim，下次启动时执行重启恢复。我们没有选择为每个 shim 使用
 `systemd-run --user --scope`，原因是守护进程不需要访问 D-Bus，而且它保持为普通进程，在
 systemd 之外（tmux、nohup）也能运行：`nohup ~/.taskmgr-remote/taskmgr-remote.pyz
---root ~/.taskmgr-remote serve > /dev/null 2>&1 &`；停止时执行 `kill <pid>`（pid 记录在 `locks/daemon.lock` 中）。
+--root ~/.taskmgr-remote run daemon > /dev/null 2>&1 &`；停止时执行 `kill <pid>`（pid 记录在 `locks/daemon.lock` 中）。
 
-在同一个 root 上再启动一个 `serve` 会以退出码 2 结束（它拿不到 `locks/daemon.lock`）。
+在同一个 root 上再启动一个 `run daemon` 会以退出码 2 结束（它拿不到 `locks/daemon.lock`）。
 
 ## 远程 `config.json`
 

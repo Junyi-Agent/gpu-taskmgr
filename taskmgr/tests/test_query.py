@@ -10,7 +10,7 @@ import time
 from typing import cast
 from unittest import mock
 
-from taskmgr.common import DEFAULT_REMOTE_CONFIG, TaskmgrError, override
+from taskmgr.common import DEFAULT_REMOTE_CONFIG, PROTOCOL_VERSION, TaskmgrError, override
 from taskmgr.records import JsonDict, JsonValue, Server
 from taskmgr.store import Store, end_without_result, finalize_run
 from taskmgr.tests.helpers import FAST_CONFIG, REMOTE, TASK, Env
@@ -180,7 +180,7 @@ class QueryTest(Env):
             return [line.split(" ", 4)[-1] for line in f.read().splitlines()]
 
     def test_jobs_limit_is_pushed_to_the_servers(self) -> None:
-        """`get jobs -n N` asks each server only for its N newest jobs (`jobs --limit N`); a
+        """`get jobs -n N` asks each server only for its N newest jobs (`get jobs --limit N`); a
         server without the jobs_limit feature is asked again without --limit, and its list
         is cut here."""
         for name in ("s1", "s2"):
@@ -192,12 +192,12 @@ class QueryTest(Env):
         self.assertEqual(len(every), 7)
 
         # taskmgr-remote: the newest N, oldest first like the whole list.
-        rc, full, _ = self.remote("jobs")
-        rc, cut, _ = self.remote("jobs", "--limit", "2")
+        rc, full, _ = self.remote("get", "jobs")
+        rc, cut, _ = self.remote("get", "jobs", "--limit", "2")
         self.assertEqual(rc, 0)
         self.assertEqual(self.objs(cut, "jobs"), self.objs(full, "jobs")[-2:])
         self.assertIn("jobs_limit", self.strs(cut, "features"))
-        rc, out, _ = self.remote("jobs", "--limit", "0")
+        rc, out, _ = self.remote("get", "jobs", "--limit", "0")
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "bad_args"))
 
         # s1 takes --limit, s2 runs older code; the result is the same.
@@ -205,11 +205,11 @@ class QueryTest(Env):
         out = self.ok("get", "jobs", "-n", "3")
         self.assertEqual(self.objs(out, "jobs"), every[-3:])
         self.assertEqual((self.get(out, "complete"), self.get(out, "errors")), (True, []))
-        self.assertEqual(self.logged_calls(new_log), ["jobs --limit 3"])
-        self.assertEqual(self.logged_calls(old_log), ["jobs --limit 3", "jobs"])
+        self.assertEqual(self.logged_calls(new_log), ["get jobs --limit 3"])
+        self.assertEqual(self.logged_calls(old_log), ["get jobs --limit 3", "get jobs"])
         out = self.ok("get", "jobs", "--host", "s2", "-n", "1", "--state", "queued")
         self.assertEqual(self.objs(out, "jobs"), [j for j in every if j["host"] == "s2"][-1:])
-        self.assertEqual(self.logged_calls(old_log)[-1], "jobs --state queued")
+        self.assertEqual(self.logged_calls(old_log)[-1], "get jobs --state queued")
 
     def test_jobs_table(self) -> None:
         a = self.submit(self.make_pkg(task_id="AA-01"), host="s1")  # s1 has no daemon: stays queued
@@ -534,7 +534,7 @@ class QueryTest(Env):
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "no_run"))
         self.assertFalse(os.path.exists(os.path.join(outdir, "s1", q)))
         # The remote side refuses on its own, too.
-        rc, _, err = self.remote("fetch", q)
+        rc, _, err = self.remote("fetch", "job", q)
         self.assertEqual(rc, 2)
         self.assertIn("no_run", err)
 
@@ -584,7 +584,7 @@ class QueryTest(Env):
             mock.patch.dict(os.environ, {"TASKMGR_QUERY_TIMEOUT": "1"}),
             self.assertRaises(ConnError) as cm,
         ):
-            _ = Remote(self.server("s2")).call(["status", "0123456789abcdef"])
+            _ = Remote(self.server("s2")).call(["get", "job", "0123456789abcdef"])
         self.assertLess(time.monotonic() - start, 15)
         self.assertIn("no answer within 1s", cm.exception.message)
 
@@ -593,13 +593,13 @@ class QueryTest(Env):
 
         self.server("s2")["remote_command"] = "sh -c 'echo boom >&2; exit 3' sh"
         with self.assertRaises(ConnError) as cm:  # outcome unknown, like a lost connection
-            _ = Remote(self.server("s2")).call(["jobs"])
+            _ = Remote(self.server("s2")).call(["get", "jobs"])
         self.assertEqual(cm.exception.code, "remote_error")
         self.assertIn("boom", cm.exception.message)
         self.server("s3")["remote_command"] = (
-            'sh -c \'echo "{\\"error\\": 5, \\"protocol_version\\": 2}"\' sh'
+            'sh -c \'echo "{\\"error\\": 5, \\"protocol_version\\": %d}"\' sh' % PROTOCOL_VERSION
         )
-        results, errors = query_all(self.machines, ["jobs"])
+        results, errors = query_all(self.machines, ["get", "jobs"])
         self.assertEqual(list(results), ["s1"])
         self.assertEqual(
             [(e["host"], e["code"]) for e in errors],

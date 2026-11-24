@@ -62,8 +62,8 @@ up: "[[taskmgr/README.zh-CN]]"
 ```
 
 `cancel_request` 由第一次取消请求写入，同时设置 `cancel_requested`：`by` 是发出 `task cancel job` 的
-CLI 的 `user@hostname`（`via: "cli"`，通过 `taskmgr-remote cancel --by` 发送）；取消请求不带 `--by` 时
-（例如在服务器上直接运行 `taskmgr-remote cancel`，或较旧的 CLI），`by` 是服务器上的用户和主机名
+CLI 的 `user@hostname`（`via: "cli"`，通过 `taskmgr-remote cancel job --by` 发送）；取消请求不带 `--by` 时
+（例如在服务器上直接运行 `taskmgr-remote cancel job`），`by` 是服务器上的用户和主机名
 （`via: "remote"`）。之后的取消请求不会改变它。
 
 `auto_restarts` 是重跑链上的自动重跑次数（提交或手动重试的作业为 0，自动重跑的作业为前一个作业的

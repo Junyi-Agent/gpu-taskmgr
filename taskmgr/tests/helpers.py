@@ -459,7 +459,7 @@ class Env(unittest.TestCase):
         e.update(env or {})
         log = open(os.path.join(self.tmp, "daemon-%s.log" % name), "ab")
         p = subprocess.Popen(
-            [sys.executable, REMOTE, "--root", self.root(name), "serve"],
+            [sys.executable, REMOTE, "--root", self.root(name), "run", "daemon"],
             env=e,
             stdout=log,
             stderr=log,

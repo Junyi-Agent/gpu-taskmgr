@@ -788,7 +788,7 @@ class _FixedSize:
         return data + b"\0" * (n - len(data))
 
 
-# `fetch`: the last tar member, {"skipped": [{"path", "reason"}]} for the special files the
+# `fetch job`: the last tar member, {"skipped": [{"path", "reason"}]} for the special files the
 # server left out. Not a name in remote.FETCH_FILES, so it cannot clash with job files.
 FETCH_MANIFEST = "taskmgr-fetch.json"
 

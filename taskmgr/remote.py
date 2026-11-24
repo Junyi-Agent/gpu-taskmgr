@@ -1,9 +1,11 @@
-"""`taskmgr-remote`: remote subcommands, the scheduler daemon and the shim entry point.
+"""`taskmgr-remote`: remote commands, the scheduler daemon and the shim entry point.
 
 Invoked by the local CLI as
-    ssh <host> taskmgr-remote --root <remote_root> --protocol-version N <subcommand> ...
-Every subcommand except `logs`, `fetch`, `serve` and `shim` prints one JSON object.
-`inspect` is read-only and creates nothing, so `task create host` can run it on any root.
+    ssh <host> taskmgr-remote --root <remote_root> --protocol-version N <verb> <resource> ...
+Commands are `<verb> <resource> [name] [flags]`, like `task`'s
+(docs/adr/0004-kubectl-style-cli.md). Every command except `logs job`, `fetch job`,
+`run daemon` and `run shim` prints one JSON object. `describe store` is read-only and
+creates nothing, so `task create host` can run it on any root.
 """
 
 import argparse
@@ -71,7 +73,10 @@ class Args(argparse.Namespace):
     # default when the attribute is missing, and copies every subcommand value over.
     root: str = ""
     protocol_version: int | None = None
-    cmd: str = ""
+    verb: str = ""
+    resource: str = ""
+    cmd: str = ""  # "<verb> <resource>" (or "version"), set by the command's parser
+    output: str = "json"
     submission_key: str | None = None
     state: str | None = None
     limit: int | None = None
@@ -109,7 +114,7 @@ def emit(obj: Mapping[str, object], code: int = 0) -> int:
 
 
 # ---------------------------------------------------------------------------
-# receive (Section 5.2)
+# create job (Section 5.2)
 
 
 def cmd_receive(store: Store, args: Args) -> int:
@@ -566,7 +571,7 @@ def cmd_logs(store: Store, args: Args) -> int:
         time.sleep(0.5)
 
 
-# What `fetch` downloads from a job directory (not package/, package.tar.gz, shim.lock).
+# What `fetch job` downloads from a job directory (not package/, package.tar.gz, shim.lock).
 FETCH_FILES = ("job.json", "runner.json", "stdout.log", "stderr.log", "shim.log", "workdir")
 
 
@@ -589,9 +594,9 @@ def cmd_fetch(store: Store, args: Args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# inspect (read-only; used by `task create host`, desc-2 D18)
+# describe store (read-only; used by `task create host`, desc-2 D18)
 
-# Keys every job.json of the current layout has (protocol 2, desc-2 D16).
+# Keys every job.json of the current layout has (since protocol 2, desc-2 D16).
 JOB_REQUIRED_KEYS: tuple[str, ...] = tuple(sorted(Job.__required_keys__))
 # job.json keys that only the protocol-1 layout (attempts) wrote.
 PROTOCOL1_JOB_KEYS = ("attempts", "current_attempt", "retries")
@@ -695,13 +700,59 @@ def cmd_inspect(store: Store, _args: Args) -> int:
 # ---------------------------------------------------------------------------
 
 
+# (verb, its help, [(resource, help, replies with JSON and takes -o)]); the command is
+# "<verb> <resource>" (docs/adr/0004-kubectl-style-cli.md).
+VERBS: tuple[tuple[str, str, tuple[tuple[str, str, bool], ...]], ...] = (
+    (
+        "describe",
+        "read-only details",
+        (("store", "read-only: job counts and incompatible job directories", True),),
+    ),
+    (
+        "create",
+        "create a job",
+        (("job", "read a package (tar.gz) on stdin and queue it as a job", True),),
+    ),
+    (
+        "get",
+        "list the jobs or show one",
+        (
+            ("jobs", "list the jobs, oldest first", True),
+            ("job", "one job, with its run, progress and result", True),
+        ),
+    ),
+    (
+        "cancel",
+        "cancel a job",
+        (("job", "cancel a job (queued: at once; running: stop it)", True),),
+    ),
+    ("retry", "run a job again", (("job", "queue a finished job again as a new job", True),)),
+    ("resolve", "settle a job", (("job", "settle a job in the unknown state", True),)),
+    ("logs", "print a job's log", (("job", "print a job's log (raw text; no -o)", False),)),
+    (
+        "fetch",
+        "download a job's directory",
+        (("job", "write a job's directory as tar.gz on stdout (no -o)", False),),
+    ),
+    (
+        "run",
+        "run a server process in the foreground",
+        (
+            ("daemon", "run the scheduler daemon (the systemd service runs this; no -o)", False),
+            ("shim", "internal: supervise one job's run (started by the daemon; no -o)", False),
+        ),
+    ),
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The server side of `task`: run by the CLI over ssh with fixed arguments, by systemd
-    (serve) and by the daemon (shim); an operator runs `version` or `serve` by hand."""
+    (`run daemon`) and by the daemon (`run shim`); an operator runs `version` or `run daemon`
+    by hand. Commands are `<verb> <resource> [name] [flags]` like `task`'s."""
     p = argparse.ArgumentParser(
         prog="taskmgr-remote",
         description="Server side of taskmgr: one JSON object per call on stdout (except "
-        + "logs, fetch, serve and shim).",
+        + "logs, fetch and run, which write raw output).",
     )
     _ = p.add_argument("--root", required=True, help="remote storage root (from the machine list)")
     _ = p.add_argument(
@@ -711,92 +762,163 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="the client's protocol version; a different one is refused (protocol_mismatch)",
     )
-    sub = p.add_subparsers(dest="cmd", required=True, metavar="<subcommand>")
-    jobid_help = "the job's id (16 hex digits)"
+    verbs = p.add_subparsers(dest="verb", required=True, metavar="<command>")
 
-    _ = sub.add_parser("version", help="installed code version, features, user and hostname")
-    _ = sub.add_parser("inspect", help="read-only: job counts and incompatible job directories")
-    r = sub.add_parser("receive", help="read a package (tar.gz) on stdin and queue it as a job")
-    _ = r.add_argument(
+    out = argparse.ArgumentParser(add_help=False)
+    _ = out.add_argument(
+        "-o",
+        "--output",
+        choices=("json",),
+        default="json",
+        help="output format: json, one object on stdout (the only one; default)",
+    )
+
+    v = verbs.add_parser(
+        "version", help="installed code version, features, user and hostname", parents=[out]
+    )
+    v.set_defaults(cmd="version")
+
+    cmds: dict[str, argparse.ArgumentParser] = {}
+    for verb, verb_help, resources in VERBS:
+        vp = verbs.add_parser(verb, help=verb_help)
+        rs = vp.add_subparsers(
+            dest="resource",
+            required=True,
+            metavar="<resource>",
+            parser_class=argparse.ArgumentParser,
+        )
+        for resource, text, json_out in resources:
+            cmd = "%s %s" % (verb, resource)
+            cmds[cmd] = rs.add_parser(resource, help=text, parents=[out] if json_out else [])
+            cmds[cmd].set_defaults(cmd=cmd)
+
+    jobid_help = "the job's id (16 hex digits)"
+    for cmd in ("get job", "cancel job", "retry job", "resolve job", "logs job", "fetch job"):
+        _ = cmds[cmd].add_argument("jobid", help=jobid_help)
+    _ = cmds["create job"].add_argument(
         "--submission-key",
         metavar="KEY",
         help="idempotency key: a key seen before returns its job (default: a new key)",
     )
-    j = sub.add_parser("jobs", help="list the jobs, oldest first")
-    _ = j.add_argument("--state", help="only jobs in this state")
-    _ = j.add_argument(
+    _ = cmds["get jobs"].add_argument("--state", help="only jobs in this state")
+    _ = cmds["get jobs"].add_argument(
         "--limit", type=int, metavar="N", help="only the N most recently submitted jobs"
     )
-    s = sub.add_parser("status", help="one job, with its run, progress and result")
-    _ = s.add_argument("jobid", help=jobid_help)
-    s = sub.add_parser("cancel", help="cancel a job (queued: at once; running: stop it)")
-    _ = s.add_argument("jobid", help=jobid_help)
-    _ = s.add_argument("--by", help="user@hostname of the client asking for the cancel")
-    s = sub.add_parser("retry", help="queue a finished job again as a new job")
-    _ = s.add_argument("jobid", help=jobid_help)
-    s = sub.add_parser("resolve", help="settle a job in the unknown state")
-    _ = s.add_argument("jobid", help=jobid_help)
-    _ = s.add_argument(
+    _ = cmds["cancel job"].add_argument(
+        "--by", help="user@hostname of the client asking for the cancel"
+    )
+    _ = cmds["resolve job"].add_argument(
         "--as",
         dest="as_",
         metavar="STATE",
         help="stopped: declare that the job's processes are gone (needs --confirm)",
     )
-    _ = s.add_argument("--confirm", metavar="JOBID", help="the jobid again, to confirm --as")
-    lg = sub.add_parser("logs", help="print a job's log (raw text)")
-    _ = lg.add_argument("jobid", help=jobid_help)
-    _ = lg.add_argument(
+    _ = cmds["resolve job"].add_argument(
+        "--confirm", metavar="JOBID", help="the jobid again, to confirm --as"
+    )
+    _ = cmds["logs job"].add_argument(
         "--stream",
         choices=("stdout", "stderr", "shim"),
         default="stdout",
         help="which log (default stdout)",
     )
-    _ = lg.add_argument("--follow", action="store_true", help="keep printing until the job ends")
-    fe = sub.add_parser("fetch", help="write a job's directory as tar.gz on stdout")
-    _ = fe.add_argument("jobid", help=jobid_help)
-    _ = sub.add_parser("serve", help="run the scheduler daemon (the systemd service runs this)")
-    sh = sub.add_parser("shim", help="internal: supervise one job's run (started by the daemon)")
-    _ = sh.add_argument("jobid", help=jobid_help)
-    _ = sh.add_argument(
+    _ = cmds["logs job"].add_argument(
+        "--follow", action="store_true", help="keep printing until the job ends"
+    )
+    _ = cmds["run shim"].add_argument("jobid", help=jobid_help)
+    _ = cmds["run shim"].add_argument(
         "--lock-fd", type=int, required=True, help="inherited fd of the job's lock file"
     )
     return p
 
 
 COMMANDS: dict[str, Callable[[Store, Args], int]] = {
-    "receive": cmd_receive,
-    "jobs": cmd_jobs,
-    "status": cmd_status,
-    "cancel": cmd_cancel,
-    "retry": cmd_retry,
-    "resolve": cmd_resolve,
-    "logs": cmd_logs,
-    "fetch": cmd_fetch,
+    "create job": cmd_receive,
+    "get jobs": cmd_jobs,
+    "get job": cmd_status,
+    "cancel job": cmd_cancel,
+    "retry job": cmd_retry,
+    "resolve job": cmd_resolve,
+    "logs job": cmd_logs,
+    "fetch job": cmd_fetch,
 }
+
+# Units written by protocol-2 code start the daemon as `taskmgr-remote --root R serve`.
+# `task update host` rewrites the unit right after it installs this code; until then (or if
+# the rewrite is declined) a restart of such a unit still has to start the daemon. Delete
+# together with hostlegacy once no server has a protocol-2 unit.
+LEGACY_ARGV = {"serve": ["run", "daemon"]}
+GLOBAL_OPTS = ("--root", "--protocol-version")
+
+
+def legacy_argv(argv: list[str]) -> list[str]:
+    """argv with an old command replaced (LEGACY_ARGV), but only when it is the whole
+    command: the one word besides the global options. A `serve` given as an option value
+    (`create job --submission-key serve`) is left alone."""
+    words: list[int] = []
+    i = 0
+    while i < len(argv):
+        if argv[i] in GLOBAL_OPTS:
+            i += 2
+            continue
+        if not argv[i].startswith(tuple(o + "=" for o in GLOBAL_OPTS)):
+            words.append(i)
+        i += 1
+    if len(words) == 1 and argv[words[0]] in LEGACY_ARGV:
+        at = words[0]
+        return argv[:at] + LEGACY_ARGV[argv[at]] + argv[at + 1 :]
+    return argv
+
+
+def requested_protocol(argv: list[str]) -> int | None:
+    """The --protocol-version of argv, read without the subcommand parser (which rejects
+    the commands of another protocol before the version could be compared)."""
+    pre = argparse.ArgumentParser(add_help=False)
+    _ = pre.add_argument("--protocol-version", default=None)
+    known, _rest = pre.parse_known_args(argv)
+    try:
+        return int(cast(str, known.protocol_version))
+    except (TypeError, ValueError):
+        return None
+
+
+def protocol_mismatch(client: int) -> TaskmgrError:
+    return TaskmgrError(
+        "protocol_mismatch",
+        "client protocol %s is incompatible with remote protocol %s"
+        % (client, remote_protocol_version()),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv, namespace=Args())
-    stream_cmd = args.cmd in ("logs", "fetch")
+    argv = legacy_argv(list(sys.argv[1:] if argv is None else argv))
+
+    try:
+        args = build_parser().parse_args(argv, namespace=Args())
+    except SystemExit as e:
+        # A client of another protocol may send commands this code does not have: answer
+        # with protocol_mismatch (JSON, like every other error) instead of only the usage.
+        client = requested_protocol(argv)
+        if e.code == 2 and client is not None and client != remote_protocol_version():
+            return emit(protocol_mismatch(client).to_json(), 2)
+        raise
+
+    stream_cmd = args.cmd in ("logs job", "fetch job")
     try:
         store = Store(args.root)
-        if args.cmd == "shim":
+        if args.cmd == "run shim":
             from . import shim
 
             return shim.main(store, args.jobid, args.lock_fd)
-        if args.cmd == "serve":
+        if args.cmd == "run daemon":
             from .daemon import Daemon
 
             return Daemon(store).run()
         if args.protocol_version is not None and args.protocol_version != remote_protocol_version():
-            raise TaskmgrError(
-                "protocol_mismatch",
-                "client protocol %s is incompatible with remote protocol %s"
-                % (args.protocol_version, remote_protocol_version()),
-            )
+            raise protocol_mismatch(args.protocol_version)
         if args.cmd == "version":
             return emit(version_info())
-        if args.cmd == "inspect":  # read-only: no ensure_layout
+        if args.cmd == "describe store":  # read-only: no ensure_layout
             return cmd_inspect(store, args)
         store.ensure_layout()
         return COMMANDS[args.cmd](store, args)

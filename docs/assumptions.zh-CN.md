@@ -29,9 +29,12 @@ up: "[[taskmgr/README.zh-CN]]"
    的时间，所以不应答的服务器不会延长等待。超时后输出最后一次得到的状态对象（没有任何查询成功时为空），
    并附带 `error`（`wait_timeout`），退出码 2。如果截止时刻之后返回的查询结果是终态（或
    `unknown`），以该状态为准，退出码也按该状态。Ctrl-C 输出 `interrupted` 错误，退出码 2。
-8. 协议兼容指 `protocol_version` 整数相等（当前为 2；1 是基于 attempt 的旧协议）。不改变协议 2
+8. 协议兼容指 `protocol_version` 整数相等（当前为 3，`taskmgr-remote` 的命令和 `task` 一样是
+   `<动词> <资源>`，见 [[docs/adr/0004-kubectl-style-cli]]；2 是 `jobs`、`status` 这类单词子命令；1 是
+   基于 attempt 的旧协议）。协议不同的服务器应答 `protocol_mismatch`；协议 2 的服务器不认识新命令、
+   报用法错误，客户端同样报 `protocol_mismatch`。错误信息给出 `task update host NAME`。不改变协议 3
    的新增功能通过应答中的 `features` 键声明（[[docs/task-package.zh-CN]]，服务器功能）；客户端在依赖某个功能之前先检查它。对
-   `taskmgr-remote` 子命令，ssh 退出码 255 视为连接失败。`task create host` 运行的 shell 脚本自己也
+   `taskmgr-remote` 命令，ssh 退出码 255 视为连接失败。`task create host` 运行的 shell 脚本自己也
    可能以 255 退出，所以只有 stderr 看起来像 ssh 的错误（`ssh:`、`connection refused`、
    `permission denied (` 等）时，255 才算连接失败。ssh 以 `BatchMode=yes` 运行；机器条目没有设置时，
    还会加上 `ConnectTimeout=10`、`ServerAliveInterval=15` 和 `ServerAliveCountMax=3`（服务器不再
@@ -51,7 +54,7 @@ up: "[[taskmgr/README.zh-CN]]"
     成员 `taskmgr-fetch.json`；客户端把这份清单合并进 `skipped`，不保留这个文件。下载 `job.json`、`runner.json`、三个日志和 `workdir/`，不含 `package/`、
     `package.tar.gz` 和 `shim.lock`。
 14. `max_cpu_jobs` 统计处于 running、stopping 和 unknown 的仅 CPU 作业。
-15. jobid 唯一性针对该服务器上所有作业目录检查。`receive` 在解包和计算哈希后、解析 GPU 和校验
+15. jobid 唯一性针对该服务器上所有作业目录检查。`create job` 在解包和计算哈希后、解析 GPU 和校验
     之前，就对已知的 submission key 作出响应（去重或冲突），因此即使机器上的 GPU 发生了变化，
     ACK 丢失后的重试也能成功。损坏的或不是普通文件的 `result.json` 保留为 `result.json.corrupt`
     （该名字被占用时用 `.corrupt.N`）。

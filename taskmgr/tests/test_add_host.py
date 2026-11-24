@@ -22,9 +22,10 @@ import time
 import unittest
 import zipfile
 from typing import cast
+from unittest import mock
 
-from taskmgr import hostlegacy, hostsetup, pyz
-from taskmgr.common import DEFAULT_REMOTE_CONFIG, VERSION_FILE, override
+from taskmgr import daemon, hostlegacy, hostsetup, pyz, remote
+from taskmgr.common import DEFAULT_REMOTE_CONFIG, PROTOCOL_VERSION, VERSION_FILE, override
 from taskmgr.records import JsonDict, JsonValue, Server
 from taskmgr.tests.helpers import REMOTE, REPO, TASK, Env, kill_quiet, pid_alive
 from taskmgr.transport import Remote
@@ -410,7 +411,7 @@ class AddHostTest(Env):
         self.assertIn("KillMode=process\n", unit)
         self.assertRegex(
             unit,
-            r"\nExecStart=\S*python\S* %s --root %s serve\n"
+            r"\nExecStart=\S*python\S* %s --root %s run daemon\n"
             % (re.escape(self.rcode()), re.escape(self.rroot())),
         )
         with open(os.path.join(self.rroot(), "config.json")) as f:
@@ -1151,7 +1152,7 @@ class HostCmdsTest(Env):
         self.assertEqual([self.text(r, "host") for r in rows], ["s1", "s2"])
         for r in rows:
             self.assertTrue(r["reachable"])
-            self.assertEqual(r["protocol_version"], 2)
+            self.assertEqual(r["protocol_version"], PROTOCOL_VERSION)
             self.assertIsInstance(r["ms"], int)
             self.assertTrue(r["user"] and r["hostname"])
         self.assertTrue(self.get(obj, "complete"))
@@ -1198,7 +1199,7 @@ class HostCmdsTest(Env):
 
 
 class AddHostUnitTest(unittest.TestCase):
-    """Pure functions; no subprocess except the read-only `inspect`."""
+    """Pure functions; no subprocess except the read-only `describe store`."""
 
     def test_unit_matches_the_shipped_template(self) -> None:
         def directives(text: str) -> list[str]:
@@ -1211,9 +1212,32 @@ class AddHostUnitTest(unittest.TestCase):
         unit = hostsetup.unit_text("/usr/bin/python3", "/scratch/t root/%x")
         self.assertIn(
             '\nExecStart=/usr/bin/python3 "/scratch/t root/%%x/taskmgr-remote.pyz" '
-            + '--root "/scratch/t root/%%x" serve\n',
+            + '--root "/scratch/t root/%%x" run daemon\n',
             unit,
         )
+
+    def test_a_protocol_2_unit_still_starts_the_daemon(self) -> None:
+        """Units written by protocol-2 code run `taskmgr-remote --root R serve`; until
+        `task update host` rewrites the unit, a restart must still start the daemon."""
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.object(daemon.Daemon, "run", return_value=7) as run,
+        ):
+            self.assertEqual(remote.main(["--root", root, "serve"]), 7)
+            self.assertEqual(remote.main(["--root=%s" % root, "serve"]), 7)
+            self.assertEqual(remote.main(["--root", root, "run", "daemon"]), 7)
+        self.assertEqual(run.call_count, 3)
+
+    def test_serve_as_an_option_value_is_not_rewritten(self) -> None:
+        """Only a bare `serve` command is the old unit's; `serve` as a value stays a value."""
+        r = ["--root", "/r", "--protocol-version", "3"]
+        self.assertEqual(remote.legacy_argv(r + ["serve"]), r + ["run", "daemon"])
+        for argv in (
+            r + ["create", "job", "--submission-key", "serve"],
+            r + ["get", "jobs", "--state", "serve"],
+            ["--root", "serve"],
+        ):
+            self.assertEqual(remote.legacy_argv(argv), argv)
 
     def test_config_example_matches_the_defaults(self) -> None:
         with open(os.path.join(REPO, "taskmgr", "deploy", "config.example.json")) as f:
@@ -1249,11 +1273,20 @@ class AddHostUnitTest(unittest.TestCase):
         self.assertEqual(argv[-3:], ["u@h", "--", "sh -c 'echo '\"'\"'a b'\"'\"''"])
         self.assertIn("StrictHostKeyChecking=accept-new", argv)
 
-    def test_inspect_is_read_only(self) -> None:
+    def test_describe_store_is_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = os.path.join(tmp, "missing-root")
             p = subprocess.run(
-                [sys.executable, REMOTE, "--root", root, "--protocol-version", "2", "inspect"],
+                [
+                    sys.executable,
+                    REMOTE,
+                    "--root",
+                    root,
+                    "--protocol-version",
+                    str(PROTOCOL_VERSION),
+                    "describe",
+                    "store",
+                ],
                 stdout=subprocess.PIPE,
                 timeout=60,
             )

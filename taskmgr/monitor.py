@@ -1,7 +1,7 @@
 """Stop procedure, restart-recovery assessment and daemon takeover tracking.
 
 Shared by the shim (normal supervision), the daemon (startup recovery, dead-shim
-detection, takeover) and `taskmgr-remote resolve`.
+detection, takeover) and `taskmgr-remote resolve job`.
 """
 
 import math
@@ -367,7 +367,7 @@ def assess(store: Store, jobid: str, resolve: bool = False) -> Assessment:
 
     if runner.get("final"):
         # An interrupted run is ended by step 5; an unknown job (resolve) is not re-run,
-        # nor is a run an operator marked stopped (`resolve --as stopped` failed half-way).
+        # nor is a run an operator marked stopped (`resolve job --as stopped` failed half-way).
         j = (
             interrupt_run(store, jobid, runner.get("interrupted_reason", ""), rerun=not resolve)
             if runner.get("status") == "interrupted"

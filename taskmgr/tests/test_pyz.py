@@ -169,7 +169,7 @@ class PyzTest(Env):
         pkg = self.make_pkg()
         log = open(os.path.join(self.tmp, "daemon-s1.log"), "ab")
         d = subprocess.Popen(
-            [sys.executable, self.remote_pyz, "--root", self.root(), "serve"],
+            [sys.executable, self.remote_pyz, "--root", self.root(), "run", "daemon"],
             cwd=self.tmp,
             env=self.env,
             stdout=log,

@@ -16,7 +16,7 @@ class FeaturesTest(Env):
         rc, out, _ = self.remote("version")
         self.assertEqual(rc, 0)
         self.assertEqual(self.strs(out, "features"), sorted(FEATURES))
-        rc, out, _ = self.remote("jobs")
+        rc, out, _ = self.remote("get", "jobs")
         self.assertEqual(self.strs(out, "features"), sorted(FEATURES))
         ping = self.ok("ping", "host", "s1")
         self.assertEqual(self.strs(ping, "hosts", 0, "features"), sorted(FEATURES))
@@ -70,7 +70,7 @@ class FeaturesTest(Env):
                 tar = os.path.join(self.tmp, "%s.tar.gz" % name)
                 package.pack_dir(pkg, tar)
                 with open(tar, "rb") as f:
-                    rc, out, _ = self.remote("receive", stdin=f)
+                    rc, out, _ = self.remote("create", "job", stdin=f)
                 self.assertEqual(rc, 2)
                 self.assertEqual(self.get(out, "error", "code"), "invalid_package")
                 codes = [self.get(d, "code") for d in self.arr(out, "error", "details")]

@@ -29,7 +29,7 @@ Description=taskmgr remote scheduler daemon (user service)
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 %h/.taskmgr-remote/taskmgr-remote.pyz --root %h/.taskmgr-remote serve
+ExecStart=/usr/bin/python3 %h/.taskmgr-remote/taskmgr-remote.pyz --root %h/.taskmgr-remote run daemon
 KillMode=process
 KillSignal=SIGTERM
 TimeoutStopSec=30

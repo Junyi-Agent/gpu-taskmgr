@@ -129,7 +129,7 @@ class CancelRecordTest(Env):
         gate = os.path.join(self.tmp, "gate")
         j = self.submit(self.make_pkg(script="while [ ! -f %s ]; do sleep 0.05; done" % gate))
         _ = self.wait_state(j, "running")
-        rc, out, _ = self.remote("cancel", j)  # on the server, without --by
+        rc, out, _ = self.remote("cancel", "job", j)  # on the server, without --by
         self.assertEqual(rc, 0)
         req = self.obj(out, "cancel_request")
         self.assertEqual((req["by"], req["via"]), (self.me(), "remote"))

@@ -61,7 +61,7 @@ sleep：它提交空操作的探测任务并等每个都成功；调度出探测
 | `TASKMGR_SHIM_EXECUTABLE` | 用于 exec shim 的解释器（模拟 shim 启动失败） |
 | `TASKMGR_TEST_SHIM_CRASH=<point>` | shim 在 `before_identity`、`before_exec`、`after_exit_recorded`、`before_finalize` 处退出（`test_recovery.py` 对每个点检查之后的恢复） |
 | `TASKMGR_TEST_IGNORE_KILL=1` | 停止流程不发送任何信号（模拟停止无法确认） |
-| `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `receive` 在持有上传锁时休眠 |
+| `TASKMGR_TEST_RECEIVE_PAUSE=<s>` | `create job` 在持有上传锁时休眠 |
 | 机器条目 `"local": {"home": "/dir"}` | `transport: local` 以 `HOME=/dir` 运行所有命令（包括 `task create host` 的脚本） |
 | `TASKMGR_TEST_LOCAL_HOME=/dir` | `task create host` 新建的条目使用 `transport: local` 和 `"local": {"home": "/dir"}` |
 | `TASKMGR_TEST_INTERACTIVE=1` | stdin 不是终端时，`task create host` 也从 stdin 读取回答 |
