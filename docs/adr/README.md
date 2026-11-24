@@ -28,3 +28,4 @@ tags: [taskmgr, adr, process]
 | [0002](0002-pre-push-review-gate.md) | push 前 3 个 Claude 审查，≥2 同意才放行 | 采纳 |
 | [0003](0003-branch-protection.md) | `main` 开分支保护：必须走 PR，CI 通过才能合并 | 采纳 |
 | [0004](0004-kubectl-style-cli.md) | `task` 和 `taskmgr-remote` 都用 kubectl 式命令结构，协议升到 3 | 采纳 |
+| [0005](0005-release-on-tag.md) | push `v<版本>` tag 时由 GitHub Actions 发布 release | 采纳 |

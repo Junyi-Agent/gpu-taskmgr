@@ -105,3 +105,24 @@ version differs from the running code, so rebuild after every code change. Code 
 open package files with `open()`: use `common.copy_package_tree` and
 `common.read_code_file`, which work in a checkout and in a `.pyz`. Keep every import of
 `taskmgr` modules at module level or at process start (see `pyz.MAIN_PY`).
+
+## Releases
+
+A pushed `v<version>` tag publishes a GitHub release through `.github/workflows/release.yml`
+(`docs/adr/0005-release-on-tag.md`):
+
+```sh
+# 1. in a PR: set `version` in pyproject.toml, merge it
+# 2. tag the merged commit of main and push the tag
+git fetch origin
+git tag -a v0.2.0 -m v0.2.0 origin/main
+git push origin v0.2.0
+```
+
+The workflow runs the CI checks, then checks that the tag is `v` + the `pyproject.toml`
+version, is on `main` and has no release yet. It builds `task.pyz` and `taskmgr-remote.pyz`,
+checks the version, commit and protocol they report, and creates the release with both
+archives, `SHA256SUMS` and generated notes. When `PROTOCOL_VERSION` changed since the
+previous tag, the notes start with the `task update host NAME` reminder. Running the workflow
+by hand (Actions → Release → Run workflow) is a dry run: everything but the release, with
+the build kept as an artifact.
