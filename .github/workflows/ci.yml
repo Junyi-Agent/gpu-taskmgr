@@ -2,13 +2,15 @@
 #   pre-commit  the hooks of .pre-commit-config.yaml on every file (uv lock, ruff check,
 #               ruff format, basedpyright), with the tool versions of uv.lock
 #   tests       the whole unittest suite on Linux with Python 3.10 (the oldest supported)
-# Making these jobs required for merging is a branch protection setting of the repository.
+# Making these jobs required for merging is a branch protection setting of the repository
+# (docs/adr/0003). release.yml calls this workflow before it publishes a release.
 name: CI
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:  # release.yml runs the same checks before it builds a release
 
 permissions:
   contents: read

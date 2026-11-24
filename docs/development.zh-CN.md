@@ -97,3 +97,22 @@ bin/task build pyz    # dist/task.pyz、dist/taskmgr-remote.pyz
 当前运行的代码不同时失败，所以每次改代码后都要重新构建。从压缩包运行的代码不能用
 `open()` 打开包内文件：请用 `common.copy_package_tree` 和 `common.read_code_file`，它们在 checkout
 和 `.pyz` 中都能用。`taskmgr` 模块的 import 一律放在模块顶层或进程启动时（见 `pyz.MAIN_PY`）。
+
+## 发版
+
+push `v<版本>` tag 时，`.github/workflows/release.yml` 发布 GitHub release
+（`docs/adr/0005-release-on-tag.md`）：
+
+```sh
+# 1. 在 PR 里改 pyproject.toml 的 version，合并
+# 2. 对 main 上合并后的 commit 打 tag 并 push
+git fetch origin
+git tag -a v0.2.0 -m v0.2.0 origin/main
+git push origin v0.2.0
+```
+
+workflow 先跑 CI 检查，再检查 tag 等于 `v` + `pyproject.toml` 的版本、在 `main` 上、还没有同名
+release。然后构建 `task.pyz` 和 `taskmgr-remote.pyz`，核对它们报告的版本、commit 和协议，创建 release，
+附上两个压缩包、`SHA256SUMS` 和自动生成的说明。`PROTOCOL_VERSION` 和上一个 tag 不同时，说明开头写明
+要跑 `task update host NAME`。手动运行这个 workflow（Actions → Release → Run workflow）是演练：除了
+发 release 都做，构建结果存为 artifact。

@@ -1,0 +1,128 @@
+# Publishes a GitHub release when a version tag is pushed (docs/adr/0005):
+#   checks   the CI workflow (pre-commit hooks, unit tests) on the tagged commit
+#   release  the tag is v<version of pyproject.toml> on a commit of main; builds task.pyz and
+#            taskmgr-remote.pyz, checks what they report, and creates the release with them,
+#            SHA256SUMS and generated notes (a protocol change since the last tag comes first)
+# Run by hand (workflow_dispatch) it does everything except creating the release, and keeps
+# the built files as a workflow artifact: a dry run of the next release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: build and publish
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write  # gh release create
+    env:
+      DRY_RUN: ${{ github.event_name != 'push' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # main and the earlier tags, for the checks and notes below
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.10"
+
+      - name: The tag matches pyproject.toml and is on main
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' pyproject.toml | head -n 1)
+          [ -n "$version" ] || { echo "::error::no version in pyproject.toml"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [ "$DRY_RUN" = true ]; then
+            echo "dry run of v$version from $GITHUB_SHA"
+            exit 0
+          fi
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject.toml version $version (expected v$version)"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME points to $GITHUB_SHA, which is not on main"
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "::error::release $GITHUB_REF_NAME already exists"
+            exit 1
+          fi
+
+      - name: Build the zipapps
+        run: |
+          uv run --no-project python bin/task build pyz --dest release --plain
+          cd release
+          sha256sum task.pyz taskmgr-remote.pyz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: The zipapps report this version, commit and protocol
+        run: |
+          protocol=$(sed -n 's/^PROTOCOL_VERSION = \([0-9][0-9]*\)$/\1/p' taskmgr/common.py)
+          echo "PROTOCOL=$protocol" >> "$GITHUB_ENV"
+          export TASKMGR_HOME=$(mktemp -d)  # no servers: only the local part of `task version`
+          echo '{"servers": []}' > "$TASKMGR_HOME/machines.json"
+          uv run --no-project python release/task.pyz version -o json > local.json
+          root=$(mktemp -d)
+          uv run --no-project python release/taskmgr-remote.pyz --root "$root" version > remote.json
+          uv run --no-project python - "$VERSION" "${GITHUB_SHA:0:12}" "$protocol" <<'PY'
+          import json, sys
+          version, commit, protocol = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          local = json.load(open("local.json"))
+          local = local.get("local", local)
+          remote = json.load(open("remote.json"))
+          want = {"version": version, "commit": commit, "protocol_version": protocol, "dirty": None}
+          got = {k: local.get(k) for k in want}
+          problems = [] if got == want else ["task.pyz reports %s, expected %s" % (got, want)]
+          if remote.get("protocol_version") != protocol:
+              problems.append("taskmgr-remote.pyz reports protocol %s" % remote.get("protocol_version"))
+          if remote.get("code_version") != local.get("code_version"):
+              problems.append("the two archives have different code versions")
+          for p in problems:
+              print("::error::" + p)
+          sys.exit(1 if problems else 0)
+          PY
+
+      - name: Release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_SHA^" 2>/dev/null || true)
+          : > notes.md
+          if [ -n "$prev" ]; then
+            old=$(git show "$prev:taskmgr/common.py" | sed -n 's/^PROTOCOL_VERSION = \([0-9][0-9]*\)$/\1/p')
+            if [ "$old" != "$PROTOCOL" ]; then
+              printf '%s\n\n' "**Protocol $old → $PROTOCOL since $prev: run \`task update host NAME\` on every server after upgrading \`task\`.**" >> notes.md
+            fi
+          fi
+          printf '%s\n\n' "Assets: \`task.pyz\` (local CLI) and \`taskmgr-remote.pyz\` (server side, installed by \`task create host\` / \`task update host\`), built from ${GITHUB_SHA:0:12}; protocol $PROTOCOL; checksums in \`SHA256SUMS\`." >> notes.md
+          cat notes.md
+
+      - name: Keep the build (dry run)
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: |
+            release/
+            notes.md
+
+      - name: Create the release
+        if: env.DRY_RUN != 'true'
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md --generate-notes \
+            release/task.pyz release/taskmgr-remote.pyz release/SHA256SUMS
