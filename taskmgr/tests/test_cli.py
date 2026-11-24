@@ -1,6 +1,6 @@
 """The kubectl-style command line (verbs, singular and plural resources, the old forms
 rejected), text output (the default) and -o json, the grouped help, jobid lookup without
---host, whoami and version."""
+--host, get user and get version."""
 
 import argparse
 import getpass
@@ -68,9 +68,9 @@ class CliTest(Env):
                 "disable host",
                 "ping host",
                 "build pyz",
-                "whoami",
-                "update",
-                "version",
+                "get user",
+                "get version",
+                "update cli",
             ],
         )
         self.assertRegex(out, r"(?m)^  -o, --output text\|json +output format")
@@ -96,11 +96,7 @@ class CliTest(Env):
             if cmd:
                 order = ["resources", "arguments", "options"]
                 self.assertEqual(titles, [t for t in order if t in titles], cmd)
-                self.assertEqual(
-                    "resources" in titles,
-                    len(cmd) == 1 and cmd[0] not in ("version", "whoami"),
-                    cmd,
-                )
+                self.assertEqual("resources" in titles, len(cmd) == 1, cmd)
             for sec in blocks[2:-1]:
                 for e in sec.split("\n")[1:]:
                     # "  name  help" (or a wrapped continuation line): every entry has help
@@ -123,7 +119,7 @@ class CliTest(Env):
             (["get"], "required: <resource>", "`task get -h` lists its resources"),
             (
                 ["get", "pods"],
-                "unknown resource 'pods' for `task get` (choose from job, jobs, host, hosts)",
+                "unknown resource 'pods' for `task get` (choose from job, jobs, host, hosts, user, version)",
                 "`task get -h` lists its resources",
             ),
             (
@@ -173,6 +169,8 @@ class CliTest(Env):
             (["init", "AA-01"], "`task init` is now `task create package TASK_ID`"),
             (["pack", "src/"], "`task pack` is now `task build package SRC...`"),
             (["host", "list"], "`task host` is now `task <create|get|update|delete|enable"),
+            (["whoami"], "`task whoami` is now `task get user`"),
+            (["version"], "`task version` is now `task get version`"),
         ]
         for argv, error in cases:
             rc, out, err = self.plain(*argv)
@@ -223,8 +221,8 @@ class CliTest(Env):
         rc, _, err = self.plain("validate", "package", pkg, "-o", "yaml")
         self.assertEqual(rc, 2)
         self.assertIn("not 'yaml'", err)
-        # The same JSON object and text for commands without a resource and host commands.
-        version = self.ok("version")
+        # The same JSON object and text for the server reports and host commands.
+        version = self.ok("get", "version")
         self.assertEqual(
             sorted(self.obj(version)), ["complete", "errors", "hosts", "local", "skipped"]
         )
@@ -380,8 +378,8 @@ class CliTest(Env):
         )
         self.assertEqual((rc, out), (0, ANSI.sub("", self.colored("validate", "package", pkg)[1])))
 
-    def test_whoami_and_version(self) -> None:
-        rc, out, _ = self.plain("whoami")
+    def test_get_user_and_version(self) -> None:
+        rc, out, _ = self.plain("get", "user")
         self.assertEqual(rc, 0)
         lines = out.splitlines()
         self.assertEqual(lines[0].split(), ["HOST", "USER", "HOSTNAME"])
@@ -389,7 +387,7 @@ class CliTest(Env):
             [line.split() for line in lines[1:]],
             [[s, getpass.getuser(), socket.gethostname()] for s in ("s1", "s2")],
         )
-        obj = self.ok("version")
+        obj = self.ok("get", "version")
         local = self.text(obj, "local", "code_version")
         self.assertRegex(local, r"^\S+$")
         # The test servers run from the checkout, not an installed tree: no code version.
@@ -397,18 +395,22 @@ class CliTest(Env):
             [(h["host"], h["code_version"], h["up_to_date"]) for h in self.objs(obj, "hosts")],
             [("s1", None, False), ("s2", None, False)],
         )
-        rc, out, _ = self.plain("version")
+        rc, out, _ = self.plain("get", "version")
         self.assertEqual(rc, 0)
         self.assertRegex(out, r"(?m)^local: +taskmgr \S+$")
         self.assertRegex(out, r"(?m)^s1 +none +differs$")
         self.assertIn("task update host NAME", out)
 
     def test_an_empty_machine_list_is_not_a_failure(self) -> None:
-        """get jobs, whoami and version share one rule: exit 2 only when servers were asked
-        and none answered."""
+        """get jobs, get user and get version share one rule: exit 2 only when servers were
+        asked and none answered."""
         with open(os.path.join(self.home, "machines.json"), "w") as f:
             json.dump({"servers": []}, f)
-        for cmd, key in ((["get", "jobs"], "jobs"), (["whoami"], "hosts"), (["version"], "hosts")):
+        for cmd, key in (
+            (["get", "jobs"], "jobs"),
+            (["get", "user"], "hosts"),
+            (["get", "version"], "hosts"),
+        ):
             out = self.ok(*cmd)
             self.assertEqual((self.get(out, key), self.get(out, "complete")), ([], True), cmd)
 

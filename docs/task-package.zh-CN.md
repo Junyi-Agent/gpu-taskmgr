@@ -105,7 +105,7 @@ up: "[[taskmgr/README.zh-CN]]"
 在上传前向服务器查询功能（`taskmgr-remote version`），服务器缺少其中任一个就拒绝：错误
 `unsupported_feature`（退出码 2，不上传任何东西），例如 `server gpu1 runs code 3f9a1c0e7b2d without
 precompile support, needed by this package; run `task update host gpu1` to update it`；`details` 里有
-`missing` 和 `server_features`。`task ping host -o json` 和 `task version -o json` 显示每台服务器的
+`missing` 和 `server_features`。`task ping host -o json` 和 `task get version -o json` 显示每台服务器的
 `features`。
 
 - 不打进归档、也不计入内容哈希的路径：任一路径分量名为 `__pycache__`、`.git` 或 `.DS_Store`，

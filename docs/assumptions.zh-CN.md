@@ -59,7 +59,7 @@ up: "[[taskmgr/README.zh-CN]]"
     ACK 丢失后的重试也能成功。损坏的或不是普通文件的 `result.json` 保留为 `result.json.corrupt`
     （该名字被占用时用 `.corrupt.N`）。
 16. `_taskmgr.host` 是远程机器的主机名。
-17. 额外的配置键 `scheduler_poll_seconds`；额外的命令 `task get hosts`、`task update|delete|enable|disable|ping host`、`task whoami`、`task update`、`task version`。
+17. 额外的配置键 `scheduler_poll_seconds`；额外的命令 `task get hosts`、`task update|delete|enable|disable|ping host`、`task get user`、`task get version`、`task update cli`。
 18. 重试或自动重跑的作业有自己的 `submitted_at`（创建时间），所以 `task get jobs` 把它列为单独一行，
     排在被重跑的作业之后。它沿用旧作业已解析的 GPU UUID（或沿用 `gpu_request` 并重新挑选），不重新校验。queued 作业如果已经有带执行身份的
     `runner.json`（不应出现），它变为 `unknown`，`error.kind = "record_incomplete"`，不派发。
@@ -70,7 +70,7 @@ up: "[[taskmgr/README.zh-CN]]"
     保留为 `runner.prev-N.json`。`unknown` 作业即使是退出 75 也不会重新排队。`CUDA_VISIBLE_DEVICES`
     未设置时（在 taskmgr 之外运行），`claim_gpu()` 和为空时一样什么也不做。
 20. 禁用的服务器（按用户决定，偏离 desc-1 §14）：不带 `--host` 时，`task get jobs` 和按 jobid 查找
-    （以及 `whoami`、`version`）只询问已启用的服务器，所以宕机并用 `task disable host` 禁用的服务器
+    （以及 `get user`、`get version`）只询问已启用的服务器，所以宕机并用 `task disable host` 禁用的服务器
     不会再让命令等它超时。输出会列出被跳过的服务器；`--host` 仍然可以访问禁用的服务器。desc-1 原本
     也查询禁用的服务器，因为上面可能还有作业。
 21. 命令行（按用户决定，偏离 desc-1）：采用 kubectl 风格的 `task <动词> <资源> [参数]`

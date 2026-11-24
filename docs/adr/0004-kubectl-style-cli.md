@@ -20,6 +20,16 @@
 - 合并后每台 GPU 服务器都要跑一次 `task update host NAME`，之前不能提交或查询。
 - `review_gate.py` 的设计审查方向会检查新命令是否符合这条。
 
+## 更新（2026-11-24）
+
+repo 审查（REVIEW.md M1–M4）发现 `task` 还有三个没有资源的命令。用户决定改成带资源的形式，旧写法报错并给出新写法，不保留别名：
+
+- `task whoami` → `task get user`
+- `task version` → `task get version`
+- `task update` → `task update cli`
+
+`taskmgr-remote version` 由用户批准豁免，见 [[docs/adr/0006-exempt-remote-version]]。
+
 ## 验证
 
 （只由人类填写。状态改成「已验证」时填：验证人、日期、测了什么、结果。）

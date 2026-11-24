@@ -30,8 +30,8 @@ up: "[[taskmgr/README.zh-CN]]"
 | `enable` / `disable` | | | 重新使用一台服务器 / 暂时不向它提交、也不查询它 |
 | `ping` | | | 检查服务器是否有响应 |
 
-不属于这些资源的命令：`task build pyz`（zipapp，见 [[docs/install.zh-CN]]）、`task whoami`、
-`task update`（更新本地 CLI）和 `task version`。
+其他命令：`task build pyz`（zipapp，见 [[docs/install.zh-CN]]）、`task get user`、`task get version`
+和 `task update cli`（更新本地 CLI）。
 
 ```sh
 task -h                                # 按分组列出命令（jobs / packages / hosts / others）
@@ -61,9 +61,9 @@ task enable host NAME                  # 重新使用一台服务器
 task disable host NAME                 # 暂时不向这台服务器提交、也不查询它
 task ping host [NAME]                  # 检查服务器是否有响应
 task build pyz [--dest DIR]            # task.pyz 和 taskmgr-remote.pyz（默认写到 checkout 里的 dist/）
-task whoami                            # 每台服务器上 taskmgr 以哪个用户、哪台主机运行
-task update                            # 更新本地 CLI（git pull --ff-only）
-task version                           # 本地版本和每台服务器上的代码版本
+task get user                          # 每台服务器上 taskmgr 以哪个用户、哪台主机运行
+task get version                       # 本地版本和每台服务器上的代码版本
+task update cli                        # 更新本地 CLI（git pull --ff-only）
 ```
 
 所有命令都接受 `-o text|json`，放在命令之后（`task get jobs -o json`；默认 `text`）；`--plain` 可以
@@ -95,8 +95,11 @@ task version                           # 本地版本和每台服务器上的代
 | `python3 -m taskmgr.pyz -o dist` | `task build pyz`（换目录用 `--dest DIR`） |
 | `--detail` | `-o json`（默认是 `-o text`） |
 | `-o PATH` / `--output PATH` | `--dest PATH` |
+| `task whoami` | `task get user` |
+| `task version` | `task get version` |
+| `task update` | `task update cli` |
 
-`task whoami`、`task update` 和 `task version` 不变。JSON 对象与以前 `--detail` 输出的相同。
+JSON 对象与以前 `--detail` 输出的相同。
 
 ## 输出
 
@@ -109,8 +112,8 @@ stdout 和 stderr 都是终端时，所有输出都带颜色：stdout 上的文�
 
 | 形式 | 用于 | 颜色 |
 | --- | --- | --- |
-| 表格 | 列表（`get jobs`、`retry job`、`create job`、`get hosts`、`ping host`、`whoami`、`version`） | 表头粗体；STATE 和状态列按取值着色 |
-| `key: value` 行 | 单个对象（`get job`、`wait job`、`resolve job`、`version` 的本地部分） | key 粗体；状态按取值着色 |
+| 表格 | 列表（`get jobs`、`retry job`、`create job`、`get hosts`、`ping host`、`get user`、`get version`） | 表头粗体；STATE 和状态列按取值着色 |
+| `key: value` 行 | 单个对象（`get job`、`wait job`、`resolve job`、`get version` 的本地部分） | key 粗体；状态按取值着色 |
 | `label: message` | 一行结果和提示 | label 绿色（完成）、黄色（提示、警告）、红色（失败）、青色（`hint`） |
 | JSON（`-o json`） | 完整对象 | key 蓝色，字符串绿色，数字青色，`true`/`false`/`null` 品红 |
 
@@ -165,7 +168,7 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 - 连不上的服务器在 stderr 报告（`warning: H unreachable, ...`），被跳过的已禁用服务器也一样；
   加 `-o json` 时同样输出。至少一台服务器有响应、或机器列表为空时退出码为 0，否则为 2。
 - 宕机的服务器不会卡住命令：ssh 连接 10 秒后放弃（`ConnectTimeout=10`；服务器在机器列表中自己的
-  `-o ConnectTimeout=N` 优先）；向所有服务器发出的查询（`get jobs`、按 jobid 查找、`whoami`、`version`）
+  `-o ConnectTimeout=N` 优先）；向所有服务器发出的查询（`get jobs`、按 jobid 查找、`get user`、`get version`）
   对每台服务器最多等 30 秒（用 `TASKMGR_QUERY_TIMEOUT=<秒数>` 修改）。对单台服务器的调用
   （`get job`、`cancel job`、`retry job`、`resolve job`、`wait job` 的每次轮询）也受这个上限约束；
   上传（`create job`）、`logs job` 和 `fetch job` 不限时。
@@ -307,13 +310,13 @@ jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key �
 用 `task create host`）：上传与本 CLI 代码版本相同的 `taskmgr-remote.pyz`（先用 `task build pyz`
 构建），检查作业目录，用新代码重启服务（正在运行的作业继续运行），再检查它是否有响应。它和
 `task create host` 一样接受 `--pyz FILE`、`--yes`、`--plan` 和 `--prune-old-code`，已禁用的服务器
-也能更新，名字不在列表里时以 `unknown_host` 失败。在 `task update` 或修改代码之后、`task version`
-显示 `differs` 时，或 `task create job` 报 `unsupported_feature` 时使用它。
+也能更新，名字不在列表里时以 `unknown_host` 失败。在 `task update cli` 或修改代码之后、
+`task get version` 显示 `differs` 时，或 `task create job` 报 `unsupported_feature` 时使用它。
 
 - `task get hosts [NAME]` 列出机器列表（或其中一项）：名字、是否启用、ssh 目标、`remote_root`。
 - `task delete host NAME` 从机器列表删除一台服务器，不改动服务器本身。
 - `task disable host NAME` 把一台服务器标为禁用，例如它宕机时：轮询提交跳过它，向所有服务器发出的
-  查询（`get jobs`、按 jobid 查找、`whoami`、`version`）也不再问它，因此不用等它超时。输出会列出被跳过的
+  查询（`get jobs`、按 jobid 查找、`get user`、`get version`）也不再问它，因此不用等它超时。输出会列出被跳过的
   服务器（stderr 上 `skipped: disabled, not queried: NAME`；JSON 中的 `"skipped"`）。不带 NAME 的
   `task ping host` 也跳过它。`--host NAME` 和 `task ping host NAME` 仍然可以访问它，服务器本身不做
   任何改动。`task enable host NAME` 重新启用。两者都只修改 `machines.json` 中的 `enabled`。
@@ -321,17 +324,17 @@ jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key �
   往返耗时和已安装的代码版本；有服务器没响应时退出码为 2。禁用的服务器列为
   `skipped: disabled, not pinged: NAME`（JSON 中的 `"skipped"`）。
 
-## whoami、update、version
+## get user、get version、update cli
 
-- `task whoami [--host H]` 询问每台服务器，taskmgr 在上面以哪个用户、哪个主机名运行。代码较旧的
+- `task get user [--host H]` 询问每台服务器，taskmgr 在上面以哪个用户、哪个主机名运行。代码较旧的
   服务器显示 `-`，并提示
   ``- means the server runs older code; `task update host NAME` updates it``。
-- `task update` 在 CLI 所在的本地仓库执行 `git pull --ff-only`。服务器上的代码不变，直到
+- `task update cli` 在 CLI 所在的本地仓库执行 `git pull --ff-only`。服务器上的代码不变，直到
   `task update host NAME` 安装新版本；拉取到新提交时，输出最后一行是
-  ``hint: servers keep their code until `task update host NAME` (see `task version`)``。
+  ``hint: servers keep their code until `task update host NAME` (see `task get version`)``。
   从 `task.pyz` 运行时报 `not_a_checkout`（退出码 2），需要在 checkout 里重新构建压缩包
   （`task build pyz`，见 [[docs/install.zh-CN]]）。
-- `task version [--host H]` 输出本地版本（pyproject 版本、git commit、代码版本、协议版本；从
+- `task get version [--host H]` 输出本地版本（pyproject 版本、git commit、代码版本、协议版本；从
   `task.pyz` 运行时，版本和 commit 是构建压缩包时的值，`dirty` 为 null）和每台
   服务器上已安装的代码版本，并标出 `up to date` 或 `differs`。代码版本就是 `task create host` 和
   `task update host` 安装的哈希，`differs` 表示 `task update host NAME` 会上传新代码，此时输出最后

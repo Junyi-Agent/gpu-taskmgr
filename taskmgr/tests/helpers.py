@@ -643,15 +643,10 @@ class Env(unittest.TestCase):
 
 
 def command_words(argv: list[str]) -> int:
-    """How many words of a `task` command line name the command: the verb, and the resource
-    unless the verb stands alone (`version`, `whoami`, `update` without `host`)."""
-    words = 2
-    if argv[:1] in (["version"], ["whoami"]):
-        words = 1
-    if argv[:1] == ["update"] and argv[1:2] not in (["host"], ["hosts"]):
-        words = 1
+    """How many words of a `task` command line name the command: the verb and the resource
+    (fewer when the line is cut short or an option comes first)."""
     n = 0
-    while n < min(words, len(argv)) and not argv[n].startswith("-"):
+    while n < min(2, len(argv)) and not argv[n].startswith("-"):
         n += 1
     return n
 

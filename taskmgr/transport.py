@@ -402,7 +402,7 @@ def require_features(reply: JsonDict, needed: Sequence[str], host: str, what: st
 def update_hint(remote_version: object, host: str | None) -> str:
     """What to run when the server's protocol differs from this CLI's."""
     if isinstance(remote_version, int) and remote_version > PROTOCOL_VERSION:
-        return "; update this CLI (`task update`)"
+        return "; update this CLI (`task update cli`)"
     return "; run `task update host %s` to update the server" % (host or "NAME")
 
 

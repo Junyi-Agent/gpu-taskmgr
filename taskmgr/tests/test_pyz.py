@@ -119,11 +119,11 @@ class PyzTest(Env):
     def test_local_version_matches_the_checkout(self) -> None:
         """task.pyz reports the version a checkout has, the version `task.pyz create host`
         requires of the taskmgr-remote.pyz it uploads."""
-        p = self.run_pyz(self.task_pyz, "version", "-o", "json", "--plain")
+        p = self.run_pyz(self.task_pyz, "get", "version", "-o", "json", "--plain")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn('"code_version": "%s"' % self.local_code_version(), p.stdout)
         self.assertIn('"up_to_date": true', p.stdout)
-        p = self.run_pyz(self.task_pyz, "update", "--plain")
+        p = self.run_pyz(self.task_pyz, "update", "cli", "--plain")
         self.assertEqual(p.returncode, 2)
         self.assertIn("not_a_checkout", p.stderr)
 

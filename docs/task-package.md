@@ -115,7 +115,7 @@ asks the server for its features (`taskmgr-remote version`) before the upload wh
 package needs any, and refuses a server that lacks one: error `unsupported_feature` (exit
 2, nothing uploaded), e.g. `server gpu1 runs code 3f9a1c0e7b2d without precompile support,
 needed by this package; run `task update host gpu1` to update it`; `details` has `missing` and
-`server_features`. `task ping host -o json` and `task version -o json` show each server's
+`server_features`. `task ping host -o json` and `task get version -o json` show each server's
 `features`.
 
 - Left out of the packed archive and of the content hash: every path with a component

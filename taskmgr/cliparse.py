@@ -3,8 +3,8 @@ job and package commands, and argparse with the help layout of `task -h` (usage 
 description, bold sections, colored usage errors).
 
 The command line is kubectl-style, `task <verb> <resource> [args]` (`task get jobs`,
-`task create host NAME`), plus the verbs that stand alone (`task version`). Every resource
-has a singular and a plural name and either works (`task get job ID`, `task get jobs`).
+`task create host NAME`, `task get version`). Every resource has a singular and a plural
+name and either works (`task get job ID`, `task get jobs`).
 """
 
 # Args declares the attributes argparse sets; their defaults come from the parser.
@@ -30,7 +30,7 @@ class Args(argparse.Namespace):
 
     home: str | None
     verb: str
-    resource: str | None = None  # None: a verb without a resource (version, whoami, update)
+    resource: str
     output: str = "text"  # -o; the parsers default to SUPPRESS, so this is the default
     plain: bool = False  # --plain defaults to SUPPRESS (see build_parser)
     # job commands
@@ -81,7 +81,7 @@ Setup = Callable[[argparse.ArgumentParser], str | None]
 
 class Command(NamedTuple):
     verb: str
-    resource: str | None  # singular name; None: the verb alone
+    resource: str  # singular name
     shown: str  # what `task -h` shows after the verb, e.g. "jobs [ID]"
     group: str  # heading in `task -h`
     help: str
@@ -91,7 +91,7 @@ class Command(NamedTuple):
 
     @property
     def name(self) -> str:
-        return self.verb if self.resource is None else "%s %s" % (self.verb, self.resource)
+        return "%s %s" % (self.verb, self.resource)
 
 
 # Plural names, accepted like the singular ones.
@@ -105,6 +105,8 @@ RENAMED = {
     "init": "`task create package TASK_ID`",
     "pack": "`task build package SRC...`",
     "host": "`task <create|get|update|delete|enable|disable|ping> host NAME`",
+    "whoami": "`task get user`",
+    "version": "`task get version`",
 }
 
 HelpEntry = tuple[str, str]  # (name column, help text)
@@ -381,25 +383,13 @@ def build_parser(commands: Sequence[Command], verbs: Mapping[str, str]) -> argpa
     sub = p.add_subparsers(dest="verb", required=True, metavar="<command>", parser_class=Parser)
 
     for verb, verb_help in verbs.items():
-        mine = [c for c in commands if c.verb == verb]
-        alone = next((c for c in mine if c.resource is None), None)
         vp = sub.add_parser(verb, help=verb_help, description=verb_help)
-
-        if alone is not None:  # the verb also runs without a resource (version, update)
-            vp.description = alone.setup(vp) or alone.help
-            _add_output(vp, alone.text is None)
-            vp.set_defaults(resource=None)
         _add_plain(vp)
 
-        with_resource = [c for c in mine if c.resource is not None]
-        if not with_resource:
-            continue
-
         rs = vp.add_subparsers(
-            dest="resource", required=alone is None, metavar="<resource>", parser_class=Parser
+            dest="resource", required=True, metavar="<resource>", parser_class=Parser
         )
-        for c in with_resource:
-            assert c.resource is not None
+        for c in (c for c in commands if c.verb == verb):
             plural = PLURALS.get(c.resource)
             rp = rs.add_parser(c.resource, aliases=[plural] if plural else [], help=c.help)
             rp.description = c.setup(rp) or c.help

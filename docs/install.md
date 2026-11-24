@@ -46,7 +46,7 @@ else. From a checkout it writes them to `dist/` in the checkout; run from a `.py
 ```sh
 bin/task build pyz                                # writes dist/task.pyz and dist/taskmgr-remote.pyz
 ln -s "$PWD/dist/task.pyz" ~/.local/bin/task      # the local CLI as one file
-task version                                      # commit and code_version come from the archive
+task get version                                  # commit and code_version come from the archive
 ```
 
 Each archive holds the package (`taskmgr/` without `tests/` and `__pycache__`), plus `pyproject.toml`, `.taskmgr-commit` and `.taskmgr-code-version` at the
@@ -55,10 +55,10 @@ top. The code version is a hash of the files in `taskmgr/` that change what runs
 `template/`. Docs, README files and the deploy examples do not change it, so editing them
 does not make servers restart. It is the same for the checkout and
 for every archive built from it, so `task create host` run from `task.pyz` installs the same code as a checkout
-would, and `task version` shows the servers as `up_to_date`.
+would, and `task get version` shows the servers as `up_to_date`.
 `taskmgr-remote.pyz` runs the daemon and the shim (the daemon puts the archive on the
 shim's `PYTHONPATH`); `taskmgr-remote.pyz version` reports the archive path as `code_dir`.
-`task update` refuses inside a `.pyz` (`not_a_checkout`): build a new one from a checkout
+`task update cli` refuses inside a `.pyz` (`not_a_checkout`): build a new one from a checkout
 (`task build pyz`) instead.
 `task create host` never builds anything: it uploads a `taskmgr-remote.pyz` built by this
 command (see below). By default it takes `dist/taskmgr-remote.pyz` in the checkout, or,
@@ -114,7 +114,7 @@ code), rebuild with `task build pyz` and run `task update host NAME` (or
 for a server already in the machine list and keeps its entry as it is: it takes no ssh
 options (change those with `task create host`), fails with `unknown_host` for a name not in
 the list, and also updates a disabled server (which stays disabled). Use it when
-`task version` or `task ping host` shows a server on another code version, or when a
+`task get version` or `task ping host` shows a server on another code version, or when a
 command fails with `unsupported_feature` or `protocol_mismatch`.
 
 Servers installed before protocol 3 (one-word `taskmgr-remote` subcommands such as `jobs` and
@@ -214,7 +214,7 @@ task delete host gpu1         # asks [y/N]; --yes skips the question
 
 `task disable host NAME` / `task enable host NAME` set `enabled` in the entry (rewritten
 atomically under `machines.lock`, like `task delete host`). A disabled server is skipped by
-round-robin submits and by the queries over every server (`get jobs`, the jobid lookup, `whoami`, `version`);
+round-robin submits and by the queries over every server (`get jobs`, the jobid lookup, `get user`, `get version`);
 `--host NAME` still reaches it. See [[docs/usage]].
 
 `task ping host` runs `taskmgr-remote version` on each enabled server in parallel and prints one row
