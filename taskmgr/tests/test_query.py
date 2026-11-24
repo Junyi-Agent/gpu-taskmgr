@@ -233,9 +233,11 @@ class QueryTest(Env):
         starts = [lines[0].index(c) for c in ("TASK_ID", "SUBMITTED", "HOST", "STATE")]
         for line in lines[1:]:
             self.assertTrue(all(line[p - 2 : p] == "  " and line[p] != " " for p in starts))
-        # Color: on by default (on a pipe too), off with --plain or NO_COLOR, and the
+        # Color: off on a pipe, on with FORCE_COLOR, off with --plain or NO_COLOR, and the
         # escape codes do not change the layout.
         self.assertNotIn("\x1b[", out)
+        rc, piped, _ = self.task("get", "jobs", text=True, color=True, env={"FORCE_COLOR": ""})
+        self.assertEqual((rc, piped), (0, out))  # no --plain, but stdout is a pipe
         rc, colored, _ = self.task("get", "jobs", text=True, color=True)
         assert isinstance(colored, str)
         self.assertEqual(rc, 0)

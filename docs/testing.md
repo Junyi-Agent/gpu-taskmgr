@@ -36,8 +36,9 @@ or naming the test's temp directory, gives read-only package copies `u+w` back, 
 the directory. A `SIGKILL`ed runner cannot clean up; in Docker the container goes away with
 it.
 
-The test environment drops every inherited `TASKMGR_*` variable and `NO_COLOR`, then sets
-what the tests need, so settings from your shell cannot change the results.
+The test environment drops every inherited `TASKMGR_*` variable, `NO_COLOR` and
+`FORCE_COLOR`, then sets what the tests need (`color=True` sets `FORCE_COLOR=1`, since
+stdout and stderr are pipes), so settings from your shell cannot change the results.
 
 To assert that a job is "still queued" after the scheduler had its chance, use
 `Env.wait_scheduler_passes(n)` instead of a fixed sleep: it submits no-op probe jobs and

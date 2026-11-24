@@ -1,8 +1,9 @@
 """Colored output of the local CLI (`task`); `-o json` prints the JSON object instead.
 
 Every command returns (JSON object, exit code); a renderer turns that object into text.
-Everything is colored (stdout and stderr, text and JSON, on a terminal or not) unless
-`--plain` is given or NO_COLOR is set.
+Everything (stdout and stderr, text and JSON) is colored when both stdout and stderr are
+terminals, or FORCE_COLOR is set; `--plain` and NO_COLOR turn colors off in every case. So a
+pipe or a redirect to a file gets no escape codes.
 
 Text output never prints a terminal control character it did not write itself: strings in
 command results, error messages and stderr notes come from servers and other users' process
@@ -81,10 +82,21 @@ def clean_result(out: Mapping[str, object]) -> dict[str, object]:
 
 
 def set_color(plain: bool) -> bool:
-    """Colors on unless --plain or NO_COLOR; returns the setting."""
+    """Colors on when stdout and stderr are terminals or FORCE_COLOR is set (non-empty), off
+    with --plain or NO_COLOR; returns the setting."""
     global _color
-    _color = not plain and "NO_COLOR" not in os.environ
+    wanted = not plain and "NO_COLOR" not in os.environ
+    forced = bool(os.environ.get("FORCE_COLOR"))
+    _color = wanted and (forced or (_isatty(sys.stdout) and _isatty(sys.stderr)))
     return _color
+
+
+def _isatty(stream: object) -> bool:
+    isatty = getattr(stream, "isatty", None)
+    try:
+        return bool(isatty()) if callable(isatty) else False
+    except (OSError, ValueError):  # closed stream
+        return False
 
 
 def color_on() -> bool:

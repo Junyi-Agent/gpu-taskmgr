@@ -104,10 +104,11 @@ as with `--detail` before.
 
 ## Output
 
-All output is colored: text and `-o json` JSON on stdout, errors and progress on stderr,
-`-h` help and usage errors, on a terminal or not. `--plain` (anywhere on the command line)
-or the environment variable `NO_COLOR` turns colors off. Scripts that read the output use
-`-o json --plain`.
+All output is colored when stdout and stderr are both terminals: text and `-o json` JSON on
+stdout, errors and progress on stderr, `-h` help and usage errors. A pipe or a redirect to a
+file gets no colors, so scripts can read `-o json` as is. `FORCE_COLOR=1` turns colors on
+anyway; `--plain` (anywhere on the command line) or the environment variable `NO_COLOR` turns
+them off in every case.
 
 Every command prints in the same shapes:
 

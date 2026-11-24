@@ -43,6 +43,10 @@ ignore = [
     "SIM115",        # files handed to Popen / kept open on purpose
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# The PreToolUse guards catch every exception on purpose: a crashing guard denies (fail closed).
+".claude/hooks/{git,adr}_guard.py" = ["BLE001"]
+
 [tool.ruff.lint.pycodestyle]
 max-line-length = 150  # E501 threshold; ruff format still wraps at line-length = 100
 
