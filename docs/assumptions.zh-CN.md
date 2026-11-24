@@ -74,7 +74,7 @@ up: "[[taskmgr/README.zh-CN]]"
     不会再让命令等它超时。输出会列出被跳过的服务器；`--host` 仍然可以访问禁用的服务器。desc-1 原本
     也查询禁用的服务器，因为上面可能还有作业。
 21. 命令行（按用户决定，偏离 desc-1）：采用 kubectl 风格的 `task <动词> <资源> [参数]`
-    （`task create job PKG`、`task get jobs`、`task create host NAME`），每种资源也可以用复数名，
+    （`task create job PKG`、`task get jobs`、`task create host NAME`），job、host、package 也可以用复数名，
     输出格式用 `-o text|json`。使用 desc-1 的命令名是用法错误，错误信息给出新写法；
     [[docs/usage.zh-CN]]（命令变更）列出了对应关系。
 

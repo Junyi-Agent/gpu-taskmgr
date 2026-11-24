@@ -4,7 +4,8 @@
 #            taskmgr-remote.pyz, checks what they report, and creates the release with them,
 #            SHA256SUMS and generated notes (a protocol change since the last tag comes first)
 # Run by hand (workflow_dispatch) it does everything except creating the release, and keeps
-# the built files as a workflow artifact: a dry run of the next release.
+# the built files as a workflow artifact: a dry run of the next release. The dry run checks
+# the tag v<version> as if it were pushed now: not there yet, on main, no release of it.
 name: Release
 
 on:
@@ -47,20 +48,24 @@ jobs:
           version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' pyproject.toml | head -n 1)
           [ -n "$version" ] || { echo "::error::no version in pyproject.toml"; exit 1; }
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          tag="v$version"
           if [ "$DRY_RUN" = true ]; then
-            echo "dry run of v$version from $GITHUB_SHA"
-            exit 0
-          fi
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match pyproject.toml version $version (expected v$version)"
+            # No tag yet: check the one that pushing v<version> would create.
+            echo "dry run of $tag from $GITHUB_SHA"
+            if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+              echo "::error::tag $tag already exists: bump the version in pyproject.toml first"
+              exit 1
+            fi
+          elif [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject.toml version $version (expected $tag)"
             exit 1
           fi
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::tag $GITHUB_REF_NAME points to $GITHUB_SHA, which is not on main"
+            echo "::error::$tag would point to $GITHUB_SHA, which is not on main"
             exit 1
           fi
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            echo "::error::release $GITHUB_REF_NAME already exists"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "::error::release $tag already exists"
             exit 1
           fi
 

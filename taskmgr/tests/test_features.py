@@ -66,7 +66,7 @@ class FeaturesTest(Env):
                 errs = [e for e in self.objs(out, "errors") if e["code"] == "unknown_key"]
                 self.assertEqual(len(errs), 1, out)
                 self.assertIn(repr(key), self.text(errs[0], "message"))
-                # The server checks it too (an archive sent straight to `receive`).
+                # The server checks it too (an archive sent straight to `create job`).
                 tar = os.path.join(self.tmp, "%s.tar.gz" % name)
                 package.pack_dir(pkg, tar)
                 with open(tar, "rb") as f:

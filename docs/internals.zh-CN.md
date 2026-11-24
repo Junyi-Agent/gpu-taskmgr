@@ -143,10 +143,11 @@ unknown --resolve --as stopped--> failed(operator_marked_stopped) | cancelled
 到期（没有因 GPU 忙退出而被推迟）时才读取，读到的结果最多复用 5 秒，除非此后派发了带 GPU 的作业，或者
 占用 GPU 的 taskmgr 作业集合变了。一次读取的两次 nvidia-smi 调用共用 10 秒超时（超时后杀掉进程，不等它
 退出）；失败后（同一条消息只记一次日志）这些作业继续等待，`pending_reason` 为 `cannot choose GPUs: ...`，
-30 秒后再读，所以 nvidia-smi 挂住时其他作业每 30 秒最多被耽误 10 秒。没有合格的 GPU 时，
+30 秒后再读，所以 nvidia-smi 挂住时其他作业每 30 秒最多被耽误 10 秒。卡在驱动里的 nvidia-smi
+杀不掉：关闭它的管道，它存活期间后面的读取直接失败，不再启动新的 nvidia-smi。没有合格的 GPU 时，
 `pending_reason` 说明原因（只在文字变化时写入），作业不预留任何 GPU。派发时先
 写 `runner.json`，再写 `job.json`（running）并重命名目录，最后才两次 fork 出 shim（新会话，被 init
-收养），并把已加锁的 `shim.lock` 交给它。shim 运行 `python3 -m taskmgr.remote ... shim`，
+收养），并把已加锁的 `shim.lock` 交给它。shim 运行 `python3 -m taskmgr.remote --root R run shim JOBID --lock-fd N`，
 `PYTHONPATH` 最前面是守护进程的代码根目录；在服务器上它是解析后的压缩包
 `<remote_root>/versions/<版本>.pyz`，这个文件从不修改，所以 shim 启动期间发生更新也不会让它的导入
 失败（[[docs/install.zh-CN]]）。fork/exec 失败时作业以 `failed`

@@ -66,7 +66,7 @@ def is_excluded(rel: str) -> bool:
 
     A path is excluded when any component is excluded, so callers may prune whole
     directories. `*.json.lock` is excluded at any depth; `result.json` and
-    `result.json.corrupt*` only at the package root. `task init` copies the template with
+    `result.json.corrupt*` only at the package root. `task create package` copies the template with
     a subset of these rules.
     """
     parts = rel.split("/")
@@ -417,7 +417,7 @@ def validate_dir(root: str, max_bytes: int | None = None) -> tuple[list[Problem]
     """Validate an extracted task package. Returns (errors, task_or_None).
 
     max_bytes caps the total size of the packed regular files (None: no cap). The client
-    passes None: the server's max_package_bytes decides, and `task validate` only warns
+    passes None: the server's max_package_bytes decides, and `task validate package` only warns
     (see packed_size).
 
     The task is the parsed task.json whenever it is a JSON object; it only matches

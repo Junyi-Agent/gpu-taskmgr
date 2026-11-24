@@ -147,7 +147,7 @@ def args_enable(p: argparse.ArgumentParser) -> str:
     _ = p.add_argument("name", help=NAME_HELP)
     return (
         "Mark a server enabled in the machine list: round-robin submits and the queries over "
-        + "every server (get jobs, the jobid lookup, whoami, version) use it again."
+        + "every server (get jobs, the jobid lookup, get user, get version) use it again."
     )
 
 
@@ -156,7 +156,7 @@ def args_disable(p: argparse.ArgumentParser) -> str:
     return (
         "Mark a server disabled in the machine list, e.g. while it is down: round-robin "
         + "submits skip it and the queries over every server (get jobs, the jobid lookup, "
-        + "whoami, version, ping host) do not wait for it. `--host NAME` and "
+        + "get user, get version, ping host) do not wait for it. `--host NAME` and "
         + "`task ping host NAME` still reach it. Nothing changes on the server; its jobs keep "
         + "running."
     )

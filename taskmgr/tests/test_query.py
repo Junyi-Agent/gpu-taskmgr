@@ -1,5 +1,6 @@
 """Job discovery, status lookup across servers, --wait, logs and fetch (Sections 14, 15, 16)."""
 
+import io
 import json
 import os
 import re
@@ -7,9 +8,11 @@ import shutil
 import subprocess
 import sys
 import time
+import unittest
 from typing import cast
 from unittest import mock
 
+from taskmgr import textout
 from taskmgr.common import DEFAULT_REMOTE_CONFIG, PROTOCOL_VERSION, TaskmgrError, override
 from taskmgr.records import JsonDict, JsonValue, Server
 from taskmgr.store import Store, end_without_result, finalize_run
@@ -751,3 +754,38 @@ class StoreTest(Env):
             _ = end_without_result(st, jd, job, "failed", None, runner)
         self.assertEqual(self.job(j)["state"], "failed")
         self.assertEqual(self.get(self.result(j), "_taskmgr", "warnings"), [])
+
+
+class _Tty(io.StringIO):
+    def __init__(self, tty: bool) -> None:
+        super().__init__()
+        self.tty: bool = tty
+
+    @override
+    def isatty(self) -> bool:
+        return self.tty
+
+
+class ColorSettingTest(unittest.TestCase):
+    def test_colors_need_both_streams_on_a_terminal(self) -> None:
+        """Without FORCE_COLOR, colors are on only when stdout and stderr are both terminals
+        (a pipe on either side turns them off); --plain and NO_COLOR win over terminals."""
+        before = textout.color_on()
+        self.addCleanup(setattr, textout, "_color", before)
+        env = {k: v for k, v in os.environ.items() if k not in ("NO_COLOR", "FORCE_COLOR")}
+        cases: list[tuple[tuple[bool, bool], bool, dict[str, str], bool]] = [
+            ((True, True), False, {}, True),
+            ((True, False), False, {}, False),
+            ((False, True), False, {}, False),
+            ((False, False), False, {}, False),
+            ((True, True), True, {}, False),
+            ((True, True), False, {"NO_COLOR": "1"}, False),
+        ]
+        for (out_tty, err_tty), plain, extra, want in cases:
+            with (
+                self.subTest(stdout=out_tty, stderr=err_tty, plain=plain, env=extra),
+                mock.patch.dict(os.environ, {**env, **extra}, clear=True),
+                mock.patch.object(sys, "stdout", _Tty(out_tty)),
+                mock.patch.object(sys, "stderr", _Tty(err_tty)),
+            ):
+                self.assertEqual(textout.set_color(plain), want)

@@ -165,7 +165,7 @@ class CleanTextTest(unittest.TestCase):
             "gpu_holders": [{"gpu": 0, "pid": 7, "user": "eve", "command": "x " + EVIL}],
             "cancel_request": {"by": "eve" + EVIL, "at": "now", "via": "cli"},
         }
-        text = render.text_status(Args(), textout.clean_result(out), True)
+        text = render.text_job(Args(), textout.clean_result(out), True)
         self.assertIn("x " + SHOWN, text)
         self.assertIn("eve" + SHOWN, text)
         self.assertNotIn("\x1b]", text)

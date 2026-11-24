@@ -587,7 +587,7 @@ class Env(unittest.TestCase):
         has also considered every job queued before it. Each probe is waited for until it
         has succeeded, so it holds no slot afterwards. The probe is a CPU job: with a full
         max_cpu_jobs, pass a free GPU in `gpus`. Returns the probe jobids, so callers that
-        compare job sets (jobids(), `task jobs`) can leave them out.
+        compare job sets (jobids(), `task get jobs`) can leave them out.
         """
         probes: list[str] = []
         for _ in range(n):

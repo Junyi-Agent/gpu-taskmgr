@@ -1,6 +1,5 @@
 """GPU discovery via nvidia-smi and resolution of task GPU declarations."""
 
-import contextlib
 import os
 import pwd
 import shutil
@@ -27,12 +26,30 @@ def nvidia_smi_path() -> str:
 # How long one nvidia-smi call may take before it is killed and counts as failed.
 SMI_TIMEOUT = 60.0
 
+# An nvidia-smi that outlived SIGKILL (stuck in the driver). While it lives, no new one is
+# started: each would get stuck too and keep a process.
+_stuck: subprocess.Popen[bytes] | None = None
+
 
 def _smi(query: str, timeout: float = SMI_TIMEOUT) -> list[list[str]]:
     """Run `nvidia-smi <query> --format=csv,noheader,nounits`: the rows, split on commas.
 
     After `timeout` seconds nvidia-smi is killed and not waited for: one stuck in the
-    driver (state D) survives SIGKILL, and subprocess.run would wait for it forever."""
+    driver (state D) survives SIGKILL, and subprocess.run would wait for it forever. Its
+    pipes are closed; until it exits, later calls fail at once instead of starting another."""
+    global _stuck
+    if _stuck is not None:
+        if _stuck.poll() is None:
+            raise TaskmgrError(
+                "nvidia_smi_failed",
+                (
+                    "cannot query GPUs with nvidia-smi: an earlier nvidia-smi (pid %d) is "
+                    + "still stuck after it was killed"
+                )
+                % _stuck.pid,
+            )
+        _stuck = None
+
     cmd = [nvidia_smi_path(), query, "--format=csv,noheader,nounits"]
     try:
         proc = subprocess.Popen(
@@ -42,8 +59,13 @@ def _smi(query: str, timeout: float = SMI_TIMEOUT) -> list[list[str]]:
             out, _ = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                _ = proc.wait(1)  # else subprocess reaps it later (its _active list)
+            try:
+                _ = proc.wait(1)
+            except subprocess.TimeoutExpired:
+                _stuck = proc
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
             raise
         if proc.returncode:
             raise subprocess.CalledProcessError(proc.returncode, cmd)

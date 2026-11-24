@@ -51,7 +51,7 @@ def display_state(job: JsonDict) -> str:
     return state
 
 
-def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
+def render_jobs_table(jobs: list[JsonDict], color: bool) -> str:
     """`task get jobs` table: one row per job, in the given order."""
     table = [
         (
@@ -66,7 +66,7 @@ def render_jobs_table(jobs: list[JsonDict], color: bool = False) -> str:
     return render_table(JOBS_COLUMNS, table, color)
 
 
-def text_init(_args: Args, out: Mapping[str, object], color: bool) -> str:
+def text_create_package(_args: Args, out: Mapping[str, object], color: bool) -> str:
     return message("created", GREEN, "%s in %s" % (out["task_id"], out["path"]), color) + hint(
         "fill every <REQUIRED...> marker, then run `task validate package %s`"
         % shlex.quote(str(out["path"])),
@@ -74,7 +74,7 @@ def text_init(_args: Args, out: Mapping[str, object], color: bool) -> str:
     )
 
 
-def text_pack(_args: Args, out: Mapping[str, object], _color: bool) -> str:
+def text_build_package(_args: Args, out: Mapping[str, object], _color: bool) -> str:
     """Only the path on stdout, so that `task create job "$(task build package ...)"` works;
     the errors of an invalid package went to stderr."""
     return "%s\n" % out.get("path") if out.get("valid") else ""
@@ -102,7 +102,7 @@ def text_validate(_args: Args, out: Mapping[str, object], color: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
-def text_submit(_args: Args, out: Mapping[str, object], color: bool) -> str:
+def text_create_job(_args: Args, out: Mapping[str, object], color: bool) -> str:
     row = [_s(out.get(k)) for k in ("jobid", "task_id", "host", "state")]
     text = render_table(("JOBID", "TASK_ID", "HOST", "STATE"), [row], color)
     if out.get("deduplicated"):
@@ -118,7 +118,7 @@ def text_submit(_args: Args, out: Mapping[str, object], color: bool) -> str:
 def text_get_job(args: Args, out: Mapping[str, object], color: bool) -> str:
     """`task get job ID` (one job) or `task get jobs` (the table)."""
     if args.jobid:
-        return text_status(args, out, color)
+        return text_job(args, out, color)
     if out.get("error"):
         return ""
     return render_jobs_table(cast(list[JsonDict], rows(out, "jobs")), color)
@@ -179,7 +179,7 @@ def _holder_fields(out: Mapping[str, object]) -> Fields:
     return fields
 
 
-def text_status(_args: Args, out: Mapping[str, object], color: bool) -> str:
+def text_job(_args: Args, out: Mapping[str, object], color: bool) -> str:
     meta = as_dict(out.get("_taskmgr"))
     if meta:  # terminal: the job's result.json
         state = _s(meta.get("status"))
@@ -296,12 +296,7 @@ def text_fetch(_args: Args, out: Mapping[str, object], color: bool) -> str:
 def text_get_user(_args: Args, out: Mapping[str, object], color: bool) -> str:
     hosts = rows(out, "hosts")
     table = [[_s(h.get("host")), _s(h.get("user")), _s(h.get("hostname"))] for h in hosts]
-    text = render_table(("HOST", "USER", "HOSTNAME"), table, color, {}) if table else ""
-    if any("user" not in h for h in hosts):
-        text += hint(
-            "- means the server runs older code; `task update host NAME` updates it", color
-        )
-    return text
+    return render_table(("HOST", "USER", "HOSTNAME"), table, color, {}) if table else ""
 
 
 def text_get_version(_args: Args, out: Mapping[str, object], color: bool) -> str:

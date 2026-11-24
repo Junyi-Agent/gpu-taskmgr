@@ -136,7 +136,7 @@ class ExecTest(Env):
             for name in [*dirnames, *filenames, ""]:
                 p = os.path.join(dirpath, name) if name else dirpath
                 if p == os.path.join(root, "config.json"):
-                    continue  # the test wrote it (`task host add` does under umask 077)
+                    continue  # the test wrote it (`task create host` does under umask 077)
                 st = os.lstat(p)
                 if not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o077:
                     loose.append("%o %s" % (stat.S_IMODE(st.st_mode), os.path.relpath(p, root)))

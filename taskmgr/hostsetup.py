@@ -38,7 +38,7 @@ from .hostlegacy import OLD_REMOTE_ROOT, LegacyProbe
 from .prompt import Declined, Kept, NonInteractive, Planned, Ui
 from .records import JsonDict, JsonValue, Server, SshConfig
 from .textout import BOLD, CYAN, GREEN, RED, YELLOW
-from .transport import Remote, edit_machines, load_machines, unknown_host
+from .transport import Remote, edit_machines, is_entry, load_machines, unknown_host
 
 # Under remote_root:
 CODE_FILE = pyz.REMOTE_PYZ  # the installed code, a symlink into CODE_STORE
@@ -1240,7 +1240,7 @@ class HostSetup:
 
         def upsert(servers: list[JsonValue]) -> None:
             for i, s in enumerate(servers):
-                if isinstance(s, dict) and s.get("name") == self.args.name:
+                if is_entry(s, self.args.name):
                     servers[i] = new
                     return
             servers.append(new)

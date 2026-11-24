@@ -34,3 +34,10 @@ uv run pre-commit install
 - 文档有中英两份（`*.md` 和 `*.zh-CN.md`），改一份同步改另一份。
 - 流程或架构决策写 ADR（`docs/adr/`）。状态分三种：提议 = 只写了文档；采纳 = 允许实现，可能已实现；已验证 = 人类测试了代码并确认。agent 最多改到「采纳」，「已验证」只由人类改。
 - `.claude/hooks/git_guard.py`、`adr_guard.py`、`scripts/review_gate.py`、`repo_check.py` 和它们的测试从 `.claude/jy-skills`（Junyi-Agent/skills）原样复制，不在本仓库改。本仓库的差异放在配置里：审查门禁的 3 个方向在 `.claude/review_gate.json`。同步上游：把 submodule 升到新 tag，整文件复制这 8 个文件，跑对应测试；pre-commit 的 `jy-skills-copies` 检查副本和 submodule 一致。需要改这些文件的行为时，先改上游并发版。
+
+## 已知的故意设计
+
+repo 审查（`/jy-repo-review`）不再把这些当作问题上报：
+
+- nvidia-smi 挂住时，daemon 主循环每 30 秒最多同步阻塞 10 秒（`docs/internals.md`，GPU 选择一节；`daemon.py` 的 `GPU_QUERY_*`）。
+- 包用到 server feature（precompile、对象形式的 gpus 等）时，`task create job` 上传前多问一次 `taskmgr-remote version`。现在通过协议检查的服务器都有全部 feature，这个检查留给以后新增的 feature（`common.py` 的 FEATURES 注释，`docs/task-package.md` 的 Server features）。

@@ -338,7 +338,7 @@ def check_replaceable(target: str, sources: Sequence[str]) -> None:
     )
 
 
-def cmd_pack(a: PackArgs) -> tuple[dict[str, object], int]:
+def cmd_build_package(a: PackArgs) -> tuple[dict[str, object], int]:
     out_path = os.path.abspath(a.dest) if a.dest else None
     with tempfile.TemporaryDirectory(prefix="taskmgr-pack-") as tmp:
         root = os.path.join(tmp, "pkg")

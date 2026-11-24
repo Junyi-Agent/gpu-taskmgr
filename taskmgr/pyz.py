@@ -73,7 +73,7 @@ def commit() -> str | None:
 
 def _in_code_version(rel: str) -> bool:
     """Whether taskmgr/<rel> counts for the code version: every .py file, and all of
-    template/ (`task init` copies it into new task packages)."""
+    template/ (`task create package` copies it into new task packages)."""
     top = rel.split("/", 1)[0]
     if top in NOT_CODE:
         return False

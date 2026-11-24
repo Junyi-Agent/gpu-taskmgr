@@ -79,7 +79,7 @@ class _GpuHolderBase(TypedDict):
 
 
 class GpuHolder(_GpuHolderBase, total=False):
-    """A process with a CUDA context on a GPU (`task status` gpu_holders)."""
+    """A process with a CUDA context on a GPU (`task get job` gpu_holders)."""
 
     taskmgr_jobid: str
 
@@ -124,7 +124,7 @@ class _JobBase(TypedDict):
 
 
 class Job(_JobBase, total=False):
-    """job.json. A job runs at most once; `task retry` and automatic re-runs create a new
+    """job.json. A job runs at most once; `task retry job` and automatic re-runs create a new
     job linked through `retry_of` / `retried_as`."""
 
     ended_at: str | None

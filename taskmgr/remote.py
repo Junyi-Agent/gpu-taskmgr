@@ -117,7 +117,7 @@ def emit(obj: Mapping[str, object], code: int = 0) -> int:
 # create job (Section 5.2)
 
 
-def cmd_receive(store: Store, args: Args) -> int:
+def cmd_create_job(store: Store, args: Args) -> int:
     store.ensure_layout()
 
     key = args.submission_key or ("auto-" + secrets.token_hex(12))
@@ -261,7 +261,7 @@ def _dedup_ack(store: Store, key: str, chash: str) -> dict[str, object] | None:
 # queries
 
 
-def cmd_jobs(store: Store, args: Args) -> int:
+def cmd_get_jobs(store: Store, args: Args) -> int:
     """The jobs in this store, oldest first; --limit N: only the N most recently submitted
     (`task get jobs -n N` needs no more from each server)."""
     if args.limit is not None and args.limit < 1:
@@ -290,7 +290,7 @@ def synthesized_result(job: Job) -> dict[str, object]:
 
 def waits_for_gpu(job: Job) -> bool:
     """Whether the job waits for GPUs now: queued with GPUs (also in phase gpu), or running
-    and waiting to relaunch after a GPU-busy exit (`task jobs` shows both as pending-gpu
+    and waiting to relaunch after a GPU-busy exit (`task get jobs` shows both as pending-gpu
     or queued)."""
     if job["state"] == "running":
         return bool(job.get("pending_reason")) and not precompiling(job)
@@ -372,7 +372,7 @@ def job_status(store: Store, jobid: str, _retry: bool = True) -> dict[str, objec
     return out
 
 
-def cmd_status(store: Store, args: Args) -> int:
+def cmd_get_job(store: Store, args: Args) -> int:
     return emit(job_status(store, args.jobid))
 
 
@@ -693,7 +693,7 @@ def version_info() -> dict[str, object]:
     }
 
 
-def cmd_inspect(store: Store, _args: Args) -> int:
+def cmd_describe_store(store: Store, _args: Args) -> int:
     return emit(inspect_root(store.root))
 
 
@@ -833,9 +833,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 COMMANDS: dict[str, Callable[[Store, Args], int]] = {
-    "create job": cmd_receive,
-    "get jobs": cmd_jobs,
-    "get job": cmd_status,
+    "create job": cmd_create_job,
+    "get jobs": cmd_get_jobs,
+    "get job": cmd_get_job,
     "cancel job": cmd_cancel,
     "retry job": cmd_retry,
     "resolve job": cmd_resolve,
@@ -851,10 +851,8 @@ LEGACY_ARGV = {"serve": ["run", "daemon"]}
 GLOBAL_OPTS = ("--root", "--protocol-version")
 
 
-def legacy_argv(argv: list[str]) -> list[str]:
-    """argv with an old command replaced (LEGACY_ARGV), but only when it is the whole
-    command: the one word besides the global options. A `serve` given as an option value
-    (`create job --submission-key serve`) is left alone."""
+def _words(argv: list[str]) -> list[int]:
+    """The indexes of argv that are not a global option or its value."""
     words: list[int] = []
     i = 0
     while i < len(argv):
@@ -864,10 +862,31 @@ def legacy_argv(argv: list[str]) -> list[str]:
         if not argv[i].startswith(tuple(o + "=" for o in GLOBAL_OPTS)):
             words.append(i)
         i += 1
+    return words
+
+
+def legacy_argv(argv: list[str]) -> list[str]:
+    """argv with an old command replaced (LEGACY_ARGV), but only when it is the whole
+    command: the one word besides the global options. A `serve` given as an option value
+    (`create job --submission-key serve`) is left alone."""
+    words = _words(argv)
     if len(words) == 1 and argv[words[0]] in LEGACY_ARGV:
         at = words[0]
         return argv[:at] + LEGACY_ARGV[argv[at]] + argv[at + 1 :]
     return argv
+
+
+def streams(argv: list[str]) -> bool:
+    """Whether argv names a command whose stdout is a stream (`logs job`, `fetch job`; also
+    the protocol 2 `logs` and `fetch`): its errors go to stderr, as the client expects."""
+    words = _words(argv)
+    return bool(words) and argv[words[0]] in ("logs", "fetch")
+
+
+def stream_error(obj: Mapping[str, object], code: int) -> int:
+    """An error of a streaming command: JSON on stderr, stdout stays the stream."""
+    _ = sys.stderr.write(json.dumps(dict(obj, protocol_version=PROTOCOL_VERSION)) + "\n")
+    return code
 
 
 def requested_protocol(argv: list[str]) -> int | None:
@@ -900,7 +919,8 @@ def main(argv: list[str] | None = None) -> int:
         # with protocol_mismatch (JSON, like every other error) instead of only the usage.
         client = requested_protocol(argv)
         if e.code == 2 and client is not None and client != remote_protocol_version():
-            return emit(protocol_mismatch(client).to_json(), 2)
+            mismatch = protocol_mismatch(client).to_json()
+            return stream_error(mismatch, 2) if streams(argv) else emit(mismatch, 2)
         raise
 
     stream_cmd = args.cmd in ("logs job", "fetch job")
@@ -919,15 +939,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "version":
             return emit(version_info())
         if args.cmd == "describe store":  # read-only: no ensure_layout
-            return cmd_inspect(store, args)
+            return cmd_describe_store(store, args)
         store.ensure_layout()
         return COMMANDS[args.cmd](store, args)
     except TaskmgrError as e:
         if stream_cmd:
-            _ = sys.stderr.write(
-                json.dumps(dict(e.to_json(), protocol_version=PROTOCOL_VERSION)) + "\n"
-            )
-            return e.exit_code
+            return stream_error(e.to_json(), e.exit_code)
         return emit(e.to_json(), e.exit_code)
     except BrokenPipeError:
         return 0
@@ -939,8 +956,7 @@ def main(argv: list[str] | None = None) -> int:
             "error": {"code": "internal_error", "message": "%s: %s" % (type(e).__name__, e)}
         }
         if stream_cmd:
-            _ = sys.stderr.write(json.dumps(dict(err, protocol_version=PROTOCOL_VERSION)) + "\n")
-            return 2
+            return stream_error(err, 2)
         return emit(err, 2)
 
 

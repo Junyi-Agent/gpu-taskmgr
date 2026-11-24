@@ -15,9 +15,12 @@ on:
 permissions:
   contents: read
 
+# Called from release.yml, github.workflow is "Release": its checks never share a group with
+# (and never cancel) the push CI of the same commit on main. A newer push to a pull request
+# cancels the older run; runs on main are not cancelled, so every commit of main gets a result.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   pre-commit:

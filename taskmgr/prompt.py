@@ -1,4 +1,5 @@
-"""[y/N] confirmations on stderr for `task create host` and `task delete host`.
+"""[y/N] confirmations on stderr for `task create host`, `task update host` and
+`task delete host`.
 
 Two kinds of change: ordinary ones (--yes answers them) and destructive ones (deleting
 something outside what the run installs). --yes never answers a destructive change: it

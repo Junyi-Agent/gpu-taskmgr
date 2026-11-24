@@ -9,8 +9,8 @@ up: "[[taskmgr/README.zh-CN]]"
 
 其他语言：[[docs/usage]]
 
-命令由一个动词和一个资源组成，和 kubectl 一样：`task <动词> <资源> [参数]`。每种资源也有复数名
-（`job` 或 `jobs`、`package` 或 `packages`、`host` 或 `hosts`），两种写法都可以。`task -h` 列出所有
+命令由一个动词和一个资源组成，和 kubectl 一样：`task <动词> <资源> [参数]`。资源 `job`、`package`、
+`host` 也有复数名（`jobs`、`packages`、`hosts`），两种写法都可以。`task -h` 列出所有
 命令，`task <动词> -h` 列出一个动词的资源，`task <动词> <资源> -h` 给出参数和选项。
 
 | 动词 | `job` | `package` | `host` |
@@ -158,8 +158,7 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
   （见 [[docs/task-package.zh-CN]] 的“按条件选择 GPU”）。
 - `task get jobs` 列出所查询的全部服务器合计最近提交的 10 个作业；`-n N`（正整数）修改数量。
   `--host` 和 `--state` 先过滤，`-n` 统计过滤后剩下的作业。`-o json` 返回同样的作业。每台服务器
-  只发回它最新的 N 个作业（服务器功能 `jobs_limit`）；代码较旧的服务器发回全部作业，由 CLI 保留最新的
-  N 个。`--state` 和 `-n` 只用于列表：给了 jobid 时使用它们是错误（`bad_args`）。
+  只发回它最新的 N 个作业（服务器功能 `jobs_limit`）。`--state` 和 `-n` 只用于列表：给了 jobid 时使用它们是错误（`bad_args`）。
 - 按提交时间（UTC）排序，最新的在最后。所有显示 STATE 的命令中，同一状态颜色相同：queued 和 `pending-gpu` 黄、
   running 和 `precompiling` 青、stopping 品红、unknown 粗体品红、succeeded 绿、failed / invalid_result / timed_out
   红、cancelled 灰。
@@ -189,7 +188,7 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
 "content_hash", "state"}`。如果提交结果不确定（连接失败，或没有收到有效回复：错误码
 `remote_error`），stderr 会给出所选的服务器和 submission key，并打印重试命令
 `task create job PATH --host H --submission-key K`；CLI 不会自动改投其他服务器。任务包用到的功能
-（如 `precompile`）服务器的代码不支持时，`task create job` 在上传前以 `unsupported_feature` 拒绝
+服务器的代码不支持时，`task create job` 在上传前以 `unsupported_feature` 拒绝
 （退出码 2），错误信息以 ``run `task update host H` to update it`` 结尾（见
 [[docs/task-package.zh-CN]]，服务器功能）。
 
@@ -326,9 +325,7 @@ jobid，新作业的 `retry_of` 指回旧作业。用原来的 submission key �
 
 ## get user、get version、update cli
 
-- `task get user [--host H]` 询问每台服务器，taskmgr 在上面以哪个用户、哪个主机名运行。代码较旧的
-  服务器显示 `-`，并提示
-  ``- means the server runs older code; `task update host NAME` updates it``。
+- `task get user [--host H]` 询问每台服务器，taskmgr 在上面以哪个用户、哪个主机名运行。
 - `task update cli` 在 CLI 所在的本地仓库执行 `git pull --ff-only`。服务器上的代码不变，直到
   `task update host NAME` 安装新版本；拉取到新提交时，输出最后一行是
   ``hint: servers keep their code until `task update host NAME` (see `task get version`)``。

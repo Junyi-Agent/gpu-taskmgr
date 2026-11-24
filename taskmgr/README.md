@@ -64,5 +64,5 @@ task fetch job <jobid> --dest ./results/
 task create job "$(task build package src/ --task-id AA-02 --entry 'python3 run.py' --gpus 0)"
 ```
 
-Commands are `task <verb> <resource>`, as in kubectl; `task -h` lists them, every resource
-also has a plural name (`task get jobs`), and `-o json` prints the full JSON object.
+Commands are `task <verb> <resource>`, as in kubectl; `task -h` lists them, job, host and
+package also have a plural name (`task get jobs`), and `-o json` prints the full JSON object.

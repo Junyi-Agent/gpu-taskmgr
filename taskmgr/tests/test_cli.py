@@ -42,7 +42,7 @@ class CliTest(Env):
     def test_help_lists_commands_by_group(self) -> None:
         rc, out, _ = self.plain("-h")
         self.assertEqual(rc, 0)
-        self.assertTrue(out.startswith("usage: task <command> [<resource>] [args]\n"), out)
+        self.assertTrue(out.startswith("usage: task <command> <resource> [args]\n"), out)
         heads = [line for line in out.splitlines() if re.fullmatch("[a-z]+", line)]
         self.assertEqual(heads, ["jobs", "packages", "hosts", "others", "options"])
         names = [" ".join(c) for c in self.top_commands()]
@@ -171,6 +171,7 @@ class CliTest(Env):
             (["host", "list"], "`task host` is now `task <create|get|update|delete|enable"),
             (["whoami"], "`task whoami` is now `task get user`"),
             (["version"], "`task version` is now `task get version`"),
+            (["update"], "`task update` alone is now `task update cli`"),
         ]
         for argv, error in cases:
             rc, out, err = self.plain(*argv)

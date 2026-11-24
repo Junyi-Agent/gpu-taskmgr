@@ -158,10 +158,12 @@ set of taskmgr jobs holding GPUs changed since. Both nvidia-smi calls of a read 
 10 s timeout (the process is killed and not waited for); after a failure, logged once per
 message, these jobs wait with `pending_reason` `cannot choose GPUs: ...` and the next read
 is 30 s later, so a hung nvidia-smi delays the other jobs by at most 10 s per 30 s.
+An nvidia-smi stuck in the driver survives the kill: its pipes are closed, and while it
+lives later reads fail at once without starting another nvidia-smi.
 If none qualify, `pending_reason` says why (written only when the text changes) and the job
 reserves nothing. Dispatch writes `runner.json`, then `job.json` (running) and the rename,
 and only then double-forks the shim (new session, reparented to init) and hands it the
-already-locked `shim.lock`. The shim runs `python3 -m taskmgr.remote ... shim` with the
+already-locked `shim.lock`. The shim runs `python3 -m taskmgr.remote --root R run shim JOBID --lock-fd N` with the
 daemon's code root first on `PYTHONPATH`; on a server that is the resolved archive
 `<remote_root>/versions/<version>.pyz`, a file that is never modified, so an update during
 the shim's start cannot break its imports ([[docs/install]]). A failed fork/exec ends
