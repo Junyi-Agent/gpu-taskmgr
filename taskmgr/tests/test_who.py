@@ -75,7 +75,9 @@ class GpuHoldersTest(Env):
         self.assertIsNone(self.get(self.ok("get", "job", c, "--host", "s1"), "gpu_holders"))
 
     def test_control_characters_of_a_holder_are_not_printed(self) -> None:
-        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)", EVIL])
+        # A short command line, so that the text output does not cut it before EVIL
+        # (a long interpreter path, as on CI runners, would).
+        p = subprocess.Popen(["/bin/sh", "-c", "while :; do sleep 1; done", EVIL])
         self.addCleanup(p.wait)
         self.addCleanup(kill_quiet, p.pid)
         self.set_gpu_apps([(GPUS[0][1], p.pid, 100)])
