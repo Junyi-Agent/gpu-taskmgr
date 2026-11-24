@@ -1224,8 +1224,20 @@ class AddHostUnitTest(unittest.TestCase):
             mock.patch.object(daemon.Daemon, "run", return_value=7) as run,
         ):
             self.assertEqual(remote.main(["--root", root, "serve"]), 7)
+            self.assertEqual(remote.main(["--root=%s" % root, "serve"]), 7)
             self.assertEqual(remote.main(["--root", root, "run", "daemon"]), 7)
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 3)
+
+    def test_serve_as_an_option_value_is_not_rewritten(self) -> None:
+        """Only a bare `serve` command is the old unit's; `serve` as a value stays a value."""
+        r = ["--root", "/r", "--protocol-version", "3"]
+        self.assertEqual(remote.legacy_argv(r + ["serve"]), r + ["run", "daemon"])
+        for argv in (
+            r + ["create", "job", "--submission-key", "serve"],
+            r + ["get", "jobs", "--state", "serve"],
+            ["--root", "serve"],
+        ):
+            self.assertEqual(remote.legacy_argv(argv), argv)
 
     def test_config_example_matches_the_defaults(self) -> None:
         with open(os.path.join(REPO, "taskmgr", "deploy", "config.example.json")) as f:

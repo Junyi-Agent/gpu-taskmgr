@@ -848,6 +848,26 @@ COMMANDS: dict[str, Callable[[Store, Args], int]] = {
 # the rewrite is declined) a restart of such a unit still has to start the daemon. Delete
 # together with hostlegacy once no server has a protocol-2 unit.
 LEGACY_ARGV = {"serve": ["run", "daemon"]}
+GLOBAL_OPTS = ("--root", "--protocol-version")
+
+
+def legacy_argv(argv: list[str]) -> list[str]:
+    """argv with an old command replaced (LEGACY_ARGV), but only when it is the whole
+    command: the one word besides the global options. A `serve` given as an option value
+    (`create job --submission-key serve`) is left alone."""
+    words: list[int] = []
+    i = 0
+    while i < len(argv):
+        if argv[i] in GLOBAL_OPTS:
+            i += 2
+            continue
+        if not argv[i].startswith(tuple(o + "=" for o in GLOBAL_OPTS)):
+            words.append(i)
+        i += 1
+    if len(words) == 1 and argv[words[0]] in LEGACY_ARGV:
+        at = words[0]
+        return argv[:at] + LEGACY_ARGV[argv[at]] + argv[at + 1 :]
+    return argv
 
 
 def requested_protocol(argv: list[str]) -> int | None:
@@ -871,9 +891,7 @@ def protocol_mismatch(client: int) -> TaskmgrError:
 
 
 def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if argv[-1:] and argv[-1] in LEGACY_ARGV:
-        argv[-1:] = LEGACY_ARGV[argv[-1]]
+    argv = legacy_argv(list(sys.argv[1:] if argv is None else argv))
 
     try:
         args = build_parser().parse_args(argv, namespace=Args())

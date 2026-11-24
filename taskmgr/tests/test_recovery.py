@@ -46,7 +46,7 @@ class RecoveryTest(Env):
         with open(os.path.join(REPO, "taskmgr", "deploy", "taskmgr-remote.user.service")) as f:
             unit = f.read()
         self.assertIn("KillMode=process", unit)
-        self.assertIn(" serve", unit)
+        self.assertIn(" run daemon\n", unit)
         self.assertNotIn("User=", unit)  # user unit: runs as the unprivileged owner
 
     def test_task_survives_daemon_stop_and_keeps_real_exit_code(self) -> None:
