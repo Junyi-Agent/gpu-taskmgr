@@ -31,8 +31,8 @@ a verb, and `task <verb> <resource> -h` its arguments and options.
 | `enable` / `disable` | | | use a server again / leave it out of submits and queries |
 | `ping` | | | check that servers answer |
 
-Commands without one of these resources: `task build pyz` (the zipapps, [[docs/install]]),
-`task whoami`, `task update` (this local CLI) and `task version`.
+Other commands: `task build pyz` (the zipapps, [[docs/install]]), `task get user`,
+`task get version` and `task update cli` (this local CLI).
 
 ```sh
 task -h                                # the commands by group (jobs / packages / hosts / others)
@@ -62,9 +62,9 @@ task enable host NAME                  # use a server again
 task disable host NAME                 # leave a server out of submits and queries for now
 task ping host [NAME]                  # check that servers answer
 task build pyz [--dest DIR]            # task.pyz and taskmgr-remote.pyz (default: dist/ in the checkout)
-task whoami                            # user and hostname each server runs as
-task update                            # update this local CLI (git pull --ff-only)
-task version                           # local version and the code version on each server
+task get user                          # user and hostname each server runs as
+task get version                       # local version and the code version on each server
+task update cli                        # update this local CLI (git pull --ff-only)
 ```
 
 Every command takes `-o text|json` after the command (`task get jobs -o json`; default
@@ -98,9 +98,11 @@ command name is a usage error (exit 2) that names the new form, e.g.
 | `python3 -m taskmgr.pyz -o dist` | `task build pyz` (`--dest DIR` for another directory) |
 | `--detail` | `-o json` (`-o text` is the default) |
 | `-o PATH` / `--output PATH` | `--dest PATH` |
+| `task whoami` | `task get user` |
+| `task version` | `task get version` |
+| `task update` | `task update cli` |
 
-`task whoami`, `task update` and `task version` are unchanged. The JSON objects are the same
-as with `--detail` before.
+The JSON objects are the same as with `--detail` before.
 
 ## Output
 
@@ -114,8 +116,8 @@ Every command prints in the same shapes:
 
 | Shape | Used for | Colors |
 | --- | --- | --- |
-| table | lists (`get jobs`, `retry job`, `create job`, `get hosts`, `ping host`, `whoami`, `version`) | bold header; STATE and status columns by value |
-| `key: value` lines | one object (`get job`, `wait job`, `resolve job`, the local part of `version`) | bold keys; state by value |
+| table | lists (`get jobs`, `retry job`, `create job`, `get hosts`, `ping host`, `get user`, `get version`) | bold header; STATE and status columns by value |
+| `key: value` lines | one object (`get job`, `wait job`, `resolve job`, the local part of `get version`) | bold keys; state by value |
 | `label: message` | one-line results and notes | label green (done), yellow (note, warning), red (failed), cyan (`hint`) |
 | JSON (`-o json`) | the full object | keys blue, strings green, numbers cyan, `true`/`false`/`null` magenta |
 
@@ -179,7 +181,7 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
   least one server answered or the machine list is empty, 2 otherwise.
 - A server that is down does not hold the command up: ssh gives up connecting after 10 s
   (`ConnectTimeout=10`; an `-o ConnectTimeout=N` in the server's machine entry wins), and a
-  query to every server (`get jobs`, the jobid lookup, `whoami`, `version`) waits at most 30 s
+  query to every server (`get jobs`, the jobid lookup, `get user`, `get version`) waits at most 30 s
   for each server's answer (`TASKMGR_QUERY_TIMEOUT=<seconds>` changes it). The same limit
   applies to every call to a single server (`get job`, `cancel job`, `retry job`,
   `resolve job`, each poll of `wait job`); uploads (`create job`), `logs job` and
@@ -350,16 +352,16 @@ its entry as it is (no ssh options; change those with `task create host`): it up
 checks the job directories, restarts the service on the new code (running jobs keep
 running) and checks that it answers. It takes `--pyz FILE`, `--yes`, `--plan` and
 `--prune-old-code` like `task create host`, also updates a disabled server, and fails with
-`unknown_host` for a name not in the list. Use it after `task update` or a code change, when
-`task version` shows `differs`, or when `task create job` fails with `unsupported_feature`.
+`unknown_host` for a name not in the list. Use it after `task update cli` or a code change,
+when `task get version` shows `differs`, or when `task create job` fails with `unsupported_feature`.
 
 - `task get hosts [NAME]` lists the machine list (or one entry): name, enabled, destination,
   `remote_root`.
 - `task delete host NAME` removes a server from the machine list; the server itself is not
   touched.
 - `task disable host NAME` marks a server disabled, e.g. while it is down: round-robin
-  submits skip it, and the queries over every server (`get jobs`, the jobid lookup, `whoami`,
-  `version`) do not ask it, so they do not wait for its timeout. Output names the skipped
+  submits skip it, and the queries over every server (`get jobs`, the jobid lookup, `get user`,
+  `get version`) do not ask it, so they do not wait for its timeout. Output names the skipped
   servers (`skipped: disabled, not queried: NAME` on stderr; `"skipped"` in the JSON).
   `task ping host` without NAME skips it too. `--host NAME` and `task ping host NAME` still
   reach it, and nothing changes on the server. `task enable host NAME` turns it back on.
@@ -369,18 +371,18 @@ running) and checks that it answers. It takes `--pyz FILE`, `--yes`, `--plan` an
   one did not answer. Disabled servers are listed as `skipped: disabled, not pinged: NAME`
   (`"skipped"` in the JSON).
 
-## whoami, update, version
+## get user, get version, update cli
 
-- `task whoami [--host H]` asks each server which user and hostname taskmgr runs as there.
+- `task get user [--host H]` asks each server which user and hostname taskmgr runs as there.
   A server with older code shows `-`, with the hint
   ``- means the server runs older code; `task update host NAME` updates it``.
-- `task update` runs `git pull --ff-only` in the local checkout the CLI runs from. Servers
+- `task update cli` runs `git pull --ff-only` in the local checkout the CLI runs from. Servers
   keep their code until `task update host NAME` installs the new version; when it pulled
   new commits, the output ends with
-  ``hint: servers keep their code until `task update host NAME` (see `task version`)``.
+  ``hint: servers keep their code until `task update host NAME` (see `task get version`)``.
   Run from `task.pyz` it fails with `not_a_checkout` (exit 2): build a new archive from a
   checkout instead (`task build pyz`, see [[docs/install]]).
-- `task version [--host H]` prints the local version (pyproject version, git commit, code
+- `task get version [--host H]` prints the local version (pyproject version, git commit, code
   version, protocol version; run from `task.pyz`, the version and commit are the ones the
   archive was built from, and `dirty` is null) and the code version installed on each server, marked
   `up to date` or `differs`. The code version is the hash `task create host` and

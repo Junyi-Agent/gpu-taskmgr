@@ -842,7 +842,7 @@ def _host_versions(args: Args) -> tuple[dict[str, object], int]:
     return out, code
 
 
-def cmd_whoami(args: Args) -> CmdResult:
+def cmd_get_user(args: Args) -> CmdResult:
     out, code = _host_versions(args)
     report_partial(out, "not shown")
     return out, code
@@ -888,7 +888,7 @@ def local_version() -> dict[str, object]:
     }
 
 
-def cmd_version(args: Args) -> CmdResult:
+def cmd_get_version(args: Args) -> CmdResult:
     local = local_version()
     out, code = _host_versions(args)
     report_partial(out, "version unknown")
@@ -897,7 +897,7 @@ def cmd_version(args: Args) -> CmdResult:
     return {"local": local, **out}, code
 
 
-def cmd_update(_args: Args) -> CmdResult:
+def cmd_update_cli(_args: Args) -> CmdResult:
     """Update this checkout with `git pull --ff-only`; servers: `task update host NAME`."""
     if code_is_zipapp():
         raise TaskmgrError(
@@ -928,7 +928,7 @@ def cmd_update(_args: Args) -> CmdResult:
 
 VERBS = {
     "create": "create a job (submit a package), a package (from the template) or a host",
-    "get": "list jobs or hosts, or show one",
+    "get": "list jobs or hosts, or show one; the user and versions on the servers",
     "wait": "wait for a job to end",
     "logs": "print a job's log",
     "fetch": "download a job's results",
@@ -942,8 +942,6 @@ VERBS = {
     "enable": "use a server again for submits and queries",
     "disable": "leave a server out of submits and queries for now",
     "ping": "check that servers answer",
-    "whoami": "the user and hostname each server runs as",
-    "version": "local version and the code version on each server",
 }
 C = cliparse
 H = hostcmds
@@ -1140,34 +1138,34 @@ COMMANDS = [
         render.text_build_pyz,
     ),
     Command(
-        "whoami",
-        None,
-        "",
+        "get",
+        "user",
+        "user",
         "others",
         "the user and hostname each server runs as",
         C.args_all_hosts,
-        cmd_whoami,
-        render.text_whoami,
+        cmd_get_user,
+        render.text_get_user,
     ),
     Command(
-        "update",
-        None,
-        "",
-        "others",
-        "update this local CLI (git pull --ff-only)",
-        C.args_none,
-        cmd_update,
-        render.text_update,
-    ),
-    Command(
+        "get",
         "version",
-        None,
-        "",
+        "version",
         "others",
         "local version and the code version on each server",
         C.args_all_hosts,
-        cmd_version,
-        render.text_version,
+        cmd_get_version,
+        render.text_get_version,
+    ),
+    Command(
+        "update",
+        "cli",
+        "cli",
+        "others",
+        "update this local CLI (git pull --ff-only)",
+        C.args_none,
+        cmd_update_cli,
+        render.text_update_cli,
     ),
 ]
 BY_KEY = {(c.verb, c.resource): c for c in COMMANDS}

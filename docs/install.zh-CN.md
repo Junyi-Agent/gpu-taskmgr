@@ -45,16 +45,16 @@ task ping host                                   # 确认服务器有应答
 ```sh
 bin/task build pyz                                # 生成 dist/task.pyz 和 dist/taskmgr-remote.pyz
 ln -s "$PWD/dist/task.pyz" ~/.local/bin/task      # 本地 CLI 只有一个文件
-task version                                      # commit 和 code_version 从压缩包里读取
+task get version                                  # commit 和 code_version 从压缩包里读取
 ```
 
 每个压缩包里是整个包（`taskmgr/`，不含 `tests/` 和 `__pycache__`），顶层另有 `pyproject.toml`、`.taskmgr-commit` 和 `.taskmgr-code-version`。
 code version 是 `taskmgr/` 中影响运行的文件的哈希：所有 `.py` 文件（`deploy/`、`examples/` 和
 `tests/` 中的除外）以及 `template/` 下的全部文件。文档、README 和 deploy 下的示例不影响它，修改它们
 不会让服务器重启。checkout 和由它构建的每个压缩包得到的值相同，所以
-从 `task.pyz` 运行的 `task create host` 安装的代码和从 checkout 安装的一样，`task version` 显示服务器为 `up_to_date`。`taskmgr-remote.pyz` 可以运行 daemon 和 shim
+从 `task.pyz` 运行的 `task create host` 安装的代码和从 checkout 安装的一样，`task get version` 显示服务器为 `up_to_date`。`taskmgr-remote.pyz` 可以运行 daemon 和 shim
 （daemon 把压缩包放进 shim 的 `PYTHONPATH`）；`taskmgr-remote.pyz version` 的 `code_dir`
-是压缩包路径。在 `.pyz` 里运行 `task update` 会报 `not_a_checkout`，需要在 checkout 里用 `task build pyz` 重新构建。
+是压缩包路径。在 `.pyz` 里运行 `task update cli` 会报 `not_a_checkout`，需要在 checkout 里用 `task build pyz` 重新构建。
 `task create host` 不构建任何东西，只上传由这个命令构建好的 `taskmgr-remote.pyz`（见下文）。从
 checkout 运行时默认取 checkout 里的 `dist/taskmgr-remote.pyz`；从 `task.pyz` 运行时取与 `task.pyz` 同一目录下的
 `taskmgr-remote.pyz`（先解析符号链接，所以上面 `ln -s` 的安装方式会找到 `dist/`）；`--pyz FILE`
@@ -99,7 +99,7 @@ detail 是改动内容；不询问，也不做任何改动（不上传、不调�
 
 `task update host NAME [--pyz FILE] [--yes] [--plan] [--prune-old-code]` 对机器列表里已有的
 服务器执行同样的步骤，并保持它的条目不变：它不接受 ssh 选项（要改用 `task create host`），名字不在
-列表里时报 `unknown_host`，已禁用的服务器也能更新（更新后仍是禁用）。`task version` 或
+列表里时报 `unknown_host`，已禁用的服务器也能更新（更新后仍是禁用）。`task get version` 或
 `task ping host` 显示某台服务器的代码版本不同，或命令报 `unsupported_feature` 或 `protocol_mismatch` 时用它。
 
 协议 3 之前安装的服务器（`taskmgr-remote` 用 `jobs`、`serve` 这类单词子命令）在更新前对这个 CLI 的
@@ -188,7 +188,7 @@ task delete host gpu1         # 询问 [y/N]；--yes 跳过询问
 
 `task disable host NAME` / `task enable host NAME` 设置条目中的 `enabled`（与 `task delete host` 一样在
 `machines.lock` 下原子地重写文件）。禁用的服务器不参与轮询提交，也不参与向所有服务器发出的查询（`get jobs`、按 jobid
-查找、`whoami`、`version`）；`--host NAME` 仍然可以访问它。见 [[docs/usage.zh-CN]]。
+查找、`get user`、`get version`）；`--host NAME` 仍然可以访问它。见 [[docs/usage.zh-CN]]。
 
 `task ping host` 在各台已启用的服务器上并行执行 `taskmgr-remote version`，每台服务器输出一行：`ok` 或
 `unreachable`、往返时间、`protocol_version`、已安装的代码版本（服务器运行的不是

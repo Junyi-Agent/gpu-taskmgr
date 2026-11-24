@@ -76,7 +76,7 @@ Other language: [[docs/assumptions.zh-CN]]
     if the machine's GPUs changed. A corrupt `result.json`, or one that is not a regular
     file, is kept as `result.json.corrupt` (or `.corrupt.N` if that name is taken).
 16. `_taskmgr.host` is the remote machine's hostname.
-17. Extra config key `scheduler_poll_seconds`; extra commands `task get hosts`, `task update|delete|enable|disable|ping host`, `task whoami`, `task update`, `task version`.
+17. Extra config key `scheduler_poll_seconds`; extra commands `task get hosts`, `task update|delete|enable|disable|ping host`, `task get user`, `task get version`, `task update cli`.
 18. A retry or automatic re-run job gets its own `submitted_at` (the time it was created),
     so `task get jobs` lists it as a separate row after the jobs it re-runs. It copies the
     resolved GPU UUIDs of the old job (or its `gpu_request`, and chooses again) and is not
@@ -92,7 +92,7 @@ Other language: [[docs/assumptions.zh-CN]]
     `unknown` job is never queued again, also after exit 75. `claim_gpu()` does nothing
     when `CUDA_VISIBLE_DEVICES` is unset (a run outside taskmgr), as when it is empty.
 20. Disabled servers (by user decision, departs from desc-1 §14): `task get jobs` and the jobid
-    lookup without `--host` (also `whoami`, `version`) ask only enabled servers, so a server
+    lookup without `--host` (also `get user`, `get version`) ask only enabled servers, so a server
     that is down and disabled with `task disable host` costs no timeout. The output names
     the skipped servers; `--host` still reaches a disabled server. desc-1 queried disabled
     servers too, because they may still hold jobs.

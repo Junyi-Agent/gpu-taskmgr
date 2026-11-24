@@ -20,7 +20,7 @@ class FeaturesTest(Env):
         self.assertEqual(self.strs(out, "features"), sorted(FEATURES))
         ping = self.ok("ping", "host", "s1")
         self.assertEqual(self.strs(ping, "hosts", 0, "features"), sorted(FEATURES))
-        version = self.ok("version", "--host", "s1")
+        version = self.ok("get", "version", "--host", "s1")
         self.assertEqual(self.strs(version, "hosts", 0, "features"), sorted(FEATURES))
         # Command results other than the server reports do not repeat them.
         j = self.submit(self.make_pkg())

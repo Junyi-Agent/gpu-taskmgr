@@ -29,3 +29,4 @@ tags: [taskmgr, adr, process]
 | [0003](0003-branch-protection.md) | `main` 开分支保护：必须走 PR，CI 通过才能合并 | 采纳 |
 | [0004](0004-kubectl-style-cli.md) | `task` 和 `taskmgr-remote` 都用 kubectl 式命令结构，协议升到 3 | 采纳 |
 | [0005](0005-release-on-tag.md) | push `v<版本>` tag 时由 GitHub Actions 发布 release | 采纳 |
+| [0006](0006-exempt-remote-version.md) | 豁免 `taskmgr-remote version` 的 kubectl 式结构 | 采纳 |

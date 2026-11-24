@@ -293,7 +293,7 @@ def text_fetch(_args: Args, out: Mapping[str, object], color: bool) -> str:
     return text
 
 
-def text_whoami(_args: Args, out: Mapping[str, object], color: bool) -> str:
+def text_get_user(_args: Args, out: Mapping[str, object], color: bool) -> str:
     hosts = rows(out, "hosts")
     table = [[_s(h.get("host")), _s(h.get("user")), _s(h.get("hostname"))] for h in hosts]
     text = render_table(("HOST", "USER", "HOSTNAME"), table, color, {}) if table else ""
@@ -304,7 +304,7 @@ def text_whoami(_args: Args, out: Mapping[str, object], color: bool) -> str:
     return text
 
 
-def text_version(_args: Args, out: Mapping[str, object], color: bool) -> str:
+def text_get_version(_args: Args, out: Mapping[str, object], color: bool) -> str:
     loc = as_dict(out.get("local"))
     commit = _s(loc.get("commit"))
     if loc.get("dirty"):
@@ -340,12 +340,14 @@ def text_version(_args: Args, out: Mapping[str, object], color: bool) -> str:
     return text
 
 
-def text_update(_args: Args, out: Mapping[str, object], color: bool) -> str:
+def text_update_cli(_args: Args, out: Mapping[str, object], color: bool) -> str:
     if not out.get("changed"):
         return message("up to date", GREEN, "%s at %s" % (out["path"], out["after"]), color)
     return message(
         "updated", GREEN, "%s from %s to %s" % (out["path"], out["before"], out["after"]), color
-    ) + hint("servers keep their code until `task update host NAME` (see `task version`)", color)
+    ) + hint(
+        "servers keep their code until `task update host NAME` (see `task get version`)", color
+    )
 
 
 def text_build_pyz(_args: Args, out: Mapping[str, object], color: bool) -> str:
