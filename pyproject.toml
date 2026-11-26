@@ -1,6 +1,6 @@
 [project]
 name = "taskmgr"
-version = "0.1.0"
+version = "0.2.0"
 description = "GPU performance-tuning task manager: local `task` CLI and `taskmgr-remote`"
 readme = "taskmgr/README.md"
 authors = [{ name = "Junyi Hou", email = "357197669+Junyi-Agent@users.noreply.github.com" }]
