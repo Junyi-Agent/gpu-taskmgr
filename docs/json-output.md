@@ -72,6 +72,8 @@ Unfinished job:
 
 Finished job: the job's `result.json` plus `jobid`, `state`, `host`, `complete`, `retry_of`, `retried_as`, `cancel_request`, `gpu_request`. These top-level keys replace keys of the same name in `result.json`. `_taskmgr` is kept.
 
+Check `state` first. `_taskmgr` exists only after the job reaches a final state; an unfinished job has no `_taskmgr`.
+
 `wait job` exit codes: 0 succeeded, 1 other final state, 3 `unknown`, 2 timeout or connection error.
 
 ### `cancel job ID`
