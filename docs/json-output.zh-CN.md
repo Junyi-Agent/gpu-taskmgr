@@ -72,6 +72,8 @@ task get jobs -o json | jq '.jobs[] | {jobid, state}'
 
 已结束的作业：作业的 `result.json`，加上 `jobid`、`state`、`host`、`complete`、`retry_of`、`retried_as`、`cancel_request`、`gpu_request`。这些顶层键会覆盖 `result.json` 里同名的键。`_taskmgr` 保留。
 
+先看 `state`。作业到了终态才有 `_taskmgr`，还没结束的作业没有这个键。
+
 `wait job` 的退出码：0 成功，1 其他结束状态，3 `unknown`，2 超时或连接错误。
 
 ### `cancel job ID`
