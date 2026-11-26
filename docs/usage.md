@@ -41,8 +41,8 @@ task build package SRC... --task-id AA-01 --entry 'python3 run.py' [options] [--
                                        # build a package from project files; prints its path
 task validate package AA-01/           # exit 0 valid, 1 with all errors, 2 bad path
 task create job AA-01/                 # round-robin over enabled servers
-task create job AA-01.tar.gz --host nebius-h200-2
-task create job AA-01/ --host nebius-h200-2 --submission-key tune-aa01-v3   # idempotent retry
+task create job AA-01.tar.gz --host gpu2
+task create job AA-01/ --host gpu2 --submission-key tune-aa01-v3   # idempotent retry
 task get jobs [--host H] [--state STATE] [-n N]   # STATE: queued, running, stopping, unknown or a terminal state; N: default 10
 task get job <jobid> [--host H]
 task wait job <jobid> [--host H] [--poll-interval 5] [--retry-timeout 300] [--timeout S]
@@ -151,7 +151,7 @@ unreachable → `incomplete` (exit 2). `--host` skips the lookup.
 
 ```
 JOBID             TASK_ID  SUBMITTED             HOST           STATE
-b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
+b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  gpu1           succeeded
 ```
 
 - A running job whose entry exited 75 because its GPU was held by another process, and

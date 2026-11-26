@@ -1,7 +1,7 @@
 {
   "servers": [
     {
-      "name": "nebius-h200-1",
+      "name": "gpu1",
       "enabled": true,
       "transport": "ssh",
       "ssh": {"host": "10.0.0.11", "user": "tuner", "port": 22,
@@ -11,7 +11,7 @@
       "remote_command": "/home/tuner/.taskmgr-remote/taskmgr-remote.pyz"
     },
     {
-      "name": "nebius-h200-2",
+      "name": "gpu2",
       "enabled": true,
       "transport": "ssh",
       "ssh": {"host": "10.0.0.12", "user": "tuner", "port": 22,
@@ -21,7 +21,7 @@
       "remote_command": "/home/tuner/.taskmgr-remote/taskmgr-remote.pyz"
     },
     {
-      "name": "nebius-h200-3",
+      "name": "gpu3",
       "enabled": false,
       "transport": "ssh",
       "ssh": {"host": "10.0.0.13", "user": "tuner"},
