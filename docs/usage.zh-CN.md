@@ -40,8 +40,8 @@ task build package SRC... --task-id AA-01 --entry 'python3 run.py' [选项] [--d
                                        # 用项目文件构建任务包；输出其路径
 task validate package AA-01/           # 退出码 0 校验通过；1 列出所有错误；2 路径错误
 task create job AA-01/                 # 在启用的服务器之间轮询
-task create job AA-01.tar.gz --host nebius-h200-2
-task create job AA-01/ --host nebius-h200-2 --submission-key tune-aa01-v3   # 幂等重试
+task create job AA-01.tar.gz --host gpu2
+task create job AA-01/ --host gpu2 --submission-key tune-aa01-v3   # 幂等重试
 task get jobs [--host H] [--state STATE] [-n N]   # STATE：queued、running、stopping、unknown 或某个终态；N 默认 10
 task get job <jobid> [--host H]
 task wait job <jobid> [--host H] [--poll-interval 5] [--retry-timeout 300] [--timeout S]
@@ -144,7 +144,7 @@ stderr 另有一行 `error:`。
 
 ```
 JOBID             TASK_ID  SUBMITTED             HOST           STATE
-b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
+b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  gpu1           succeeded
 ```
 
 - running 作业的入口进程因 GPU 被其他进程占用而退出 75、正在等待重新启动时，STATE 显示为
