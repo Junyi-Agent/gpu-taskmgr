@@ -197,6 +197,7 @@ def cmd_create_job(store: Store, args: Args) -> int:
                     "created_at": job["submitted_at"],
                 },
             )
+            _crash_point("after_key_mapping")
             enqueue_staged(store, updir, job)
 
         return emit(
@@ -210,6 +211,14 @@ def cmd_create_job(store: Store, args: Args) -> int:
                 "state": "queued",
             }
         )
+
+
+def _crash_point(name: str) -> None:
+    # TASKMGR_TEST_SUBMIT_CRASH: test-only hook that kills create job at a named point.
+    if os.environ.get("TASKMGR_TEST_SUBMIT_CRASH") == name:
+        _ = sys.stderr.write("test crash at %s\n" % name)
+        _ = sys.stderr.flush()
+        os._exit(99)
 
 
 def receive_upload(src: IO[bytes], dst: IO[bytes], max_bytes: int | None) -> None:
