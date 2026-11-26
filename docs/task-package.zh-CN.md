@@ -39,7 +39,7 @@ up: "[[taskmgr/README.zh-CN]]"
   `precompile`、`environment`、`result` 里，在 `task validate package`、`task create job` 和服务器上都是错误
   （代码 `unknown_key`）：本 taskmgr 不认识的键可能是更新版本的功能，也可能是拼写错误，从不被忽略。
   以 `x-` 开头的键是注释，会被忽略（`"x-owner": "junyi"`）。
-- `task_id` 须匹配 `^[A-Z]{2}-[0-9]{2,4}$`。
+- `task_id` 须匹配 `^[A-Z]{2}-[0-9]{2,4}$`（例如 `DG-01`）。
 - `entry.argv[0]`：包含 `/` 时视为路径（相对路径指包内文件，相对作业的工作目录解析，必须
   必须是包内的可执行文件）；否则视为命令名，在远程入口进程的 PATH 上查找。执行时不经过 shell；需要 shell 语法时
   使用 `["bash", "-c", "..."]`。

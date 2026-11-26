@@ -114,7 +114,9 @@ def pick_round_robin(home: str, servers: list[Server]) -> Server:
 
 def cmd_create_package(args: Args) -> CmdResult:
     if not TASK_ID_RE.match(args.task_id):
-        raise TaskmgrError("bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$")
+        raise TaskmgrError(
+            "bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$ (for example DG-01)"
+        )
 
     target = os.path.abspath(args.dest or args.task_id)
     if os.path.lexists(target):
@@ -359,7 +361,9 @@ def report_partial(out: Mapping[str, object], what: str) -> None:
         note("skipped", YELLOW, "disabled, not queried: %s" % ", ".join(names))
 
     for e in rows(out, "errors"):
-        warn("%s unreachable, %s: %s" % (e.get("host"), what, e.get("error")))
+        # A protocol mismatch is no network problem: retrying ssh will not help.
+        state = "needs an update" if e.get("code") == "protocol_mismatch" else "unreachable"
+        warn("%s %s, %s: %s" % (e.get("host"), state, what, e.get("error")))
 
 
 def cmd_get_job(args: Args) -> CmdResult:

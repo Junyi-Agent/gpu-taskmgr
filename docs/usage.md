@@ -175,7 +175,8 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  gpu1           succeeded
   magenta, succeeded green, failed / invalid_result / timed_out red, cancelled gray.
 - `--state` takes a job state only (`precompiling` and `pending-gpu` are displays: use
   `--state running` or `--state queued`); any other value is a usage error (exit 2).
-- Unreachable servers are reported on stderr (`warning: H unreachable, ...`), and so are
+- Unreachable servers are reported on stderr (`warning: H unreachable, ...`; a server on
+  another protocol version: `warning: H needs an update, ...`), and so are
   the disabled servers that were skipped; with `-o json` too. The exit code is 0 if at
   least one server answered or the machine list is empty, 2 otherwise.
 - A server that is down does not hold the command up: ssh gives up connecting after 10 s

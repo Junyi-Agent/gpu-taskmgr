@@ -262,7 +262,7 @@ def check_task_json(task: object, errors: list[Problem]) -> None:
         _err(
             errors,
             "task_id",
-            "task_id %r does not match ^[A-Z]{2}-[0-9]{2,4}$" % (tid,),
+            "task_id %r does not match ^[A-Z]{2}-[0-9]{2,4}$ (for example DG-01)" % (tid,),
             "task.json",
         )
 

@@ -298,7 +298,10 @@ class PackTest(Env):
         for args, code in (
             ([p, "--entry", "true", "--dest", out], "--task-id is required"),
             ([p, "--task-id", "AA-01", "--dest", out], "--entry is required"),
-            ([p, "--task-id", "bad", "--entry", "true", "--dest", out], "task_id must match"),
+            (
+                [p, "--task-id", "bad", "--entry", "true", "--dest", out],
+                "task_id must match ^[A-Z]{2}-[0-9]{2,4}$ (for example DG-01)",
+            ),
             ([os.path.join(self.tmp, "nope"), "--task-id", "AA-01"], "does not exist"),
             ([p, p + "/run.py", "--task-id", "AA-01", "--entry", "true"], "written by two sources"),
             ([p + "=../up", "--task-id", "AA-01", "--entry", "true"], "outside the package"),

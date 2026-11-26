@@ -198,6 +198,12 @@ class SubmitTest(Env):
         # jobs lists every target; the per-server error carries the reason.
         self.assertEqual((rc, self.get(out, "error", "code")), (2, "all_hosts_failed"))
         self.assertEqual(self.get(out, "errors", 0, "code"), "protocol_mismatch")
+        # The text warning says the server needs an update, not that it is unreachable.
+        _, _, err = self.task(
+            "get", "jobs", "--host", "s1", text=True, env={"TASKMGR_TEST_PROTOCOL_VERSION": "99"}
+        )
+        self.assertIn("warning: s1 needs an update, its jobs are not listed: ", err)
+        self.assertNotIn("unreachable", err)
         # Clients of protocol 1 (attempt-based) and 2 (one-word subcommands) are rejected with
         # protocol_mismatch, also for commands this code does not have.
         jid = "0123456789abcdef"
