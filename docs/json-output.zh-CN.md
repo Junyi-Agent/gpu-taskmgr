@@ -12,6 +12,8 @@ task get jobs -o json | jq '.jobs[] | {jobid, state}'
 
 键后面的 `?` 表示这个键可能不存在。`|null` 表示值可能是 `null`。
 
+本页的键都是稳定的，标了**内部**的除外。内部键用于排查问题，任何版本都可能改名或删掉，不要依赖它们写逻辑。
+
 ## 错误
 
 命令失败时输出：
@@ -52,7 +54,7 @@ task get jobs -o json | jq '.jobs[] | {jobid, state}'
  "complete": bool}
 ```
 
-`job` 的键：`host`、`jobid`、`task_id`、`state`、`submitted_at`、`dispatched_at`、`enqueue_seq`、`cancel_requested`、`cancel_request`、`gpus`、`gpu_request`、`error`、`retry_of`、`retried_as`、`pending_reason`、`phase`。有服务器查询失败时 `complete` 为 `false`，错误在 `errors` 里。`skipped` 列出停用的服务器。
+`job` 的键：`host`、`jobid`、`task_id`、`state`、`submitted_at`、`dispatched_at`、`enqueue_seq`（内部）、`cancel_requested`、`cancel_request`、`gpus`、`gpu_request`、`error`、`retry_of`、`retried_as`、`pending_reason`、`phase`。有服务器查询失败时 `complete` 为 `false`，错误在 `errors` 里。`skipped` 列出停用的服务器。
 
 ### `get job ID` 和 `wait job ID`
 
@@ -65,10 +67,10 @@ task get jobs -o json | jq '.jobs[] | {jobid, state}'
  "gpu_holders", "gpu_holders_error"?, "complete"}
 ```
 
-- `run`：`{status, dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries, last_gpu_busy_at, identity}`；作业还没运行时为 `null`。
+- `run`：`{status, dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries, last_gpu_busy_at, identity}`；作业还没运行时为 `null`。`identity` 是内部键。
 - `progress`：作业的 `progress.json`；文件不存在时为 `null`；读不了时为 `{"error": "<原因>"}`。
 
-已结束的作业：作业的 `result.json`，加上 `host`、`complete`、`retry_of`、`retried_as`、`cancel_request`、`gpu_request`。
+已结束的作业：作业的 `result.json`，加上 `jobid`、`state`、`host`、`complete`、`retry_of`、`retried_as`、`cancel_request`、`gpu_request`。这些顶层键会覆盖 `result.json` 里同名的键。`_taskmgr` 保留。
 
 `wait job` 的退出码：0 成功，1 其他结束状态，3 `unknown`，2 超时或连接错误。
 
@@ -85,6 +87,7 @@ task get jobs -o json | jq '.jobs[] | {jobid, state}'
 {"host", "jobid", "retry_of", "state", "changed": true, "enqueue_seq": int}
 ```
 
+`enqueue_seq` 是内部键。
 `jobid` 是新作业的 ID。错误：`resolve_required`（旧作业是 `unknown`）、`not_terminal`。
 
 ### `resolve job ID`
@@ -94,7 +97,7 @@ task get jobs -o json | jq '.jobs[] | {jobid, state}'
  "alive_pids"?, "reason"?, "hint"?}
 ```
 
-带 `--as STATE`，或作业不是 `unknown` 时，只有 `host`、`jobid`、`state` 和 `changed`。错误：`not_unknown`。
+`decision`、`identity`、`alive_pids`、`reason`、`hint` 是内部键。带 `--as STATE`，或作业不是 `unknown` 时，只有 `host`、`jobid`、`state` 和 `changed`。错误：`not_unknown`。
 
 ### `fetch job ID --dest DIR`
 

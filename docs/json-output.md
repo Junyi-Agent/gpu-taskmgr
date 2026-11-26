@@ -12,6 +12,8 @@ task get jobs -o json | jq '.jobs[] | {jobid, state}'
 
 `?` after a key means the key can be missing. `|null` means the value can be `null`.
 
+All keys on this page are stable unless marked **internal**. Internal keys are for diagnosis: they can change or disappear in any release. Do not build logic on them.
+
 ## Errors
 
 A failed command prints:
@@ -52,7 +54,7 @@ Errors: `submission_uncertain` (connection lost during submit, or no valid reply
  "complete": bool}
 ```
 
-`job` keys: `host`, `jobid`, `task_id`, `state`, `submitted_at`, `dispatched_at`, `enqueue_seq`, `cancel_requested`, `cancel_request`, `gpus`, `gpu_request`, `error`, `retry_of`, `retried_as`, `pending_reason`, `phase`. `complete` is `false` when a server failed; its error is in `errors`. `skipped` lists disabled servers.
+`job` keys: `host`, `jobid`, `task_id`, `state`, `submitted_at`, `dispatched_at`, `enqueue_seq` (internal), `cancel_requested`, `cancel_request`, `gpus`, `gpu_request`, `error`, `retry_of`, `retried_as`, `pending_reason`, `phase`. `complete` is `false` when a server failed; its error is in `errors`. `skipped` lists disabled servers.
 
 ### `get job ID` and `wait job ID`
 
@@ -65,10 +67,10 @@ Unfinished job:
  "gpu_holders", "gpu_holders_error"?, "complete"}
 ```
 
-- `run`: `{status, dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries, last_gpu_busy_at, identity}`; `null` before the job ran.
+- `run`: `{status, dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retries, last_gpu_busy_at, identity}`; `null` before the job ran. `identity` is internal.
 - `progress`: the job's `progress.json`; `null` if missing; `{"error": "<reason>"}` if unreadable.
 
-Finished job: the job's `result.json` plus `host`, `complete`, `retry_of`, `retried_as`, `cancel_request`, `gpu_request`.
+Finished job: the job's `result.json` plus `jobid`, `state`, `host`, `complete`, `retry_of`, `retried_as`, `cancel_request`, `gpu_request`. These top-level keys replace keys of the same name in `result.json`. `_taskmgr` is kept.
 
 `wait job` exit codes: 0 succeeded, 1 other final state, 3 `unknown`, 2 timeout or connection error.
 
@@ -85,6 +87,7 @@ Finished job: the job's `result.json` plus `host`, `complete`, `retry_of`, `retr
 {"host", "jobid", "retry_of", "state", "changed": true, "enqueue_seq": int}
 ```
 
+`enqueue_seq` is internal.
 `jobid` is the new job. Errors: `resolve_required` (the old job is `unknown`), `not_terminal`.
 
 ### `resolve job ID`
@@ -94,7 +97,7 @@ Finished job: the job's `result.json` plus `host`, `complete`, `retry_of`, `retr
  "alive_pids"?, "reason"?, "hint"?}
 ```
 
-With `--as STATE`, or when the job is not `unknown`, only `host`, `jobid`, `state` and `changed` are present. Error: `not_unknown`.
+`decision`, `identity`, `alive_pids`, `reason` and `hint` are internal. With `--as STATE`, or when the job is not `unknown`, only `host`, `jobid`, `state` and `changed` are present. Error: `not_unknown`.
 
 ### `fetch job ID --dest DIR`
 
