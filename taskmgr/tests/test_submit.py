@@ -310,6 +310,47 @@ class SubmitTest(Env):
         self.assertIn("protocol_mismatch", err)
         self.assertIn(hint, err)
 
+    def test_version_probe_answers_clients_of_every_protocol(self) -> None:
+        """ADR 0006: `taskmgr-remote version` stays a one-word command so that a client of
+        any protocol can learn the server's protocol. Without --protocol-version it answers
+        with the version info; a client of another protocol (older or newer, with or without
+        -o json) gets protocol_mismatch as one JSON line on stdout that names this server's
+        protocol, never a usage error."""
+        for argv in (["version"], ["version", "-o", "json"]):
+            rc, out, err = self.remote(*argv)
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(self.get(out, "protocol_version"), 3, argv)
+            self.assertIn("code_version", cast(dict[str, JsonValue], out), argv)
+            self.assertIn("features", cast(dict[str, JsonValue], out), argv)
+        for client in ("1", "2", "4"):
+            for argv in (["version"], ["version", "-o", "json"]):
+                rc, out, err = self.remote("--protocol-version", client, *argv)
+                self.assertEqual(rc, 2, (client, argv, err))
+                self.assertIsInstance(out, dict, (client, argv, out, err))
+                self.assertEqual(self.get(out, "error", "code"), "protocol_mismatch", client)
+                self.assertEqual(self.get(out, "protocol_version"), 3, client)
+                self.assertNotIn("usage:", err, (client, argv))
+
+    def test_client_refuses_the_version_reply_of_a_newer_server(self) -> None:
+        """ADR 0006, the other direction: a server of a newer protocol still answers
+        `version`; the client reads protocol_version from it and reports protocol_mismatch
+        for ping and get version, instead of trusting the reply or failing to parse it."""
+        fake = os.path.join(self.tmp, "fake-remote")
+        version = '{"protocol_version": 4, "code_version": "new", "features": []}'
+        with open(fake, "w") as f:
+            _ = f.write(
+                "#!/bin/sh\n"
+                + 'case " $* " in *" version "*) echo \'%s\'; exit 0;; esac\n' % version
+                + "exit 2\n"
+            )
+        os.chmod(fake, 0o755)
+        self.server("s1")["remote_command"] = fake
+        self.write_machines()
+        for argv in (["ping", "host", "s1"], ["get", "version", "--host", "s1"]):
+            rc, out, err = self.task(*argv)
+            self.assertEqual(rc, 2, (argv, out, err))
+            self.assertIn("protocol_mismatch", "%s %s" % (out, err), argv)
+
     def test_daemon_restart_keeps_in_progress_upload(self) -> None:
         pkg = self.make_pkg()
         tgz = os.path.join(self.tmp, "p.tgz")
