@@ -41,7 +41,7 @@ options ([[docs/usage]], Packing).
   `unknown_key`) in `task validate package`, `task create job` and on the server: a key this taskmgr does
   not know may be a feature of a newer taskmgr, or a typo, and is never ignored. Keys
   starting with `x-` are annotations and are ignored (`"x-owner": "junyi"`).
-- `task_id` matches `^[A-Z]{2}-[0-9]{2,4}$`.
+- `task_id` matches `^[A-Z]{2}-[0-9]{2,4}$` (for example `DG-01`).
 - `entry.argv[0]`: contains `/` → path (relative = package file, resolved against the
   job's workdir, must be an executable file in the package); otherwise a command name
   looked up on the entry process PATH on the remote side. No shell is involved; use

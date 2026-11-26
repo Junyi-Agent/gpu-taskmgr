@@ -180,7 +180,9 @@ def build_task(base: JsonDict, a: PackArgs) -> JsonDict:
     if not isinstance(task.get("task_id"), str):
         raise TaskmgrError("bad_args", "--task-id is required (no task.json among the sources)")
     if not TASK_ID_RE.match(str(task["task_id"])):
-        raise TaskmgrError("bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$")
+        raise TaskmgrError(
+            "bad_task_id", "task_id must match ^[A-Z]{2}-[0-9]{2,4}$ (for example DG-01)"
+        )
 
     if a.entry is not None:
         task["entry"] = {"argv": cast(list[JsonValue], shlex.split(a.entry))}

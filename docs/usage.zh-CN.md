@@ -164,7 +164,8 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  nebius-h200-1  succeeded
   红、cancelled 灰。
 - `--state` 只接受作业状态（`precompiling` 和 `pending-gpu` 只是显示，请用 `--state running` 或
   `--state queued`）；其他值是用法错误（退出码 2）。
-- 连不上的服务器在 stderr 报告（`warning: H unreachable, ...`），被跳过的已禁用服务器也一样；
+- 连不上的服务器在 stderr 报告（`warning: H unreachable, ...`；协议版本不同的服务器：
+  `warning: H needs an update, ...`），被跳过的已禁用服务器也一样；
   加 `-o json` 时同样输出。至少一台服务器有响应、或机器列表为空时退出码为 0，否则为 2。
 - 宕机的服务器不会卡住命令：ssh 连接 10 秒后放弃（`ConnectTimeout=10`；服务器在机器列表中自己的
   `-o ConnectTimeout=N` 优先）；向所有服务器发出的查询（`get jobs`、按 jobid 查找、`get user`、`get version`）
