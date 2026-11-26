@@ -187,6 +187,39 @@ class SubmitTest(Env):
         r = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "lost-1", pkg))
         self.assertEqual((r["jobid"], r["deduplicated"]), (self.get(ack, "jobid"), True))
 
+    def test_crash_between_key_mapping_and_enqueue_then_retry_enqueues_once(self) -> None:
+        """create job writes submission-keys/<key>.json, then renames the staged job into
+        queue/. A crash between the two leaves a mapping whose job does not exist. A retry
+        with the same key must enqueue the job, and only once; a second retry deduplicates.
+
+        Needs the test-only hook TASKMGR_TEST_SUBMIT_CRASH=after_key_mapping in remote.py
+        (same form as TASKMGR_TEST_SHIM_CRASH in shim.py: log, then os._exit(99))."""
+        pkg = self.make_pkg()
+        tgz = os.path.join(self.tmp, "p.tgz")
+        package.pack_dir(pkg, tgz)
+        with open(tgz, "rb") as f:
+            rc, _, err = self.remote(
+                "create",
+                "job",
+                "--submission-key",
+                "crash-1",
+                stdin=f,
+                env={"TASKMGR_TEST_SUBMIT_CRASH": "after_key_mapping"},
+            )
+        self.assertEqual(rc, 99, err)
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.root("s1"), "submission-keys", "crash-1.json"))
+        )
+        queue = os.path.join(self.root("s1"), "queue")
+        self.assertEqual(os.listdir(queue), [])
+
+        a = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "crash-1", pkg))
+        self.assertFalse(a["deduplicated"])
+        self.assertEqual(os.listdir(queue), [a["jobid"]])
+        b = self.obj(self.ok("create", "job", "--host", "s1", "--submission-key", "crash-1", pkg))
+        self.assertEqual((b["jobid"], b["deduplicated"]), (a["jobid"], True))
+        self.assertEqual(os.listdir(queue), [a["jobid"]])
+
     def test_protocol_version_mismatch(self) -> None:
         # The remote refuses a client of another version and names its own.
         rc, out, _ = self.remote("--protocol-version", "99", "get", "jobs")
