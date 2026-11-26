@@ -199,7 +199,7 @@ dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retr
 last_gpu_busy_at, identity} 或 null, "progress":
 <progress.json 或 null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",
 "gpu_request", "cancel_request", "gpu_holders", "complete"}`。对已结束的作业，输出最终的 `result.json`，并在顶层加上
-`host`、`complete`、`retry_of`、`retried_as`、`gpu_request` 和 `cancel_request`。
+`jobid`、`state`、`host`、`complete`、`retry_of`、`retried_as`、`gpu_request` 和 `cancel_request`。
 
 - `cancel_request`：`null`，或者有人请求取消该作业后为 `{"by", "at", "via"}`：`by` 是运行
   `task cancel job` 的 CLI 的 `user@hostname`（`via: "cli"`）；在服务器上取消或由较旧的 CLI 取消时，是服务器

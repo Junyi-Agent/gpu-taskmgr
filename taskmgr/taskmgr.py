@@ -413,6 +413,9 @@ def render_status(host: str | None, st: JsonDict, complete: bool) -> dict[str, o
     j = _obj(st["job"])
     if st["terminal"]:
         out: dict[str, object] = dict(_obj(st["result"]))
+        # The same top-level jobid and state as a live job, so agents read one place.
+        out["jobid"] = j["jobid"]
+        out["state"] = j["state"]
         out["host"] = host
         out["complete"] = complete
         out["retry_of"] = j.get("retry_of")
