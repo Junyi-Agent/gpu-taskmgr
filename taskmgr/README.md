@@ -65,4 +65,4 @@ task create job "$(task build package src/ --task-id AA-02 --entry 'python3 run.
 ```
 
 Commands are `task <verb> <resource>`, as in kubectl; `task -h` lists them, job, host and
-package also have a plural name (`task get jobs`), and `-o json` prints the full JSON object.
+package also have a plural name (`task get jobs`), and `-o json` prints the full JSON object (keys and error codes: `docs/json-output.md`).

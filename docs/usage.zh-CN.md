@@ -183,11 +183,11 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  gpu1           succeeded
 | 2 | 参数、连接、查询或操作错误；`get jobs` 时所有服务器都失败；`wait job`：`--timeout` 到期或连不上 |
 | 3 | `wait job` 发现作业处于 `unknown` |
 
-以下 JSON 对象是 `-o json` 的输出。
+以下 JSON 对象是 `-o json` 的输出。每个命令的字段和错误码见 [[docs/json-output.zh-CN]]。
 
 提交回执（`task create job`）：`{"host", "jobid", "task_id", "submission_key", "deduplicated",
 "content_hash", "state"}`。如果提交结果不确定（连接失败，或没有收到有效回复：错误码
-`remote_error`），stderr 会给出所选的服务器和 submission key，并打印重试命令
+`submission_uncertain`，key 在 `details.submission_key`），stderr 会给出所选的服务器和 submission key，并打印重试命令
 `task create job PATH --host H --submission-key K`；CLI 不会自动改投其他服务器。任务包用到的功能
 服务器的代码不支持时，`task create job` 在上传前以 `unsupported_feature` 拒绝
 （退出码 2），错误信息以 ``run `task update host H` to update it`` 结尾（见

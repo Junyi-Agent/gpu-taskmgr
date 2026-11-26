@@ -198,11 +198,11 @@ b466fc71d0017505  GT-01    2026-10-29T18:55:33Z  gpu1           succeeded
 | 2 | parameter, connection, query or operation error; `get jobs` with every server failing; `wait job`: `--timeout` or no connection |
 | 3 | `wait job` found the job in `unknown` |
 
-The JSON objects below are what `-o json` prints.
+The JSON objects below are what `-o json` prints. [[docs/json-output]] lists the keys and error codes of every command.
 
 Submit receipt (`task create job`): `{"host", "jobid", "task_id", "submission_key",
 "deduplicated", "content_hash", "state"}`. If the outcome is uncertain (connection failure,
-or no valid reply: error code `remote_error`), stderr names the chosen host and the
+or no valid reply: error code `submission_uncertain`, with the key in `details.submission_key`), stderr names the chosen host and the
 submission key and prints the retry command
 `task create job PATH --host H --submission-key K`; the CLI never resubmits to another
 server. A package that uses a feature the server's code lacks is
