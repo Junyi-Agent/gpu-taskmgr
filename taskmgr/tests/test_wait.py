@@ -33,6 +33,11 @@ class WaitLookupTest(Env):
         self.assertEqual(rc, 0, err)
         self.assertIn("retrying", err)
         self.assertEqual(self.get(out, "_taskmgr", "status"), "succeeded")
+        # A finished job has jobid and state at the top level, like a live one.
+        self.assertEqual((self.get(out, "jobid"), self.get(out, "state")), (j, "succeeded"))
+        st = self.ok("get", "job", j)
+        self.assertEqual((self.get(st, "jobid"), self.get(st, "state")), (j, "succeeded"))
+        self.assertEqual(self.get(st, "_taskmgr", "jobid"), j)
         # Beyond --retry-timeout it gives up with a connection error.
         open(flag, "w").close()
         rc, out, _ = self.task("wait", "job", j, "--poll-interval", "0.2", "--retry-timeout", "1")

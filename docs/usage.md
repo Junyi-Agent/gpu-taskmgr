@@ -215,7 +215,7 @@ dispatched_at, started_at, exited, return_code, signal, takeovers, gpu_busy_retr
 last_gpu_busy_at, identity} or null, "progress":
 <progress.json or null>, "submitted_at", "gpus", "error", "retry_of", "retried_as",
 "gpu_request", "cancel_request", "gpu_holders", "complete"}`. For a finished job it prints the final
-`result.json` with `host`, `complete`, `retry_of`, `retried_as`, `gpu_request` and
+`result.json` with `jobid`, `state`, `host`, `complete`, `retry_of`, `retried_as`, `gpu_request` and
 `cancel_request` added at the top level.
 
 - `cancel_request`: `null`, or `{"by", "at", "via"}` once someone asked to cancel the job:
